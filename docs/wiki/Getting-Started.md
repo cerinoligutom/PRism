@@ -1,6 +1,6 @@
 # Getting Started
 
-This page covers the prerequisites and the first build of PRism. The application scaffold is tracked in [issue #8](https://github.com/cerinoligutom/PRism/issues/8) — once that lands, this page becomes the canonical onboarding doc.
+This page covers the prerequisites and the first build of PRism.
 
 ## Prerequisites
 
@@ -31,22 +31,28 @@ PRism is built on Tauri 2 (ADR [0002](https://github.com/cerinoligutom/PRism/blo
 
 ## Clone and run
 
-> The commands below assume issue [#8](https://github.com/cerinoligutom/PRism/issues/8) has landed. Until then they will fail — the repo is intentionally bare beyond standards docs.
-
 ```bash
 git clone git@github.com:cerinoligutom/PRism.git
 cd PRism
 pnpm install
-pnpm tauri dev
+pnpm tauri:dev
 ```
+
+`pnpm tauri:dev` builds the Rust core and opens a native window with the Vue UI hot-reloading from Vite. The first run takes a minute or two; subsequent runs are seconds.
 
 For a release build:
 
 ```bash
-pnpm tauri build
+pnpm tauri:build
 ```
 
 Output binaries land under `src-tauri/target/release/bundle/`.
+
+Frontend-only iteration (no native window, just the Vue UI in a browser at `http://localhost:5173`):
+
+```bash
+pnpm dev
+```
 
 ## Authentication
 

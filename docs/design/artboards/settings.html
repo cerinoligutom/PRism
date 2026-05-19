@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — Settings</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; height: 1000px; background: var(--bg-0); padding: 0; overflow: hidden; }
+  .app {
+    display: grid;
+    grid-template-columns: 232px 1fr;
+    height: calc(100% - 36px);
+    background: var(--bg-1);
+  }
+
+  /* Settings sidebar — reuses .side but lists settings sections */
+  .side {
+    background: var(--bg-2);
+    border-right: 1px solid var(--border-1);
+    padding: 12px;
+    display: flex; flex-direction: column;
+  }
+  .side .brand { display: flex; align-items: center; gap: 9px; padding: 6px; }
+  .side .brand .mark { width: 22px; height: 22px; color: var(--text-strong); }
+  .side .brand .name { font-size: 14px; font-weight: 600; letter-spacing: -0.4px; color: var(--text-strong); }
+  .side .brand .name .ism { font-weight: 400; color: var(--text-mute); }
+  .side .back {
+    display: flex; align-items: center; gap: 8px;
+    margin: 14px 0 4px;
+    color: var(--text-mute); font-size: 12px;
+    cursor: pointer; padding: 6px;
+    border-radius: var(--r-2);
+  }
+  .side .back:hover { background: var(--bg-3); color: var(--text); }
+  .side h6 {
+    margin: 16px 6px 6px;
+    font-size: 9px; font-weight: 600; letter-spacing: 1.2px;
+    text-transform: uppercase; color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+  .side nav { display: flex; flex-direction: column; gap: 1px; }
+
+  .main {
+    overflow-y: auto;
+    background: var(--bg-1);
+    padding: 28px 56px 48px;
+  }
+  .main-h1 {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-bottom: 24px;
+  }
+  .main-h1 h1 {
+    margin: 0;
+    font-size: 24px; font-weight: 600;
+    color: var(--text-strong); letter-spacing: -0.5px;
+  }
+  .main-h1 .sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); letter-spacing: 0.5px; }
+
+  /* banner */
+  .banner {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 16px;
+    background: oklch(0.28 0.08 25 / 0.3);
+    border: 1px solid oklch(0.5 0.15 25 / 0.45);
+    border-radius: var(--r-3);
+    margin-bottom: 28px;
+  }
+  .banner .icn {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--danger-bg);
+    color: var(--danger);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .banner .body .ttl { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+  .banner .body .desc { font-size: 12px; color: var(--text-mute); margin-top: 2px; }
+  .banner .actions { display: flex; gap: 8px; }
+
+  .section { margin-bottom: 36px; }
+  .section-head {
+    display: flex; align-items: baseline; gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-1);
+    margin-bottom: 18px;
+  }
+  .section-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-strong); letter-spacing: -0.1px; }
+  .section-head .desc { font-size: 12px; color: var(--text-mute); }
+
+  /* Accounts table */
+  .acct-list {
+    display: flex; flex-direction: column;
+    gap: 1px;
+    background: var(--border-1);
+    border-radius: var(--r-3);
+    overflow: hidden;
+  }
+  .acct-card {
+    background: var(--bg-2);
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 36px 1fr auto auto;
+    gap: 16px;
+    align-items: center;
+  }
+  .acct-card.expired {
+    background: oklch(0.18 0.05 25 / 0.3);
+  }
+  .acct-card > .avatar { width: 36px; height: 36px; font-size: 12px; border-radius: 8px; }
+  .acct-card .acct-info .label { font-size: 13px; font-weight: 600; color: var(--text-strong); display: flex; align-items: center; gap: 6px; }
+  .acct-card .acct-info .label .host { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); font-weight: 400; padding: 1px 5px; background: var(--bg-3); border-radius: 3px; letter-spacing: 0.3px; }
+  .acct-card .acct-info .sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); margin-top: 3px; }
+  .acct-card .acct-info .sub .ok { color: var(--success); }
+  .acct-card .acct-info .sub .err { color: var(--danger); }
+  .acct-card .acct-info .sub .dot-sep { color: var(--text-disabled); margin: 0 2px; }
+  .acct-card .stats {
+    display: flex; gap: 18px;
+  }
+  .acct-card .stats .stat .n { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+  .acct-card .stats .stat .k { font-size: 10px; color: var(--text-faint); margin-top: 1px; }
+
+  .acct-card .actions { display: flex; gap: 6px; }
+
+  .add-acct {
+    background: transparent;
+    border: 1px dashed var(--border-2);
+    border-radius: var(--r-3);
+    padding: 14px 18px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    color: var(--text-mute);
+    cursor: pointer;
+    font-size: 12px;
+    margin-top: 10px;
+  }
+  .add-acct:hover { border-color: var(--border-3); color: var(--text); }
+
+  /* generic settings rows */
+  .row-list {
+    display: flex; flex-direction: column;
+    gap: 1px;
+    background: var(--border-1);
+    border-radius: var(--r-3);
+    overflow: hidden;
+  }
+  .set-row {
+    background: var(--bg-2);
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: center;
+  }
+  .set-row .nm { font-size: 13px; color: var(--text); font-weight: 500; }
+  .set-row .desc { font-size: 12px; color: var(--text-mute); margin-top: 2px; line-height: 1.45; max-width: 540px; }
+
+  /* toggle */
+  .toggle {
+    width: 32px; height: 18px;
+    background: var(--bg-4);
+    border-radius: var(--r-pill);
+    position: relative;
+    cursor: pointer;
+    transition: background .15s;
+    flex: 0 0 32px;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--text);
+    top: 2px; left: 2px;
+    transition: transform .15s, background .15s;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle.on::after { transform: translateX(14px); background: var(--accent-fg); }
+
+  /* slider */
+  .slider {
+    display: flex; align-items: center; gap: 12px;
+    min-width: 260px;
+  }
+  .slider .track {
+    width: 220px; height: 4px;
+    background: var(--bg-4);
+    border-radius: 2px;
+    position: relative;
+  }
+  .slider .fill {
+    position: absolute; height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .slider .handle {
+    position: absolute;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--text-strong);
+    top: -5px;
+    box-shadow: 0 0 0 4px oklch(0.72 0.14 320 / 0.2);
+  }
+  .slider .val {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text); font-variant-numeric: tabular-nums;
+    min-width: 36px; text-align: right;
+  }
+
+  /* theme picker */
+  .theme-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    flex: 0 0 360px;
+  }
+  .theme-card {
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-3);
+    padding: 10px 12px 8px;
+    cursor: pointer;
+    display: flex; flex-direction: column; gap: 6px;
+    transition: border-color .12s, background .12s;
+  }
+  .theme-card:hover { border-color: var(--border-3); }
+  .theme-card.active {
+    border-color: var(--accent);
+    background: oklch(0.2 0.04 320 / 0.18);
+  }
+  .theme-card .preview {
+    height: 56px;
+    border-radius: 4px;
+    border: 1px solid var(--border-1);
+    overflow: hidden;
+    position: relative;
+  }
+  .theme-card .preview .row { height: 6px; margin: 5px 6px; border-radius: 1px; }
+  .theme-card.dark   .preview { background: #0c0c10; }
+  .theme-card.dark   .preview .row { background: #25252c; }
+  .theme-card.light  .preview { background: #ffffff; }
+  .theme-card.light  .preview .row { background: #dadade; }
+  .theme-card.sys    .preview { background: linear-gradient(120deg, #ffffff 50%, #0c0c10 50%); }
+  .theme-card.sys    .preview .row { background: #b8b8bf; }
+  .theme-card.sys    .preview .row:nth-child(odd) { background: #25252c; }
+  .theme-card .lbl { font-size: 12px; color: var(--text); font-weight: 500; }
+
+  /* accent swatches */
+  .accent-grid {
+    display: flex; gap: 8px;
+  }
+  .accent-grid .sw {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    box-shadow: inset 0 0 0 0 var(--bg-1);
+    transition: transform .12s;
+    position: relative;
+  }
+  .accent-grid .sw:hover { transform: scale(1.08); }
+  .accent-grid .sw.on { border-color: var(--text-strong); }
+  .accent-grid .sw.on::after {
+    content: ''; position: absolute;
+    inset: 2px;
+    border: 2px solid var(--bg-1);
+    border-radius: 50%;
+  }
+  .accent-grid .custom {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, oklch(0.72 0.15 0), oklch(0.72 0.15 90), oklch(0.72 0.15 180), oklch(0.72 0.15 270), oklch(0.72 0.15 360));
+    border: 2px solid var(--border-2);
+    cursor: pointer;
+  }
+
+  /* notifications */
+  .notif-row {
+    display: grid;
+    grid-template-columns: 24px 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    background: var(--bg-2);
+    padding: 12px 18px;
+  }
+  .notif-row .icn {
+    width: 24px; height: 24px;
+    border-radius: var(--r-2);
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg-3);
+    color: var(--text-mute);
+  }
+  .notif-row .nm { font-size: 12px; color: var(--text); }
+  .notif-row .toggle { transform: scale(0.92); }
+  .notif-row .desk-cb {
+    width: 24px; height: 18px;
+    background: var(--bg-4); border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .notif-row .desk-cb.on { background: var(--accent); color: var(--accent-fg); }
+  .notif-cols { display: flex; gap: 28px; font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); letter-spacing: 1px; text-transform: uppercase; padding: 0 18px 8px; }
+
+  /* quiet hours */
+  .quiet {
+    display: flex; gap: 8px; align-items: center;
+  }
+  .quiet input {
+    width: 70px;
+    text-align: center;
+    font-family: var(--font-mono);
+  }
+  .quiet .arrow { color: var(--text-faint); }
+</style>
+</head>
+<body>
+<div class="mac-window">
+  <div class="mac-titlebar">
+    <div class="mac-lights">
+      <span class="mac-light red"></span>
+      <span class="mac-light amber"></span>
+      <span class="mac-light green"></span>
+    </div>
+    <div class="mac-title">PRism — Settings</div>
+    <div></div>
+  </div>
+
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <div class="mark">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+            <path d="M16 4 L28 26 L4 26 Z"/>
+            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="name"><span>PR</span><span class="ism">ism</span></div>
+      </div>
+
+      <div class="back">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M7 4L3 8l4 4M3 8h10"/></svg>
+        Back to dashboard
+      </div>
+
+      <h6>Settings</h6>
+      <nav>
+        <div class="nav-item active">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="2.5"/><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4"/></svg></span>
+          Accounts <span class="count">2</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4"/></svg></span>
+          Sync &amp; data
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v2M8 12v2M2 8h2M12 8h2M13 3l-1.4 1.4M4.4 11.6L3 13M3 3l1.4 1.4M11.6 11.6L13 13"/><circle cx="8" cy="8" r="3"/></svg></span>
+          Appearance
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 1.5l5 2.5v3.5c0 3-2.2 5.4-5 6-2.8-.6-5-3-5-6V4l5-2.5z"/></svg></span>
+          Notifications
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M3 7h10M7 13V7"/></svg></span>
+          Views &amp; layout
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 5v3M8 10.5v.5"/></svg></span>
+          About
+        </div>
+      </nav>
+    </aside>
+
+    <section class="main scroll">
+      <div class="main-h1">
+        <h1>Accounts &amp; sync</h1>
+        <span class="sub">2 ACCOUNTS · 23 REPOS · API BUDGET 14% / 5000 PER HOUR</span>
+      </div>
+
+      <!-- Expired PAT banner -->
+      <div class="banner">
+        <div class="icn">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v6M8 11v.5"/><circle cx="8" cy="8" r="6.5"/></svg>
+        </div>
+        <div class="body">
+          <div class="ttl">Your token for <span style="color:var(--accent)">Personal</span> expired 2 days ago</div>
+          <div class="desc">PRism stopped syncing 14 PRs from that account. No data was lost — sign back in to resume. <a href="#" style="color:var(--accent);text-decoration:none">What happened?</a></div>
+        </div>
+        <div class="actions">
+          <button class="btn">Dismiss</button>
+          <button class="btn btn-primary">Re-authenticate →</button>
+        </div>
+      </div>
+
+      <!-- ACCOUNTS -->
+      <div class="section">
+        <div class="section-head">
+          <h3>GitHub accounts</h3>
+          <span class="desc">PATs are stored exclusively in the macOS Keychain. PRism never writes to disk or logs.</span>
+        </div>
+
+        <div class="acct-list">
+          <div class="acct-card">
+            <span class="avatar av-3">SM</span>
+            <div class="acct-info">
+              <div class="label">Work — Sitemate <span class="host">github.com</span></div>
+              <div class="sub">
+                <span class="ok">● Token valid</span>
+                <span class="dot-sep">·</span>
+                rpalanca@sitemate.com
+                <span class="dot-sep">·</span>
+                fine-grained · 4 scopes
+                <span class="dot-sep">·</span>
+                expires <strong style="color:var(--warning)">in 47 days</strong>
+              </div>
+            </div>
+            <div class="stats">
+              <div class="stat"><div class="n">12</div><div class="k">repos</div></div>
+              <div class="stat"><div class="n">184</div><div class="k">PRs</div></div>
+              <div class="stat"><div class="n">8%</div><div class="k">API used</div></div>
+            </div>
+            <div class="actions">
+              <button class="btn btn-sm">Edit</button>
+              <button class="btn btn-sm">Re-auth</button>
+              <button class="btn btn-icon btn-sm">⋯</button>
+            </div>
+          </div>
+
+          <div class="acct-card expired">
+            <span class="avatar av-5">PR</span>
+            <div class="acct-info">
+              <div class="label">Personal <span class="host">github.com</span></div>
+              <div class="sub">
+                <span class="err">● Token expired</span>
+                <span class="dot-sep">·</span>
+                rpalanca@gmail.com
+                <span class="dot-sep">·</span>
+                classic · repo,read:org
+                <span class="dot-sep">·</span>
+                expired <strong style="color:var(--danger)">2 days ago</strong>
+              </div>
+            </div>
+            <div class="stats">
+              <div class="stat"><div class="n">8</div><div class="k">repos</div></div>
+              <div class="stat"><div class="n">14</div><div class="k">PRs</div></div>
+              <div class="stat" style="color:var(--text-faint)"><div class="n" style="color:var(--text-faint)">—</div><div class="k">paused</div></div>
+            </div>
+            <div class="actions">
+              <button class="btn btn-sm">Edit</button>
+              <button class="btn btn-primary btn-sm">Re-auth</button>
+              <button class="btn btn-icon btn-sm">⋯</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="add-acct">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          Add another account
+        </div>
+      </div>
+
+      <!-- SYNC -->
+      <div class="section">
+        <div class="section-head">
+          <h3>Sync &amp; rate limits</h3>
+          <span class="desc">Polling-based. Lower intervals refresh faster but use more API budget.</span>
+        </div>
+
+        <div class="row-list">
+          <div class="set-row">
+            <div>
+              <div class="nm">Sync interval</div>
+              <div class="desc">How often PRism polls each account. Conditional requests keep costs low — most syncs return 304 Not Modified.</div>
+            </div>
+            <div class="slider">
+              <div class="track">
+                <div class="fill" style="width:18%"></div>
+                <div class="handle" style="left:18%"></div>
+              </div>
+              <div class="val">60s</div>
+            </div>
+          </div>
+          <div class="set-row">
+            <div>
+              <div class="nm">Run in background when window closed</div>
+              <div class="desc">Keep PRism syncing in the menu bar so notifications work even with no window open.</div>
+            </div>
+            <div class="toggle on"></div>
+          </div>
+          <div class="set-row">
+            <div>
+              <div class="nm">Auto-archive closed PRs after</div>
+              <div class="desc">Closed and merged PRs disappear from list views once they've been inactive for this long.</div>
+            </div>
+            <div class="slider">
+              <div class="track">
+                <div class="fill" style="width:46%"></div>
+                <div class="handle" style="left:46%"></div>
+              </div>
+              <div class="val">14d</div>
+            </div>
+          </div>
+          <div class="set-row">
+            <div>
+              <div class="nm">Mark open PRs stale after</div>
+              <div class="desc">PRs with no activity for this long are de-emphasised and surface via the "Stale" filter.</div>
+            </div>
+            <div class="slider">
+              <div class="track">
+                <div class="fill" style="width:23%"></div>
+                <div class="handle" style="left:23%"></div>
+              </div>
+              <div class="val">7d</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- APPEARANCE -->
+      <div class="section">
+        <div class="section-head">
+          <h3>Appearance</h3>
+          <span class="desc">Theme, accent, density.</span>
+        </div>
+
+        <div class="row-list">
+          <div class="set-row">
+            <div>
+              <div class="nm">Theme</div>
+              <div class="desc">System follows your macOS appearance.</div>
+            </div>
+            <div class="theme-row">
+              <div class="theme-card dark active">
+                <div class="preview">
+                  <div class="row" style="width:60%"></div>
+                  <div class="row" style="width:80%"></div>
+                  <div class="row" style="width:45%"></div>
+                </div>
+                <div class="lbl">Dark</div>
+              </div>
+              <div class="theme-card light">
+                <div class="preview">
+                  <div class="row" style="width:60%"></div>
+                  <div class="row" style="width:80%"></div>
+                  <div class="row" style="width:45%"></div>
+                </div>
+                <div class="lbl">Light</div>
+              </div>
+              <div class="theme-card sys">
+                <div class="preview">
+                  <div class="row" style="width:60%"></div>
+                  <div class="row" style="width:80%"></div>
+                  <div class="row" style="width:45%"></div>
+                </div>
+                <div class="lbl">System</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="set-row">
+            <div>
+              <div class="nm">Accent color</div>
+              <div class="desc">Used for focus rings, primary action, "needs my attention" signals.</div>
+            </div>
+            <div class="accent-grid">
+              <span class="sw on" style="background:oklch(0.72 0.14 320)"></span>
+              <span class="sw" style="background:oklch(0.62 0.18 270)"></span>
+              <span class="sw" style="background:oklch(0.72 0.18 145)"></span>
+              <span class="sw" style="background:oklch(0.72 0.18 25)"></span>
+              <span class="sw" style="background:oklch(0.78 0.15 80)"></span>
+              <span class="sw" style="background:oklch(0.72 0.12 240)"></span>
+              <span class="custom" title="Custom"></span>
+            </div>
+          </div>
+
+          <div class="set-row">
+            <div>
+              <div class="nm">Row density</div>
+              <div class="desc">How tightly PR rows pack.</div>
+            </div>
+            <div class="seg">
+              <button>Tight</button>
+              <button class="active">Comfortable</button>
+              <button>Roomy</button>
+            </div>
+          </div>
+
+          <div class="set-row">
+            <div>
+              <div class="nm">Show in menu bar</div>
+              <div class="desc">A small status icon in the macOS menu bar with the "needs my attention" count.</div>
+            </div>
+            <div class="toggle on"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- NOTIFICATIONS -->
+      <div class="section">
+        <div class="section-head">
+          <h3>Notifications</h3>
+          <span class="desc">PRism keeps it quiet by default — in-app badges only.</span>
+        </div>
+
+        <div class="row-list">
+          <div class="notif-cols" style="display:grid;grid-template-columns:24px 1fr 80px 60px;gap:12px;padding:8px 18px 6px;border-bottom:1px solid var(--border-1);background:var(--bg-2);">
+            <span></span>
+            <span>EVENT</span>
+            <span style="text-align:center">IN-APP</span>
+            <span style="text-align:center">DESKTOP</span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--accent-bg);color:var(--accent)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="6" r="2.5"/><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4"/></svg>
+            </span>
+            <span class="nm">New review requested of me</span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--danger-bg);color:var(--danger)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 4l10 10M13 4l-10 10"/></svg>
+            </span>
+            <span class="nm">Changes requested on my PR</span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--info-bg);color:var(--info)">@</span>
+            <span class="nm">@mention in PR / comment / review</span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--info-bg);color:var(--info)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 8h10M3 5h8M3 11h6"/></svg>
+            </span>
+            <span class="nm">Comment posted on a thread I'm in</span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle"></span></span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--danger-bg);color:var(--danger)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 4l10 10M13 4l-10 10"/></svg>
+            </span>
+            <span class="nm">CI failed on my PR</span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle on"></span></span>
+          </div>
+          <div class="notif-row" style="grid-template-columns:24px 1fr 80px 60px">
+            <span class="icn" style="background:var(--merged-bg);color:var(--merged)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="10" r="1.5"/><path d="M4 5.5v5M5.5 4h2a3 3 0 013 3v1.5"/></svg>
+            </span>
+            <span class="nm">My PR was merged or closed</span>
+            <span style="display:flex;justify-content:center"><span class="toggle"></span></span>
+            <span style="display:flex;justify-content:center"><span class="toggle"></span></span>
+          </div>
+          <div class="set-row" style="background:var(--bg-2)">
+            <div>
+              <div class="nm">Quiet hours</div>
+              <div class="desc">Suppress desktop toasts during this window — in-app badges still update.</div>
+            </div>
+            <div class="quiet">
+              <input class="input input-mono" value="18:00" style="height:28px;width:80px;text-align:center">
+              <span class="arrow">→</span>
+              <input class="input input-mono" value="09:00" style="height:28px;width:80px;text-align:center">
+              <span class="toggle on" style="margin-left:8px"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="text-align:center;color:var(--text-faint);font-family:var(--font-mono);font-size:10px;letter-spacing:1px;padding:12px 0 0">
+        PRISM 1.0.0 · BUILD 142a — &nbsp;UPDATED 2 DAYS AGO
+      </div>
+    </section>
+  </div>
+</div>
+</body>
+</html>
