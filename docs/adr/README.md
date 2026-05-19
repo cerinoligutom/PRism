@@ -15,6 +15,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0005](0005-pat-auth-and-keychain-storage.md) | Authentication: PAT-only stored in OS keychain | Accepted | [#4](https://github.com/cerinoligutom/PRism/issues/4) |
 | [0006](0006-graphql-first-rest-fallback.md) | GitHub API: GraphQL-first with REST fallback | Accepted | [#5](https://github.com/cerinoligutom/PRism/issues/5) |
 | [0007](0007-status-timeline-from-timeline-events-api.md) | Status timeline derived from the timeline events API | Accepted | [#6](https://github.com/cerinoligutom/PRism/issues/6) |
+| [0008](0008-wiki-auto-deploy.md) | Auto-deploy `docs/wiki/` to the GitHub wiki via Actions | Accepted | [#16](https://github.com/cerinoligutom/PRism/issues/16) |
 
 ## Statuses
 
