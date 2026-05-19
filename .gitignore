@@ -1,0 +1,45 @@
+# OS / editor / misc
+**/.DS_Store
+**/Thumbs.db
+**/.idea
+**/.vscode
+**/*.log
+**/*.log.*
+**/*.bak
+**/*.swp
+**/*.swo
+**/*.tmp
+**/*.tmp.*
+**/.env
+**/.env.local
+**/.env.*.local
+**/private*
+
+# Node / Vite
+**/node_modules
+**/dist
+**/build
+**/.vite
+
+# Rust / Cargo
+**/target
+**/Cargo.lock.bak
+**/*.pdb
+
+# Tauri
+**/src-tauri/target
+**/src-tauri/gen
+**/src-tauri/WixTools
+**/src-tauri/.cargo
+**/.tauri
+
+# Python (in case any tooling scripts use it)
+**/.venv
+**/venv
+**/__pycache__
+**/.pytest_cache
+**/.coverage
+
+# Plan files (Claude Code workspace artefacts that occasionally land here)
+.plan
+.plans

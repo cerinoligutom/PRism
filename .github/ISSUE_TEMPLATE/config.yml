@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation / wiki
+    url: https://github.com/cerinoligutom/PRism/wiki
+    about: Architecture, getting started, conventions, FAQ.
+  - name: Roadmap (kanban)
+    url: https://github.com/users/cerinoligutom/projects/7
+    about: See what's planned, in flight, and recently shipped.
