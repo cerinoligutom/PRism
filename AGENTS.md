@@ -14,6 +14,7 @@ PRism uses Claude Code as its primary coding assistant; the full ruleset is in [
 
 - **Conventional Commits** on every commit and PR title. PRs are squash-merged, so the PR title becomes the commit on `main`.
 - **Link to a GitHub issue** in every PR — `Closes #N` or `Refs #N`. If no issue exists for the work, open one first.
+- **Set the PR's assignee and labels at creation time** — `--assignee @me` plus the matching `type:*`, `scope:*` (where applicable), and `priority:*` (propagated from the linked issue). Full rule in [CONTRIBUTING.md → PR assignees and labels](CONTRIBUTING.md#pr-assignees-and-labels).
 - **Write an ADR** for non-trivial decisions (stack, storage, sync, security, API protocol, library choice with downstream impact). Use [`docs/adr/0000-template.md`](docs/adr/0000-template.md).
 - **Never commit secrets.** PATs live in the OS keychain via Tauri secure storage — nowhere else.
 - **Australian English** in prose, comments, and identifiers.

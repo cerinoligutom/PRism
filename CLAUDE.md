@@ -16,6 +16,17 @@ PRism is a cross-platform desktop dashboard for managing GitHub pull requests. T
 
 Every commit message and every PR title is a [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/). Because `main` only receives squash merges, **the PR title becomes the commit on `main`** — don't open a PR with a non-CC title. Full type / scope catalogue and examples are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### PR assignees and labels — always at creation time
+
+Every `gh pr create` (or web-UI / agent equivalent) must include the assignee and the matching labels in the same call that opens the PR. Applying them after the fact fires project-board workflows in the wrong order.
+
+- `--assignee @me` — assigns the PR to the opener.
+- `--label "type:<x>"` — one or more `type:*` labels matching the Conventional Commit prefix in the title (plus any extra types ticked in the PR body's "Type of change" checklist).
+- `--label "scope:<x>"` — when the work cleanly maps to a seeded scope (`ui`, `sync`, `db`, `auth`, `tauri`, `github`, `notif`, `settings`). Skip for cross-cutting or docs-only PRs.
+- `--label "priority:<x>"` — propagated from the highest-priority linked issue, if any.
+
+Full rule and a worked example: [CONTRIBUTING.md → PR assignees and labels](CONTRIBUTING.md#pr-assignees-and-labels).
+
 ### Architectural Decision Records
 
 Non-trivial decisions (stack, storage, sync, security, API protocol, library choice with downstream impact) get an ADR in [`docs/adr/`](docs/adr/). Use the template at `docs/adr/0000-template.md`. Every ADR links a GitHub issue (`Issue: #N`). The full workflow is in [CONTRIBUTING.md](CONTRIBUTING.md#adr-process). When you would otherwise write "we chose X because..." in a code comment or commit body, write an ADR instead.

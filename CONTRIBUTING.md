@@ -77,13 +77,33 @@ build(tauri): bump tauri to 2.0.0
 1. Open or claim an issue. If the work is non-trivial and isn't covered by an existing issue, open one first using the appropriate template — this keeps the kanban board honest.
 2. Branch from `main`.
 3. Make the change. Keep PRs focused and reviewable; if a slice is growing past ~400 lines of diff, split it.
-4. Open a PR. The PR title is a Conventional Commit (e.g. `feat(github): GraphQL query for review thread resolution`).
+4. Open a PR. The PR title is a Conventional Commit (e.g. `feat(github): GraphQL query for review thread resolution`). Set the assignee and apply labels at creation time — see [PR assignees and labels](#pr-assignees-and-labels) below.
 5. Fill in every section of the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Empty test plans get bounced.
 6. If the change makes a non-trivial decision, add the ADR in the same PR. Link it from the PR description.
 7. Resolve all review threads before merging.
 8. Merge via **Squash and merge**. The PR title and body become the squash commit message — no further editing needed.
 
 `main` requires squash merges, linear history, conversation resolution, and no force pushes. Direct pushes to `main` are forbidden.
+
+### PR assignees and labels
+
+Every PR — whether opened by a human or an AI agent — must set its assignee and apply the right labels **at creation time**, not after. This applies to `gh pr create`, the GitHub web UI, or any agent-driven flow.
+
+- **Assignee:** the PR opener (`--assignee @me` on the CLI).
+- **`type:*` label(s):** at minimum the one matching the Conventional Commit prefix in the title. Add a second `type:*` if the PR body's "Type of change" checklist ticks more than one (for example a `ci(...)` PR that also lands an ADR + CONTRIBUTING update is `type:ci` + `type:docs`).
+- **`scope:*` label:** if the work cleanly maps to one of the seeded scopes (`scope:ui`, `scope:sync`, `scope:db`, `scope:auth`, `scope:tauri`, `scope:github`, `scope:notif`, `scope:settings`). Cross-cutting or docs-only PRs skip the scope label.
+- **`priority:*` label:** propagated from the highest-priority linked issue, if any. PRs without a priority-bearing linked issue skip this label.
+
+Worked example: a PR titled `feat(auth): persist PAT in keychain` that closes a `priority:p1` issue is opened with
+
+```bash
+gh pr create --assignee @me \
+  --label "type:feat,scope:auth,priority:p1" \
+  --title "feat(auth): persist PAT in keychain" \
+  --body "<...>"
+```
+
+Why at creation time and not after: applying labels post-create can fire project-board workflows out of order (the "Item added to project" workflow sees an unlabelled item first), and assignees drive the board's "My items" view from the moment the PR exists.
 
 ## ADR process
 
