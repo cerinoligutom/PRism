@@ -126,20 +126,34 @@ To supersede an ADR, write a new one and set the old one's status to `Superseded
 
 ## Wiki
 
-Authoritative wiki source lives in [`docs/wiki/`](docs/wiki/) so changes go through PR review. The published wiki at <https://github.com/cerinoligutom/PRism/wiki> is mirrored from there.
+Authoritative wiki source lives in [`docs/wiki/`](docs/wiki/) so changes go through PR review. The published wiki at <https://github.com/cerinoligutom/PRism/wiki> is **mirrored automatically** by [`.github/workflows/wiki-sync.yml`](.github/workflows/wiki-sync.yml) on every push to `main` that touches `docs/wiki/`. The workflow can also be triggered manually from the Actions tab (`workflow_dispatch`).
 
-To mirror after a PR lands:
+Don't edit the published wiki directly — the next sync overwrites it. Edit `docs/wiki/`, open a PR, and the sync runs on merge.
+
+### One-time setup
+
+The workflow needs two prerequisites; they only have to be done once.
+
+1. **Initialise the wiki repo.** GitHub doesn't create the wiki's underlying git repo until a first page exists. Visit <https://github.com/cerinoligutom/PRism/wiki> and create any placeholder page through the UI — the next sync overwrites it.
+2. **Create the `WIKI_TOKEN` secret.** Generate a fine-grained PAT at <https://github.com/settings/personal-access-tokens/new> scoped only to this repository, with **Repository permissions → Contents: Read and write**. Set an expiry that fits your rotation cadence. Add it as a repo secret named `WIKI_TOKEN` at <https://github.com/cerinoligutom/PRism/settings/secrets/actions>.
+
+### Wiki page names
+
+GitHub turns hyphens into spaces, so `Getting-Started.md` becomes the page **Getting Started**.
+
+### Manual fallback
+
+If the workflow is offline (token expired, wiki repo wedged), a one-shot manual sync still works:
 
 ```bash
+SHA=$(git rev-parse --short HEAD)
 git clone git@github.com:cerinoligutom/PRism.wiki.git /tmp/PRism.wiki
-cp docs/wiki/*.md /tmp/PRism.wiki/
+rsync -av --delete --exclude='.git' docs/wiki/ /tmp/PRism.wiki/
 cd /tmp/PRism.wiki
 git add -A
-git commit -m "sync from docs/wiki@<short-sha>"
+git commit -m "sync from docs/wiki@${SHA}"
 git push
 ```
-
-Wiki page names follow GitHub's convention: hyphens become spaces in titles, so `Getting-Started.md` becomes the page **Getting Started**.
 
 ## Issues
 

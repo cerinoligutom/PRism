@@ -1,0 +1,62 @@
+name: Sync wiki
+
+# Mirrors docs/wiki/ in the main repo to the PRism wiki repo on every push
+# to main that touches the wiki source. See docs/adr/0008-wiki-auto-deploy.md.
+#
+# Prereqs (one-time):
+#   1. Wiki must be initialised through the GitHub UI (create any first page).
+#   2. Repo secret WIKI_TOKEN must exist: a fine-grained PAT scoped to this
+#      repo with Contents: Read and write permission.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repo (sparse)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: docs/wiki
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout wiki repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          token: ${{ secrets.WIKI_TOKEN }}
+          path: wiki
+          persist-credentials: true
+
+      - name: Mirror docs/wiki/ to wiki working tree
+        run: |
+          rsync -av --delete --exclude='.git' docs/wiki/ wiki/
+
+      - name: Commit and push if changed
+        working-directory: wiki
+        env:
+          SHA: ${{ github.sha }}
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki already up to date."
+            exit 0
+          fi
+          git add -A
+          git commit -m "sync from docs/wiki@${SHA:0:7}"
+          git push
