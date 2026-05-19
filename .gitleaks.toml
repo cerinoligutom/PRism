@@ -1,0 +1,18 @@
+# Gitleaks allowlist for PRism.
+# Add verified false positives here with a comment explaining why.
+
+[allowlist]
+  paths = [
+    # Documentation snippets that include placeholder tokens (e.g. "ghp_xxxxxx").
+    '''docs/wiki/.*\.md''',
+    '''docs/adr/.*\.md''',
+    '''CONTRIBUTING\.md''',
+    '''CLAUDE\.md''',
+    '''AGENTS\.md''',
+  ]
+
+  # Common placeholder shapes used in onboarding docs that look like PATs.
+  regexes = [
+    '''ghp_xxxx[A-Za-z0-9]*''',
+    '''github_pat_xxxx[A-Za-z0-9_]*''',
+  ]
