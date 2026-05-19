@@ -1,0 +1,2 @@
+resources/outputs/*
+!resources/outputs/.gitkeep
