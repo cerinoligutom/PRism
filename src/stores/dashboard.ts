@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Router } from "vue-router";
 
 import { useAppearanceStore, type Density } from "@/stores/appearance";
 
@@ -152,6 +153,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const loading = ref(false);
   const lastError = ref<string | null>(null);
 
+  // PR currently expanded in the drawer host. `null` keeps the drawer closed.
+  // The `'route'` surface navigates instead of mutating this; the drawer host
+  // reads this ref directly to decide its open state.
+  const expandedPullRequestId = ref<number | null>(null);
+
   let statusUnlisten: UnlistenFn | null = null;
 
   // Keep the in-store density mirror aligned with the persisted Appearance
@@ -280,6 +286,30 @@ export const useDashboardStore = defineStore("dashboard", () => {
     void load();
   }
 
+  /**
+   * Open a PR via the active detail surface from the appearance store.
+   * - `'drawer'` sets `expandedPullRequestId` so the drawer host mounts it.
+   * - `'route'` navigates to the named `pr-detail` route, preserving the
+   *   current view in the URL.
+   * - `'inline'` is reserved for a post-M3 follow-up host; we coerce it to
+   *   the drawer for now so the runtime path stays valid even if a stale
+   *   persisted value sneaks through.
+   */
+  function openPullRequest(pr: DashboardPullRequest, router: Router): void {
+    if (appearance.prDetailSurface === "route") {
+      void router.push({
+        name: "pr-detail",
+        params: { view: view.value, id: pr.id },
+      });
+      return;
+    }
+    expandedPullRequestId.value = pr.id;
+  }
+
+  function closeExpanded(): void {
+    expandedPullRequestId.value = null;
+  }
+
   async function bind(): Promise<void> {
     if (statusUnlisten !== null) return;
     // Refresh on each completed cycle so the dashboard reflects the latest
@@ -312,6 +342,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     pullRequests,
     loading,
     lastError,
+    expandedPullRequestId,
     viewLabel,
     groups,
     counts,
@@ -320,6 +351,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setGroup,
     setDensity,
     setAccountFilter,
+    openPullRequest,
+    closeExpanded,
     bind,
     unbind,
     clearError,

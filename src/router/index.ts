@@ -38,6 +38,15 @@ export const router = createRouter({
       meta: { dashboardView: "team" satisfies DashboardViewName },
     },
     {
+      // Detail-surface route host for `prDetailSurface = 'route'`. The view
+      // param keeps the back-button breadcrumb honest about which list the
+      // user came from; the id resolves the PR.
+      path: "/dashboard/:view/pr/:id",
+      name: "pr-detail",
+      component: () => import("@/views/PullRequestDetailView.vue"),
+      props: (route) => ({ pullRequestId: Number(route.params.id) }),
+    },
+    {
       path: "/onboarding",
       name: "onboarding",
       component: () => import("@/views/OnboardingView.vue"),

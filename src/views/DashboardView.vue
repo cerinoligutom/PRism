@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, watch } from "vue";
-import { useRoute } from "vue-router";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useRoute, useRouter } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PullRequestRow from "@/components/dashboard/PullRequestRow.vue";
 import GroupHeader from "@/components/dashboard/GroupHeader.vue";
 import DensityToggle from "@/components/dashboard/DensityToggle.vue";
 import GroupSelector from "@/components/dashboard/GroupSelector.vue";
+import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import {
   useDashboardStore,
@@ -18,6 +18,7 @@ import {
 import type { Density } from "@/stores/appearance";
 
 const route = useRoute();
+const router = useRouter();
 const dashboard = useDashboardStore();
 const accounts = useAccountsStore();
 
@@ -39,14 +40,15 @@ async function syncFromRoute(): Promise<void> {
   await dashboard.setView(next);
 }
 
-async function openPullRequest(pr: DashboardPullRequest): Promise<void> {
-  try {
-    await openUrl(pr.url);
-  } catch (err) {
-    // No toast layer yet (M4). Log so the failure is visible in dev tools
-    // rather than silently swallowed.
-    console.error("Failed to open pull request URL", pr.url, err);
-  }
+function openPullRequest(pr: DashboardPullRequest): void {
+  // Reka's DialogContent captures `document.activeElement` on mount as the
+  // restore target, then refocuses it on unmount — so the row that emitted
+  // `open` keeps focus when the drawer dismisses without us tracking it.
+  dashboard.openPullRequest(pr, router);
+}
+
+function closeDrawer(): void {
+  dashboard.closeExpanded();
 }
 
 async function refresh(): Promise<void> {
@@ -197,6 +199,11 @@ watch(() => route.meta?.dashboardView, () => {
         />
       </section>
     </div>
+
+    <PullRequestDrawer
+      :pull-request-id="dashboard.expandedPullRequestId"
+      @close="closeDrawer"
+    />
   </section>
 </template>
 

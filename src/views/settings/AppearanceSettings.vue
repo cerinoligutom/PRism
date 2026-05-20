@@ -6,6 +6,7 @@ import {
   useAppearanceStore,
   type AccentHue,
   type Density,
+  type PrDetailSurface,
   type ThemeMode,
 } from "@/stores/appearance";
 
@@ -33,6 +34,29 @@ const DENSITY_OPTIONS: readonly DensityOption[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "roomy", label: "Roomy" },
 ];
+
+interface SurfaceOption {
+  readonly value: PrDetailSurface;
+  readonly label: string;
+  readonly disabled: boolean;
+  readonly hint?: string;
+}
+
+const SURFACE_OPTIONS: readonly SurfaceOption[] = [
+  { value: "drawer", label: "Drawer", disabled: false },
+  { value: "route", label: "Detail page", disabled: false },
+  {
+    value: "inline",
+    label: "Inline expansion",
+    disabled: true,
+    hint: "Coming soon",
+  },
+];
+
+function onSurfaceClick(option: SurfaceOption): void {
+  if (option.disabled) return;
+  appearance.setPrDetailSurface(option.value);
+}
 
 interface AccentSwatch {
   readonly key: string;
@@ -162,6 +186,37 @@ function onHueInput(event: Event): void {
               @click="appearance.setDensity(option.value)"
             >
               {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div>
+            <div class="set-row__name">PR detail surface</div>
+            <div class="set-row__desc">
+              How a PR opens when you activate a row. Inline expansion is on the
+              roadmap and reserved here so the setting persists across the
+              upcoming release.
+            </div>
+          </div>
+          <div class="seg" role="radiogroup" aria-label="Pull request detail surface">
+            <button
+              v-for="option in SURFACE_OPTIONS"
+              :key="option.value"
+              type="button"
+              role="radio"
+              :aria-checked="appearance.prDetailSurface === option.value"
+              :aria-disabled="option.disabled || undefined"
+              :disabled="option.disabled"
+              :title="option.hint"
+              :class="{
+                active: appearance.prDetailSurface === option.value,
+                'seg__btn--disabled': option.disabled,
+              }"
+              @click="onSurfaceClick(option)"
+            >
+              {{ option.label }}
+              <span v-if="option.hint" class="seg__hint">({{ option.hint }})</span>
             </button>
           </div>
         </div>
@@ -488,5 +543,22 @@ function onHueInput(event: Event): void {
 .seg button:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.seg button.seg__btn--disabled,
+.seg button:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.seg button.seg__btn--disabled:hover {
+  color: var(--text-disabled);
+}
+
+.seg__hint {
+  margin-left: 4px;
+  font-size: var(--fs-10);
+  color: var(--text-faint);
+  font-weight: 400;
 }
 </style>
