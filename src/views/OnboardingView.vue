@@ -595,9 +595,15 @@ onUnmounted(() => {
 
 .onboarding__body {
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   display: flex;
   justify-content: center;
+  /* Don't stretch the step to the body's height — its column-flex children
+   * would then shrink to fit and clip overflow:hidden blocks like
+   * `.onboarding-scopes`. Letting the step take its content height means
+   * the body's overflow:auto scrolls the whole thing instead. */
+  align-items: flex-start;
 }
 
 .onboarding-step {
@@ -777,16 +783,16 @@ onUnmounted(() => {
 
 .onboarding-field__label {
   font-family: var(--font-mono);
-  font-size: var(--fs-10);
+  font-size: var(--fs-12);
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: var(--text-faint);
+  color: var(--text-mute);
 }
 
 .onboarding-field__hint {
   margin: 2px 0 0;
-  color: var(--text-faint);
-  font-size: var(--fs-11);
+  color: var(--text-mute);
+  font-size: var(--fs-12);
 }
 
 .onboarding-field__hint a {
