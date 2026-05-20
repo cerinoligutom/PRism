@@ -29,7 +29,12 @@ import { RouterLink, RouterView } from "vue-router";
           Repositories
         </RouterLink>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M3/M4">Sync &amp; data</span>
-        <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M3">Appearance</span>
+        <RouterLink to="/settings/appearance" class="nav-item" :class="{ active: $route.name === 'settings.appearance' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 010 10" fill="currentColor" /></svg>
+          </span>
+          Appearance
+        </RouterLink>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M5">Notifications</span>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M6">Views &amp; layout</span>
       </nav>

@@ -4,15 +4,17 @@ import { ref, watch } from "vue";
 export type ThemeMode = "dark" | "light" | "system";
 export type Density = "tight" | "comfortable" | "roomy";
 
-interface AccentHue {
-  /** OKLCH hue in degrees (0–360). */
+export interface AccentHue {
+  /** OKLCH hue in degrees (0-360). */
   h: number;
   /** OKLCH chroma. */
   c: number;
 }
 
-// Six accent presets curated to match the design system spectrum. Custom hues
-// can still be set via setAccent — the picker UI lands with #10.
+// Curated accent presets mirroring the swatch row in the design artboard
+// (docs/design/artboards/settings.html). Custom hues land via the slider
+// in AppearanceSettings.vue and pin chroma to the magenta default so the
+// downstream OKLCH-derived tokens stay in their tested envelope.
 export const ACCENT_PRESETS: Record<string, AccentHue> = {
   magenta: { h: 320, c: 0.14 },
   violet: { h: 270, c: 0.18 },
@@ -52,7 +54,13 @@ function prefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
-export const useThemeStore = defineStore("theme", () => {
+function clampHue(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_STATE.accent.h;
+  const wrapped = ((value % 360) + 360) % 360;
+  return Math.round(wrapped);
+}
+
+export const useAppearanceStore = defineStore("appearance", () => {
   const mode = ref<ThemeMode>(DEFAULT_STATE.mode);
   const density = ref<Density>(DEFAULT_STATE.density);
   const accent = ref<AccentHue>({ ...DEFAULT_STATE.accent });
@@ -88,10 +96,14 @@ export const useThemeStore = defineStore("theme", () => {
     accent.value = { ...stored.accent };
     applyToDocument();
 
-    if (typeof window !== "undefined" && mode.value === "system") {
+    // Always-on OS theme listener so switching to "system" mid-session also
+    // picks up subsequent OS theme changes without requiring re-hydration.
+    if (typeof window !== "undefined") {
       window
         .matchMedia("(prefers-color-scheme: dark)")
-        .addEventListener("change", applyToDocument);
+        .addEventListener("change", () => {
+          if (mode.value === "system") applyToDocument();
+        });
     }
   }
 
@@ -109,6 +121,9 @@ export const useThemeStore = defineStore("theme", () => {
   function setAccent(next: AccentHue): void {
     accent.value = { ...next };
   }
+  function setAccentHue(hue: number): void {
+    accent.value = { ...accent.value, h: clampHue(hue) };
+  }
 
   return {
     mode,
@@ -118,5 +133,6 @@ export const useThemeStore = defineStore("theme", () => {
     setMode,
     setDensity,
     setAccent,
+    setAccentHue,
   };
 });

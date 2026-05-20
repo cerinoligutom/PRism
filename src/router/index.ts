@@ -30,6 +30,11 @@ export const router = createRouter({
           name: "settings.repositories",
           component: () => import("@/views/settings/RepositoriesSettings.vue"),
         },
+        {
+          path: "appearance",
+          name: "settings.appearance",
+          component: () => import("@/views/settings/AppearanceSettings.vue"),
+        },
       ],
     },
   ],
