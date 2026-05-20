@@ -9,7 +9,7 @@ import {
   formatRelativeAgo,
   initials,
   secondsSince,
-} from "./_format";
+} from "@/lib/format";
 
 interface Props {
   threads: readonly PullRequestThread[];

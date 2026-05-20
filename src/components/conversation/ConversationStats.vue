@@ -3,7 +3,7 @@ import { computed } from "vue";
 
 import type { ConversationStats } from "@/types/conversation";
 
-import { EM_DASH, formatDurationParts, secondsSince } from "./_format";
+import { EM_DASH, formatDurationParts, secondsSince } from "@/lib/format";
 
 interface Props {
   stats: ConversationStats;

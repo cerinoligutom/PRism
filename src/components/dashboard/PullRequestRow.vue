@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
+import { avatarSeed, formatRelativeAgo, initials, secondsSince } from "@/lib/format";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
 import MergeableBadge from "./MergeableBadge.vue";
@@ -77,7 +78,7 @@ const changedFiles = computed<number | null>(
 );
 
 const updatedRelative = computed<string>(() =>
-  formatRelative(secondsSince(props.pullRequest.updated_at)),
+  formatRelativeAgo(props.pullRequest.updated_at),
 );
 
 const sinceLabel = computed<string>(() => sinceLabelFor(props.pullRequest));
@@ -88,24 +89,6 @@ const isStale = computed<boolean>(
 
 function formatNumber(value: number): string {
   return value.toLocaleString("en-AU");
-}
-
-function secondsSince(unix: number): number {
-  return Math.max(0, Math.floor(Date.now() / 1000 - unix));
-}
-
-function formatRelative(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    const remainder = minutes - hours * 60;
-    return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  const hourRemainder = hours - days * 24;
-  return hourRemainder > 0 ? `${days}d ${hourRemainder}h` : `${days}d`;
 }
 
 function sinceLabelFor(pr: DashboardPullRequest): string {
@@ -127,24 +110,6 @@ function onKey(event: KeyboardEvent): void {
     event.preventDefault();
     emit("open", props.pullRequest);
   }
-}
-
-/**
- * Avatar seed for the PR author — same hash as ReviewerStack. Kept local so
- * the two components don't depend on each other.
- */
-function avatarSeed(login: string): string {
-  let hash = 0;
-  for (let i = 0; i < login.length; i += 1) {
-    hash = (hash * 31 + login.charCodeAt(i)) | 0;
-  }
-  const slot = (Math.abs(hash) % 8) + 1;
-  return `av-${slot}`;
-}
-
-function authorInitials(login: string): string {
-  if (login.length === 0) return "?";
-  return login.slice(0, 2).toUpperCase();
 }
 </script>
 
@@ -188,7 +153,7 @@ function authorInitials(login: string): string {
         <span class="pr-row__sep" aria-hidden="true">·</span>
         <span class="pr-row__author">
           <span :class="['avatar', 'sm', avatarSeed(pullRequest.author_login), 'pr-row__author-avatar']">
-            {{ authorInitials(pullRequest.author_login) }}
+            {{ initials(pullRequest.author_login) }}
           </span>
           {{ pullRequest.author_login }}
         </span>

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DashboardPullRequest } from "@/types/dashboard";
 import type { TimelineEventRecord } from "@/types/conversation";
 
-import { formatRelativeAgo } from "./_format";
+import { formatRelativeAgo } from "@/lib/format";
 
 interface Props {
   pullRequest: DashboardPullRequest;
