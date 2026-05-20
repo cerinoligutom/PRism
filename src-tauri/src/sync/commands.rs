@@ -4,6 +4,8 @@
 //! state. `refresh_now` nudges one (or every) account to run a cycle
 //! immediately. Setting the poll interval is exposed for the Settings view.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -21,7 +23,7 @@ pub struct SyncStatusSnapshot {
 }
 
 #[tauri::command]
-pub fn get_sync_status(worker: State<'_, WorkerHandle>) -> SyncStatusSnapshot {
+pub fn get_sync_status(worker: State<'_, Arc<WorkerHandle>>) -> SyncStatusSnapshot {
     SyncStatusSnapshot {
         accounts: worker.state().snapshot_all(),
         interval_seconds: worker.config().interval_secs(),
@@ -44,7 +46,10 @@ pub struct RefreshNowResult {
 }
 
 #[tauri::command]
-pub fn refresh_now(worker: State<'_, WorkerHandle>, input: RefreshNowInput) -> RefreshNowResult {
+pub fn refresh_now(
+    worker: State<'_, Arc<WorkerHandle>>,
+    input: RefreshNowInput,
+) -> RefreshNowResult {
     let triggered = match input.account_id {
         Some(id) => {
             if worker.refresh_account(id) {
@@ -72,7 +77,7 @@ pub struct SetIntervalResult {
 /// the result echoes the value actually applied.
 #[tauri::command]
 pub fn set_sync_interval(
-    worker: State<'_, WorkerHandle>,
+    worker: State<'_, Arc<WorkerHandle>>,
     input: SetIntervalInput,
 ) -> SetIntervalResult {
     worker.config().set_interval(input.seconds);

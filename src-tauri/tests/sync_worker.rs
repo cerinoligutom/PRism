@@ -490,3 +490,56 @@ async fn no_repos_completes_cycle_without_calling_upstream() {
     let state: AccountSyncState = harness.state.snapshot(1).expect("state");
     assert_eq!(state.phase, prism_lib::sync::SyncPhase::Synced);
 }
+
+#[tokio::test]
+async fn add_account_hot_spawns_a_new_per_account_task() {
+    // Start the worker with no accounts. Verify nothing is tracked.
+    // Then hot-add an account via the public WorkerHandle::add_account hook
+    // and verify (a) refresh_account now finds it, and (b) the state map
+    // has a baseline entry for the new id.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let ctx = harness.ctx();
+    let worker = prism_lib::sync::spawn_worker(ctx);
+
+    assert!(!worker.refresh_account(7));
+    assert!(harness.state.snapshot(7).is_none());
+
+    // Seed the account so the worker task can find it in the store on its
+    // first cycle (the hot-add path stages the task; it reads metadata from
+    // the store at run time, same as the startup path).
+    let account = seed_account(&harness, 7, "carol");
+    assert!(worker.add_account(account.clone()));
+    // A second add for the same id should be a no-op.
+    assert!(!worker.add_account(account.clone()));
+
+    // refresh_account succeeds → the slot exists.
+    assert!(worker.refresh_account(7));
+    // State map seeded with the baseline.
+    let state = harness.state.snapshot(7).expect("baseline state seeded");
+    assert_eq!(state.phase, prism_lib::sync::SyncPhase::Idle);
+
+    worker.shutdown();
+}
+
+#[tokio::test]
+async fn remove_account_cancels_task_and_clears_state() {
+    // Hot-add then hot-remove: the slot disappears and the state map forgets.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    // Spawn first (empty store) so the hot-add path is exercised explicitly,
+    // not the startup auto-discovery branch.
+    let ctx = harness.ctx();
+    let worker = prism_lib::sync::spawn_worker(ctx);
+    let account = seed_account(&harness, 9, "dora");
+    assert!(worker.add_account(account.clone()));
+
+    assert!(worker.remove_account(9));
+    // Removing twice is a no-op (returns false).
+    assert!(!worker.remove_account(9));
+    // refresh_account no longer finds it; state map forgot it.
+    assert!(!worker.refresh_account(9));
+    assert!(harness.state.snapshot(9).is_none());
+
+    worker.shutdown();
+}

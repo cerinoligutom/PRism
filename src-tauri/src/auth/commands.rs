@@ -6,12 +6,31 @@
 //! see tokens at all.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use thiserror::Error;
+
+/// Hot-add / hot-remove hook called by the auth commands so the sync worker
+/// (or anything else that cares about the account roster) can spin up / tear
+/// down per-account resources without waiting for the next app restart.
+///
+/// The trait is defined here in `auth` so this module has no compile-time
+/// dependency on `sync` — the implementation lives in `sync::worker`.
+pub trait AccountChangeListener: Send + Sync {
+    fn on_added(&self, account: &Account);
+    fn on_removed(&self, account_id: AccountId);
+}
+
+/// Default listener used when no live worker is wired (tests, headless dev).
+pub struct NoopAccountListener;
+
+impl AccountChangeListener for NoopAccountListener {
+    fn on_added(&self, _account: &Account) {}
+    fn on_removed(&self, _account_id: AccountId) {}
+}
 
 use crate::auth::keychain::OsKeychain;
 use crate::auth::store::{Account, AccountId, AccountStore, JsonAccountStore};
@@ -64,6 +83,10 @@ impl From<ValidationError> for AuthCommandError {
 pub struct AuthState {
     pub store: Arc<dyn AccountStore>,
     pub token_source: Arc<KeychainTokenSource<OsKeychain>>,
+    /// Set once during `lib.rs::setup` after the sync worker is constructed.
+    /// Reads return `None` until that wiring happens, which is fine — the
+    /// commands fall back to `NoopAccountListener` semantics in that window.
+    listener: OnceLock<Arc<dyn AccountChangeListener>>,
 }
 
 impl AuthState {
@@ -74,7 +97,26 @@ impl AuthState {
         Ok(Self {
             store: Arc::new(store),
             token_source: Arc::new(KeychainTokenSource::new(OsKeychain::new())),
+            listener: OnceLock::new(),
         })
+    }
+
+    /// Wire the account-change listener (e.g. the sync worker). Called once
+    /// during app setup. Subsequent calls are ignored.
+    pub fn set_listener(&self, listener: Arc<dyn AccountChangeListener>) {
+        let _ = self.listener.set(listener);
+    }
+
+    fn notify_added(&self, account: &Account) {
+        if let Some(l) = self.listener.get() {
+            l.on_added(account);
+        }
+    }
+
+    fn notify_removed(&self, account_id: AccountId) {
+        if let Some(l) = self.listener.get() {
+            l.on_removed(account_id);
+        }
     }
 }
 
@@ -125,6 +167,10 @@ pub async fn add_account(
         return Err(internal(&format!("persist account metadata: {e}")));
     }
 
+    // Hot-add the new account to the sync worker so it starts polling without
+    // waiting for an app restart. Best-effort; the listener swallows failures.
+    state.notify_added(&account);
+
     Ok(account)
 }
 
@@ -153,6 +199,11 @@ pub fn remove_account(state: State<'_, AuthState>, id: AccountId) -> Result<(), 
         .store
         .remove(id)
         .map_err(|_| AuthCommandError::Internal)?;
+
+    // Stop the sync worker's per-account loop for this id and clear its slot
+    // from the state map. Best-effort; the listener swallows failures.
+    state.notify_removed(id);
+
     Ok(())
 }
 
