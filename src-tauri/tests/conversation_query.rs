@@ -231,10 +231,58 @@ fn stats_comment_breakdown_counts_each_source() {
     let conn = db.lock().unwrap();
     let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
     let bd = &stats.comment_breakdown;
-    assert_eq!(bd.review, 6, "six review_comments seeded");
+    // `review` sums `reply_count + 1` per thread. Fixture has threads with
+    // reply_count = 1, 1, 0, 0 -> 2 + 2 + 1 + 1 = 6.
+    assert_eq!(bd.review, 6, "sum(reply_count + 1) across four threads");
     assert_eq!(bd.issue, 4, "issue_comments_count = 4");
     assert_eq!(bd.summary, 2, "two reviews with non-empty body");
     assert_eq!(bd.total, 12);
+}
+
+#[test]
+fn stats_comment_breakdown_review_uses_reply_count_without_review_comments() {
+    // Regression for issue #93: on a PR that has never had its drawer / route
+    // opened, the sync cycle populates `review_threads.reply_count` from
+    // `comments.totalCount - 1`, but `review_comments` stays empty until the
+    // lazy hydrator runs. Before this fix `comment_breakdown.review` counted
+    // rows in `review_comments` directly and rendered as zero pre-hydration.
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref,
+             issue_comments_count)
+            VALUES (600, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat', 0);
+         -- Three threads with reply_count 2, 1, 0 and ZERO review_comments
+         -- rows. Expected: review = (2+1) + (1+1) + (0+1) = 6.
+         INSERT INTO review_threads
+            (id, pull_request_id, is_resolved, is_outdated, original_line,
+             path, node_id, created_at, reply_count)
+            VALUES (1, 600, 0, 0, 1, 'f', 'A', 100, 2),
+                   (2, 600, 0, 0, 1, 'f', 'B', 200, 1),
+                   (3, 600, 0, 0, 1, 'f', 'C', 300, 0);",
+    )
+    .unwrap();
+    let comment_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM review_comments c
+               JOIN review_threads t ON t.id = c.review_thread_id
+              WHERE t.pull_request_id = 600",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(comment_rows, 0, "fixture seeds zero review_comments");
+    let stats = query::get_conversation_stats(&conn, 600).unwrap();
+    assert_eq!(
+        stats.comment_breakdown.review, 6,
+        "review count comes from sum(reply_count + 1), not review_comments rows"
+    );
 }
 
 #[test]
