@@ -16,7 +16,7 @@ import "@fontsource/jetbrains-mono/latin-600.css";
 
 import App from "./App.vue";
 import { router } from "./router";
-import { useThemeStore } from "./stores/theme";
+import { useAppearanceStore } from "./stores/appearance";
 
 import "./assets/styles/main.css";
 
@@ -28,6 +28,6 @@ app.use(router);
 
 // Apply persisted theme/accent/density to <html> before mount so the first
 // paint matches the user's last session.
-useThemeStore().hydrate();
+useAppearanceStore().hydrate();
 
 app.mount("#app");
