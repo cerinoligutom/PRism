@@ -183,7 +183,7 @@ function authorInitials(login: string): string {
             <circle cx="12" cy="6" r="1.5" />
             <path d="M4 4.5v7M4 8a4 4 0 004 4h0a4 4 0 004-4V7.5" stroke-linecap="round" />
           </svg>
-          {{ branchLabel }}
+          <span class="pr-row__branch-name">{{ branchLabel }}</span>
         </span>
         <span class="pr-row__sep" aria-hidden="true">·</span>
         <span class="pr-row__author">
@@ -330,6 +330,14 @@ function authorInitials(login: string): string {
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  min-width: 0;
+}
+
+.pr-row__branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .pr-row__sep {
