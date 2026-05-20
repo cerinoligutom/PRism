@@ -29,14 +29,14 @@ The decisions encoded here were agreed in the scoping discussion before this doc
 
 ### Deferred (do not implement)
 
-- **Inline expansion host** — reserved as the `'inline'` value on the `prDetailSurface` settings selector; not implemented in M3. Lands as a focused follow-up issue post-M3.
+- **Inline expansion host** — initially reserved as the `'inline'` value on the `prDetailSurface` settings selector; **cancelled before launch** per ADR 0011. Drawer + route cover the v1 detail-surface need; if demand surfaces post-launch, inline is re-introduced via a fresh ADR rather than inheriting the v1 reservation.
 - **Files tab / inline diff viewer** — post-v1 per the wiki roadmap.
 - **Comment composer / write actions** — out of scope for v1 (read-only).
 - **Per-check Checks expansion** — the dashboard-expanded artboard shows per-check rows; M3 keeps the existing `CiBadge` rollup. Lands in M6 polish.
 - **Read-state tracking / unread dots** — M4 (needs a separate spec).
 - **"Needs my attention" composite signal** — M4.
 
-The conversation content component (`PullRequestConversation.vue`) is host-agnostic so the deferred inline-expansion host wires it in without component rewrites.
+The conversation content component (`PullRequestConversation.vue`) is host-agnostic so any future host (e.g. a revived inline expansion) wires it in without component rewrites.
 
 ## Module layout
 
@@ -710,11 +710,12 @@ Invalidation hook: the existing `sync://status` event subscriber should call `in
 ### Appearance store extension (`src/stores/appearance.ts`)
 
 ```ts
-type PrDetailSurface = 'drawer' | 'route' | 'inline';
+type PrDetailSurface = 'drawer' | 'route';
 
 const surface = ref<PrDetailSurface>('drawer');
-// `'inline'` is reserved for the post-M3 follow-up host; selectable in
-// settings but disabled (the option is shown to advertise the planned UX).
+// An `'inline'` third surface was initially reserved here and cancelled
+// before launch (ADR 0011). Persisted `'inline'` values from earlier
+// builds are coerced back to `'drawer'` on hydrate.
 ```
 
 ### Dashboard store extension (`src/stores/dashboard.ts`)
@@ -781,13 +782,12 @@ E lands first; F rebases on top and imports E's content component. Alternatively
 
 | Surface | Lands in | Why |
 |---------|----------|-----|
-| Inline expansion host | post-M3 follow-up | Heavy DOM injection, focus management across compressed siblings, list-virtualisation interaction. Not the default surface; opt-in via the same settings selector. |
+| Inline expansion host | **cancelled (ADR 0011)** | Heavy DOM injection, focus management across compressed siblings, list-virtualisation interaction — for a non-default UX with no demand signal. Drawer + route are sufficient; revisit via a fresh ADR if user feedback changes that. |
 | Files tab / inline diff | post-v1 | Inline diff viewer is post-v1 per the wiki roadmap. |
 | Per-check Checks rows | M6 polish | Dashboard-expanded artboard shows per-check rows; M3 keeps the existing rollup `CiBadge`. |
 | Read-state tracking | M4 | Requires a separate spec for what counts as "read" and how the state is stored. |
 | "Needs my attention" composite | M4 | Composite signal — needs the threads-involved data this contract delivers plus M4-only signals. |
 | Comment composer / write actions | post-v1 | v1 is read-only. |
-| `prDetailSurface = 'inline'` activation | post-M3 follow-up | Implementation gap only — the settings value is reserved in M3. |
 
 ## Implementation notes that aren't part of the interface
 

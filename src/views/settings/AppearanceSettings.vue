@@ -38,23 +38,14 @@ const DENSITY_OPTIONS: readonly DensityOption[] = [
 interface SurfaceOption {
   readonly value: PrDetailSurface;
   readonly label: string;
-  readonly disabled: boolean;
-  readonly hint?: string;
 }
 
 const SURFACE_OPTIONS: readonly SurfaceOption[] = [
-  { value: "drawer", label: "Drawer", disabled: false },
-  { value: "route", label: "Detail page", disabled: false },
-  {
-    value: "inline",
-    label: "Inline expansion",
-    disabled: true,
-    hint: "Coming soon",
-  },
+  { value: "drawer", label: "Drawer" },
+  { value: "route", label: "Detail page" },
 ];
 
 function onSurfaceClick(option: SurfaceOption): void {
-  if (option.disabled) return;
   appearance.setPrDetailSurface(option.value);
 }
 
@@ -194,9 +185,7 @@ function onHueInput(event: Event): void {
           <div>
             <div class="set-row__name">PR detail surface</div>
             <div class="set-row__desc">
-              How a PR opens when you activate a row. Inline expansion is on the
-              roadmap and reserved here so the setting persists across the
-              upcoming release.
+              How a PR opens when you activate a row.
             </div>
           </div>
           <div class="seg" role="radiogroup" aria-label="Pull request detail surface">
@@ -206,17 +195,10 @@ function onHueInput(event: Event): void {
               type="button"
               role="radio"
               :aria-checked="appearance.prDetailSurface === option.value"
-              :aria-disabled="option.disabled || undefined"
-              :disabled="option.disabled"
-              :title="option.hint"
-              :class="{
-                active: appearance.prDetailSurface === option.value,
-                'seg__btn--disabled': option.disabled,
-              }"
+              :class="{ active: appearance.prDetailSurface === option.value }"
               @click="onSurfaceClick(option)"
             >
               {{ option.label }}
-              <span v-if="option.hint" class="seg__hint">({{ option.hint }})</span>
             </button>
           </div>
         </div>
@@ -545,20 +527,4 @@ function onHueInput(event: Event): void {
   box-shadow: inset 0 0 0 2px var(--focus-ring);
 }
 
-.seg button.seg__btn--disabled,
-.seg button:disabled {
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
-
-.seg button.seg__btn--disabled:hover {
-  color: var(--text-disabled);
-}
-
-.seg__hint {
-  margin-left: 4px;
-  font-size: var(--fs-10);
-  color: var(--text-faint);
-  font-weight: 400;
-}
 </style>

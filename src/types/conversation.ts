@@ -102,7 +102,7 @@ export interface HydratedConversation {
 }
 
 /**
- * Detail-surface selector value. The `inline` variant is reserved for the
- * post-M3 follow-up host; the settings selector renders it as disabled.
+ * Detail-surface selector value. Inline expansion was considered as a
+ * third surface and cancelled before launch — see ADR 0011.
  */
-export type PrDetailSurface = "drawer" | "route" | "inline";
+export type PrDetailSurface = "drawer" | "route";
