@@ -1,10 +1,7 @@
 /**
- * Shared formatting helpers for the conversation surface. Co-located with the
- * five `.vue` files that use them rather than promoted to a global util,
- * because the conversation tabs are the only consumers in M3.
- *
- * The `_` prefix marks this as private to the conversation directory; callers
- * outside `src/components/conversation/` should not import it.
+ * Shared formatting helpers for relative timestamps, durations, and the
+ * deterministic avatar palette / initials used across the dashboard row and
+ * the conversation surface.
  */
 
 const SECOND = 1;
@@ -26,9 +23,8 @@ export function secondsSince(unixSeconds: number): number {
 }
 
 /**
- * Render a duration in seconds as a short relative label. Matches the
- * `formatRelative` shape in `PullRequestRow.vue`: `45s`, `12m`, `3h 4m`,
- * `2d 6h`.
+ * Render a duration in seconds as a short relative label: `45s`, `12m`,
+ * `3h 4m`, `2d 6h`.
  */
 export function formatDuration(seconds: number): string {
   if (seconds < MINUTE) return `${seconds}s`;

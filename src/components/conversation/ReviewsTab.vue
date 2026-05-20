@@ -3,7 +3,7 @@ import { computed } from "vue";
 
 import type { PullRequestReview } from "@/types/conversation";
 
-import { avatarSeed, formatRelativeAgo, initials } from "./_format";
+import { avatarSeed, formatRelativeAgo, initials } from "@/lib/format";
 
 interface Props {
   reviews: readonly PullRequestReview[];

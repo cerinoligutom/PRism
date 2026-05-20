@@ -3,7 +3,7 @@ import { computed } from "vue";
 
 import type { DashboardPullRequest } from "@/types/dashboard";
 
-import { formatRelativeAgo } from "./_format";
+import { formatRelativeAgo } from "@/lib/format";
 
 interface Props {
   pullRequest: DashboardPullRequest;
