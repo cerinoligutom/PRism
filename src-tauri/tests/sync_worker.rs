@@ -294,6 +294,71 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
     assert_eq!(event_type.as_deref(), Some("reopened"));
     assert!(at.is_some(), "latest_status_change_at must be set");
 
+    // Dashboard enrichments from the detail fixture (mergeable, sizes, CI rollup).
+    type Enrichments = (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let row: Enrichments = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT mergeable, review_decision, additions, deletions, changed_files,
+                    ci_state, ci_total, ci_passing
+               FROM pull_requests WHERE id = 999",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0.as_deref(), Some("MERGEABLE"));
+    assert_eq!(row.1.as_deref(), Some("APPROVED"));
+    assert_eq!(row.2, Some(120));
+    assert_eq!(row.3, Some(30));
+    assert_eq!(row.4, Some(5));
+    assert_eq!(row.5.as_deref(), Some("SUCCESS"));
+    assert_eq!(row.6, Some(3));
+    assert_eq!(row.7, Some(3));
+
+    // Requested reviewers reflect the fixture (user + team).
+    let reviewers: Vec<(String, String)> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT login, reviewer_type FROM requested_reviewers
+                  WHERE pull_request_id = 999 ORDER BY reviewer_type, login",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        reviewers,
+        vec![
+            ("platform".to_string(), "team".to_string()),
+            ("dave".to_string(), "user".to_string()),
+        ]
+    );
+
     // Status event fired at least twice (Syncing + Synced).
     assert!(harness.emit.count("sync://status") >= 2);
     assert_eq!(harness.reauth.count(), 0);
