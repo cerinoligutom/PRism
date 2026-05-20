@@ -36,7 +36,7 @@ const MAX_THREAD_COMMENTS: usize = 200;
 const MAX_ISSUE_COMMENTS: usize = 200;
 
 /// List per-thread state for a PR. Reads from the local cache only; no network
-/// round-trip. The optional `account_id` resolves the `is_you_in` marker.
+/// round-trip. The optional `account_id` resolves the `is_involved` marker.
 #[tauri::command]
 pub fn list_pr_threads(
     pull_request_id: i64,

@@ -35,8 +35,10 @@ export interface CiSummary {
 
 export interface ThreadsSummary {
   readonly total: number;
-  readonly unresolved: number;
-  readonly involved: number;
+  readonly unresolved_involved: number;
+  readonly unresolved_uninvolved: number;
+  readonly resolved_involved: number;
+  readonly resolved_uninvolved: number;
 }
 
 export interface ReviewerEntry {

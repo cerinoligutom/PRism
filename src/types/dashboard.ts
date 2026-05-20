@@ -35,13 +35,18 @@ export interface CiSummary {
  * Per-PR review-thread rollup pre-aggregated by the sync cycle. `null` on the
  * parent DTO when the PR has never had a thread; the frontend renders the
  * muted em-dash state in that case. See `docs/contracts/conversation-depth.md`
- * "Dashboard rollup" and ADR 0010.
+ * "Dashboard rollup", ADR 0010, and ADR 0012 (four-bucket redesign).
+ *
+ * The four bucket fields are disjoint over the full thread set (including
+ * outdated). `total` equals the sum of the four. Outdated threads sort into
+ * whichever bucket matches their (resolved x involved) state.
  */
 export interface ThreadsSummary {
   readonly total: number;
-  readonly unresolved: number;
-  /** Threads where the active account has at least one comment. */
-  readonly involved: number;
+  readonly unresolved_involved: number;
+  readonly unresolved_uninvolved: number;
+  readonly resolved_involved: number;
+  readonly resolved_uninvolved: number;
 }
 
 export interface ReviewerEntry {

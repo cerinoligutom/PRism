@@ -14,6 +14,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0002_dashboard_fields.sql"),
     include_str!("../../migrations/0003_accounts_expires_at.sql"),
     include_str!("../../migrations/0004_conversation_depth.sql"),
+    include_str!("../../migrations/0005_threads_breakdown.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -243,8 +244,10 @@ mod tests {
         let conn = fresh();
         let expected = [
             "threads_total",
-            "threads_unresolved",
-            "threads_involved",
+            "threads_unresolved_involved",
+            "threads_unresolved_uninvolved",
+            "threads_resolved_involved",
+            "threads_resolved_uninvolved",
             "issue_comments_count",
         ];
         let mut stmt = conn
@@ -264,6 +267,28 @@ mod tests {
     }
 
     #[test]
+    fn retired_threads_rollup_columns_are_gone() {
+        // 0005 drops the v4 `threads_unresolved` and `threads_involved`
+        // columns. Assert they no longer exist so a regression that resurrects
+        // them under a stale migration doesn't slip past CI.
+        let conn = fresh();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_requests')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for retired in ["threads_unresolved", "threads_involved"] {
+            assert!(
+                !names.iter().any(|n| n == retired),
+                "retired column resurrected: {retired}"
+            );
+        }
+    }
+
+    #[test]
     fn threads_rollup_defaults_to_zero() {
         let conn = fresh();
         conn.execute_batch(
@@ -278,17 +303,33 @@ mod tests {
         )
         .unwrap();
 
-        let (total, unresolved, involved, issue_count): (i64, i64, i64, i64) = conn
+        let (total, ui, uu, ri, ru, issue_count): (i64, i64, i64, i64, i64, i64) = conn
             .query_row(
-                "SELECT threads_total, threads_unresolved, threads_involved, issue_comments_count
+                "SELECT threads_total,
+                        threads_unresolved_involved,
+                        threads_unresolved_uninvolved,
+                        threads_resolved_involved,
+                        threads_resolved_uninvolved,
+                        issue_comments_count
                    FROM pull_requests WHERE id = 100",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(total, 0);
-        assert_eq!(unresolved, 0);
-        assert_eq!(involved, 0);
+        assert_eq!(ui, 0);
+        assert_eq!(uu, 0);
+        assert_eq!(ri, 0);
+        assert_eq!(ru, 0);
         assert_eq!(issue_count, 0);
     }
 

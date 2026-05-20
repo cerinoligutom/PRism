@@ -14,7 +14,7 @@ The decisions encoded here were agreed in the scoping discussion before this doc
 - **Comment-fetch strategy is capped + lazy.** Sync cycle pulls thread headers + head comment + counts. Full comment bodies hydrated by a new `fetch_pr_conversation` Tauri command when the user opens the drawer / route.
 - **Row threads bar reads from pre-aggregated rollup columns** on `pull_requests`, mirroring M2's CI rollup. Same write path, same query layer.
 - **Reviews tab ships in M3.** Review bodies are needed anyway for the comment-type "summary" tile, so the UI cost is one component on top of free data.
-- **Outdated threads are counted but hidden by default** in the threads list, surfaced via a toggle.
+- **Outdated threads count like any other thread** (ADR 0012). They sort into one of the four `(resolved x involved)` bar buckets, count in the bar denominator, and the threads list always renders them with a dim treatment + `OUTDATED` badge. The earlier "hide outdated behind a toggle" stance is superseded.
 
 ## Scope
 
@@ -201,11 +201,31 @@ ALTER TABLE pull_requests ADD COLUMN threads_involved      INTEGER NOT NULL DEFA
 ALTER TABLE pull_requests ADD COLUMN issue_comments_count  INTEGER NOT NULL DEFAULT 0;
 ```
 
+**Superseded by `0005_threads_breakdown.sql` (ADR 0012).** The v4 rollup columns `threads_unresolved` and `threads_involved` were retired in v5 and replaced with the four-bucket breakdown:
+
+```sql
+-- src-tauri/migrations/0005_threads_breakdown.sql
+
+ALTER TABLE pull_requests
+    ADD COLUMN threads_unresolved_involved   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pull_requests
+    ADD COLUMN threads_unresolved_uninvolved INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pull_requests
+    ADD COLUMN threads_resolved_involved     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pull_requests
+    ADD COLUMN threads_resolved_uninvolved   INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE pull_requests DROP COLUMN threads_unresolved;
+ALTER TABLE pull_requests DROP COLUMN threads_involved;
+```
+
+The four bucket columns are disjoint over the full thread set (including outdated). `threads_total` equals their sum. `threads_outdated` is computed at stats-read time from `review_threads.is_outdated`; it never had a dedicated column.
+
 ### Rationale for the schema choices
 
 - **`node_id TEXT` as the upsert key.** GitHub's GraphQL `ReviewThread` exposes only the global node ID (a string); there's no `databaseId`. Keeping the existing `INTEGER PRIMARY KEY` for cheap foreign keys and adding `node_id TEXT UNIQUE` for upserts is cleaner than rewriting the PK. The same pattern extends to `review_comments`, `issue_comments`, and `reviews` for consistency.
 - **Partial unique index on `node_id`.** Migrating existing rows (`0001_init.sql` rows seeded by M1 tests, etc.) means `node_id` is NULL initially. A partial unique index lets us enforce uniqueness for populated rows without rejecting the NULLs.
-- **`is_outdated` separate from `is_resolved`.** GraphQL exposes them as orthogonal booleans; the threads-list UX hides outdated threads independently of resolution state. Counting math (below) treats outdated as non-active rather than as a resolution state.
+- **`is_outdated` separate from `is_resolved`.** GraphQL exposes them as orthogonal booleans. ADR 0012 reverses the original "outdated as non-active" stance: outdated threads now count in the bar denominator and sort into one of the four `(resolved x involved)` buckets by their own flags. The threads list still dims outdated rows visually + carries the `OUTDATED` badge but no longer hides them behind a toggle.
 - **Head-comment snapshot on the thread row.** The dashboard row needs a one-line preview without joining `review_comments`. Snapshot columns on the thread save the join and survive the lazy-hydration cycle (the snapshot persists even when the full comment array hasn't been hydrated yet).
 - **`reply_count` denormalised.** The threads list shows reply counts; pre-aggregating saves a sub-query per thread on every list render.
 - **Rollup columns on `pull_requests`.** Same pattern M2 established with `ci_total` / `ci_passing` — the dashboard row needs the counts without a sub-aggregation, and the worker already touches the PR row on every cycle.
@@ -318,7 +338,7 @@ Enrichment additions per PR:
 2. `write_pr_updates` upserts `review_threads` rows by `node_id`, populating timestamps + head-comment snapshot + reply count from `comments.totalCount`.
 3. `write_pr_updates` upserts `reviews` rows by `node_id`.
 4. `write_pr_updates` writes `pull_requests.issue_comments_count` from `issueComments.totalCount`.
-5. After all per-PR writes for a cycle, the worker recomputes `pull_requests.threads_total / threads_unresolved / threads_involved` from the just-written rows for that account. The recompute is a single SQL aggregation per PR (see "Dashboard rollup" below).
+5. After all per-PR writes for a cycle, the worker recomputes the five `pull_requests.threads_*` rollup columns (`threads_total` + the four `(resolved x involved)` buckets per ADR 0012) from the just-written rows for that account. The recompute is a single SQL aggregation per PR (see "Dashboard rollup" below).
 6. Threads / reviews removed on GitHub are pruned: any `review_threads` / `reviews` row whose `node_id` doesn't appear in the latest fetch is deleted. Comments cascade.
 7. `write_pr_updates` writes the qualifying timeline events to `timeline_events` after the latest-status-change derivation runs. Wipe-and-rewrite per PR per cycle: `DELETE FROM timeline_events WHERE pull_request_id = ?` followed by an `INSERT` per fetched event, all inside the existing transaction. The per-event `payload` JSON carries `{"state": "..."}` for `reviewed` events and `{}` otherwise. `events = None` (e.g. 304 on the REST timeline endpoint) leaves the cached rows untouched.
 
@@ -357,7 +377,7 @@ pub struct PullRequestThread {
     pub last_reply_at: Option<i64>,
     /// True when the active account's login appears as a comment author
     /// anywhere in this thread.
-    pub is_you_in: bool,
+    pub is_involved: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -373,16 +393,17 @@ pub struct ConversationStats {
     pub threads_unresolved: i64,
     pub threads_resolved: i64,
     pub threads_outdated: i64,
-    /// Oldest `review_threads.created_at` among non-resolved + non-outdated
-    /// threads. `None` when there are zero active threads.
+    /// Oldest `review_threads.created_at` among unresolved threads (outdated
+    /// or not, per ADR 0012). `None` when there are zero unresolved threads.
     pub oldest_unresolved_at: Option<i64>,
     /// Average gap (in seconds) between consecutive `review_comments.created_at`
     /// within each thread, averaged across threads with >= 2 comments.
     /// `None` when no thread has a reply yet.
     pub avg_response_seconds: Option<i64>,
-    /// `active_resolved / (total - outdated)`, where `active_resolved`
-    /// counts threads with `is_resolved = 1 AND is_outdated = 0`. `0.0`
-    /// when total-non-outdated is zero. Stays in `[0.0, 1.0]`.
+    /// `threads_resolved / threads_total` (ADR 0012). Outdated threads count
+    /// in both numerator and denominator according to their `is_resolved`
+    /// flag. Bounded `[0.0, 1.0]` by construction; `0.0` when
+    /// `threads_total` is zero.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
 }
@@ -506,11 +527,10 @@ SELECT MIN(created_at)
 FROM   review_threads
 WHERE  pull_request_id = ?
   AND  is_resolved = 0
-  AND  is_outdated = 0
   AND  created_at IS NOT NULL;
 ```
 
-Returned as a unix timestamp; frontend renders relative.
+Returned as a unix timestamp; frontend renders relative. ADR 0012 dropped the `is_outdated = 0` filter — an outdated thread that's still unresolved counts here too.
 
 ### Avg time-to-response
 
@@ -535,18 +555,17 @@ SELECT AVG(gap_seconds) FROM gaps WHERE gap_seconds IS NOT NULL;
 ### Resolution rate
 
 ```
-active_resolved / (total - outdated)
+resolved / total
 
-where  active_resolved = COUNT(*) WHERE is_resolved = 1 AND is_outdated = 0
-       outdated        = COUNT(*) WHERE is_outdated = 1
-       total           = COUNT(*)
+where  unresolved = COUNT(*) WHERE is_resolved = 0
+       resolved   = COUNT(*) WHERE is_resolved = 1
+       outdated   = COUNT(*) WHERE is_outdated = 1
+       total      = COUNT(*)
 ```
 
-The numerator is strict-active — threads that are *both* resolved AND outdated count only in the outdated bucket, not in the resolved numerator. GitHub's `isResolved` and `isOutdated` are orthogonal, so the resolved-and-outdated intersection is real; counting it in the numerator while excluding it from the denominator (the original implementation) made the rate overshoot 100% on PRs where code changes invalidated previously-resolved threads.
+ADR 0012 reversed the original "outdated excluded" stance. Outdated threads count in both numerator and denominator according to their own `is_resolved` flag — they aren't carved out. `unresolved` and `resolved` partition every thread by `is_resolved` alone; `outdated` overlaps both (still surfaced as a separate count for the stats tile). The bug class that landed `#91` is moot under the new model because `resolved <= total` by construction.
 
-The three visible buckets — `threads_unresolved`, `threads_resolved`, `threads_outdated` — are disjoint over the active set, so they line up with the threads-list "Show N outdated" toggle and the segmented threads bar.
-
-`0.0` when `(total - outdated)` is zero. Returned as a `f64` in `[0.0, 1.0]`; frontend renders as percent.
+`0.0` when `total` is zero. Returned as a `f64` in `[0.0, 1.0]`; frontend renders as percent.
 
 ### Comment-type breakdown
 
@@ -565,32 +584,43 @@ SELECT
 
 ## Dashboard rollup
 
-Wave 2-C writes the rollup columns inside `write_pr_updates` after the thread upserts have committed. One UPDATE per PR:
+`write_pr_updates` recomputes the rollup columns after the thread upserts have committed. One UPDATE per PR, gated on the active account so the `(resolved x involved)` split reflects whoever's syncing:
 
 ```sql
+WITH involvement AS (
+    SELECT t.id,
+           t.is_resolved,
+           EXISTS (
+               SELECT 1 FROM review_comments c
+                JOIN accounts a ON a.login = c.author_login
+                WHERE c.review_thread_id = t.id
+                  AND a.id = ?account_id
+           ) AS is_involved
+      FROM review_threads t
+     WHERE t.pull_request_id = ?pr_id
+)
 UPDATE pull_requests
-SET
-  threads_total = (
-    SELECT COUNT(*) FROM review_threads
-    WHERE pull_request_id = ?
-  ),
-  threads_unresolved = (
-    SELECT COUNT(*) FROM review_threads
-    WHERE pull_request_id = ?
-      AND is_resolved = 0
-      AND is_outdated = 0
-  ),
-  threads_involved = (
-    SELECT COUNT(DISTINCT t.id) FROM review_threads t
-    JOIN review_comments c ON c.review_thread_id = t.id
-    JOIN accounts a ON a.login = c.author_login
-    WHERE t.pull_request_id = ?
-      AND a.id = ?
-  )
-WHERE id = ?;
+   SET threads_total = (SELECT COUNT(*) FROM involvement),
+       threads_unresolved_involved = (
+           SELECT COUNT(*) FROM involvement
+            WHERE is_resolved = 0 AND is_involved = 1
+       ),
+       threads_unresolved_uninvolved = (
+           SELECT COUNT(*) FROM involvement
+            WHERE is_resolved = 0 AND is_involved = 0
+       ),
+       threads_resolved_involved = (
+           SELECT COUNT(*) FROM involvement
+            WHERE is_resolved = 1 AND is_involved = 1
+       ),
+       threads_resolved_uninvolved = (
+           SELECT COUNT(*) FROM involvement
+            WHERE is_resolved = 1 AND is_involved = 0
+       )
+ WHERE id = ?pr_id;
 ```
 
-The `?` placeholders are `pull_request_id` (three times), `account_id`, `pull_request_id`. The `threads_involved` computation is per-account; the cycle runs per-account so this naturally writes the correct value.
+The four bucket columns are disjoint over the full thread set (including outdated). `threads_total` equals their sum. Outdated threads sort into whichever bucket matches their (resolved x involved) flags - the v4 "carve outdated out of the denominator" stance is gone (ADR 0012).
 
 `DashboardPullRequest` grows one field:
 
@@ -603,8 +633,10 @@ pub struct DashboardPullRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadsSummary {
     pub total: i64,
-    pub unresolved: i64,
-    pub involved: i64,
+    pub unresolved_involved: i64,
+    pub unresolved_uninvolved: i64,
+    pub resolved_involved: i64,
+    pub resolved_uninvolved: i64,
 }
 ```
 
@@ -620,7 +652,16 @@ defineProps<{
 }>();
 ```
 
-Three CSS-variable-driven segments: `unresolved`, `involved`, `resolved`. The `null` and `threads.total === 0` cases render the muted bar + em-dash count.
+Four CSS-variable-driven segments mapped to the bucket fields per ADR 0012:
+
+| Bucket | Token |
+|---|---|
+| `unresolved_uninvolved` | `--danger` |
+| `unresolved_involved` | `--warning` |
+| `resolved_uninvolved` | `--info` |
+| `resolved_involved` | `--success` |
+
+Non-zero buckets get a 5% sliver floor so single-thread categories stay visible; the remaining width shares proportionally by raw count. Each rendered segment carries a `PRismTooltip` with the bucket label + count (`"Unresolved · 3 threads"`, `"Resolved (involved) · 1 thread"`, etc.). The `null` and `threads.total === 0` cases render the muted bar + em-dash count.
 
 ### `PullRequestRow.vue` (extension)
 
@@ -649,11 +690,10 @@ On mount: calls `invoke('fetch_pr_conversation', { pullRequestId })`, stores the
 ```ts
 defineProps<{
   threads: PullRequestThread[];
-  showOutdated?: boolean;       // default false
 }>();
 ```
 
-Renders per-thread cards per the dashboard-expanded artboard. `unresolved && is_you_in` gets the "YOU'RE IN" badge + accent gradient highlight. Outdated threads hidden when `showOutdated === false` (default).
+Renders per-thread cards per the dashboard-expanded artboard. `unresolved && is_involved` gets the "INVOLVED" badge + accent gradient highlight. Outdated threads always render with a dim treatment + `OUTDATED` badge (ADR 0012 dropped the "Show N outdated" toggle).
 
 ### `ConversationStats.vue`
 
@@ -827,10 +867,10 @@ These belong here so Wave-2 / Wave-3 agents don't reinvent them, but they don't 
 
 - **Pruning removed threads.** After `write_pr_updates` upserts the threads returned by the latest fetch, delete any `review_threads` rows for the PR whose `node_id` doesn't appear in the fetched set. Comments cascade via the existing foreign key. Same pattern applies to `reviews`.
 - **Lazy hydrator atomicity.** `fetch_pr_conversation` writes all comments + issue comments inside a single transaction so a half-fetched state never leaks. On error, the previous cached state is preserved.
-- **Cache key for the conversation store.** Key by `pull_request_id` only — the `accounts.login = author_login` join for `is_you_in` is computed at SQL time and reflected in the returned DTO.
+- **Cache key for the conversation store.** Key by `pull_request_id` only — the `accounts.login = author_login` join for `is_involved` is computed at SQL time and reflected in the returned DTO.
 - **Body-text vs body.** `bodyText` is GraphQL's pre-rendered plain text (markdown stripped). The threads-list snippet uses `body_text`; the Reviews tab and full comment view render the markdown `body`. Both are persisted.
 - **PullRequestReviewState `PENDING`.** A reviewer who hasn't submitted appears in `requested_reviewers` (M2) but not in `reviews`. The Reviews tab merges both sources: submitted reviews from `reviews` + pending placeholders from `requested_reviewers` where no `reviews` row exists for that login on this PR.
-- **Outdated toggle persistence.** The `showOutdated` toggle state is local to the `ThreadsList.vue` component — not persisted. Re-opening the drawer / route starts with outdated hidden. If user signal demands it, persist via the appearance store post-M3.
+- **Outdated rendering.** Outdated threads always render in the list with a dim treatment + `OUTDATED` badge (ADR 0012). The earlier `showOutdated` local toggle is gone.
 - **Status timeline tab.** Reads from the `timeline_events` table populated each sync cycle by the worker. The frontend invokes `list_pr_timeline_events` on mount and renders the qualifying-event list per ADR 0007; a synthesised view from `DashboardPullRequest` fills in when the table is empty for the PR (e.g. before the first enrichment cycle has landed). The persistence policy is **wipe-and-rewrite per PR per cycle** rather than upsert: GitHub timelines are append-only on the server, so the latest fetch is authoritative for the PR's history, and the wipe keeps the table consistent with the latest-status-change derivation that runs alongside the insert.
 
 ## ADR cross-references
@@ -838,4 +878,5 @@ These belong here so Wave-2 / Wave-3 agents don't reinvent them, but they don't 
 - ADR [0004](../adr/0004-sync-polling-with-etag.md) — polling cadence and rate budget; the extended `PR_DETAIL_QUERY` still fits within the existing envelope.
 - ADR [0006](../adr/0006-graphql-first-rest-fallback.md) — GraphQL-first stance; `PR_COMMENTS_QUERY` uses GraphQL for the same reasons.
 - ADR [0007](../adr/0007-status-timeline-from-timeline-events-api.md) — the status-timeline tab consumes the derivation this ADR pinned.
-- ADR 0010 (to be authored alongside this contract) — records the thread-ID storage choice, the pre-aggregate rollup decision, and the lazy-hydrate-on-detail-open strategy.
+- ADR [0010](../adr/0010-conversation-depth-storage.md) — records the thread-ID storage choice, the original three-column rollup decision (now superseded by 0012), and the lazy-hydrate-on-detail-open strategy.
+- ADR [0012](../adr/0012-threads-bar-four-state-and-outdated-counted.md) — four-bucket bar redesign and outdated-counted-normally policy. Supersedes ADR 0010's implicit "outdated excluded from the bar" stance and replaces the v4 `threads_unresolved` / `threads_involved` columns with the four `threads_(un)resolved_(un)involved` columns.

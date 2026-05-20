@@ -26,8 +26,8 @@ const avgResponse = computed<{ value: string; sub: string | null }>(() => {
 });
 
 const resolutionRate = computed<{ value: string; sub: string | null }>(() => {
-  const ratable = props.stats.threads_total - props.stats.threads_outdated;
-  if (ratable <= 0) return { value: EM_DASH, sub: null };
+  // ADR 0012: resolved / total, with outdated threads counted normally.
+  if (props.stats.threads_total <= 0) return { value: EM_DASH, sub: null };
   const pct = Math.round(props.stats.resolution_rate * 100);
   return { value: String(pct), sub: "%" };
 });

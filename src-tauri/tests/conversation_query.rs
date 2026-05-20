@@ -77,7 +77,7 @@ fn seed_fixture(db: &DbHandle) {
              'carol', 'spelling', 2500, 44, NULL);
 
         -- Thread 1000 comments: head + reply 1000s later. Reply is alice, so
-        -- alice's `is_you_in` lights up for this thread.
+        -- alice's `is_involved` lights up for this thread.
         INSERT INTO review_comments
             (id, review_thread_id, author_login, body, created_at, node_id) VALUES
             (50001, 1000, 'bob',   'looks wrong',  1000, 'PRRC_h1'),
@@ -133,14 +133,14 @@ fn list_pr_threads_maps_state_correctly() {
 }
 
 #[test]
-fn list_pr_threads_resolves_is_you_in_for_account() {
+fn list_pr_threads_resolves_is_involved_for_account() {
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     // Alice replied on thread 1000. No other thread has an alice comment.
     let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
     let map: std::collections::HashMap<i64, bool> =
-        threads.iter().map(|t| (t.id, t.is_you_in)).collect();
+        threads.iter().map(|t| (t.id, t.is_involved)).collect();
     assert!(map[&1000]);
     assert!(!map[&1001]);
     assert!(!map[&1002]);
@@ -148,12 +148,12 @@ fn list_pr_threads_resolves_is_you_in_for_account() {
 }
 
 #[test]
-fn list_pr_threads_with_no_account_marks_everything_not_in() {
+fn list_pr_threads_with_no_account_marks_everything_uninvolved() {
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     let threads = query::list_pr_threads(&conn, PR_ID, None).unwrap();
-    assert!(threads.iter().all(|t| !t.is_you_in));
+    assert!(threads.iter().all(|t| !t.is_involved));
 }
 
 #[test]
@@ -185,19 +185,24 @@ fn stats_total_counts_every_thread_including_outdated() {
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    // ADR 0012: unresolved and resolved partition all four threads by
+    // is_resolved alone. Thread 1002 is outdated AND unresolved, so it
+    // belongs in the unresolved bucket; threads_outdated overlaps that.
     assert_eq!(stats.threads_total, 4);
-    assert_eq!(stats.threads_unresolved, 2, "1000 + 1003");
+    assert_eq!(stats.threads_unresolved, 3, "1000 + 1002 + 1003");
     assert_eq!(stats.threads_resolved, 1, "1001");
-    assert_eq!(stats.threads_outdated, 1, "1002");
+    assert_eq!(stats.threads_outdated, 1, "1002 (overlaps unresolved)");
 }
 
 #[test]
-fn stats_oldest_unresolved_excludes_outdated_and_resolved() {
+fn stats_oldest_unresolved_includes_outdated_unresolved() {
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
-    // The oldest non-resolved, non-outdated thread is 1000 (created_at 1000).
+    // ADR 0012: outdated threads still count when they're unresolved. The
+    // oldest unresolved thread is 1000 (created_at 1000); outdated thread
+    // 1002 (created_at 1700) is unresolved too but younger.
     assert_eq!(stats.oldest_unresolved_at, Some(1000));
 }
 
@@ -215,13 +220,14 @@ fn stats_avg_response_seconds_averages_per_thread_gaps() {
 }
 
 #[test]
-fn stats_resolution_rate_excludes_outdated_from_denominator() {
+fn stats_resolution_rate_uses_total_as_denominator() {
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
-    // resolved=1, total=4, outdated=1 => 1 / (4 - 1) = 1/3
-    assert!((stats.resolution_rate - (1.0 / 3.0)).abs() < 1e-9);
+    // ADR 0012: resolved / total, with outdated threads counted normally.
+    // resolved=1, total=4 => 0.25
+    assert!((stats.resolution_rate - 0.25).abs() < 1e-9);
 }
 
 #[test]
@@ -337,12 +343,12 @@ fn stats_all_resolved_yields_resolution_rate_one() {
 }
 
 #[test]
-fn stats_resolved_and_outdated_intersection_does_not_overshoot_rate() {
-    // Regression for the resolution-rate > 100% bug: a thread that's BOTH
-    // resolved and outdated must count only in `threads_outdated` (the
-    // outdated bucket wins), so the rate stays in [0, 1] and the visible
-    // "N resolved" caption matches the threads list (which hides outdated
-    // behind a toggle). See issue #90 / ADR 0010.
+fn stats_resolved_includes_resolved_and_outdated_intersection() {
+    // ADR 0012: resolved and unresolved partition every thread by is_resolved
+    // alone. A thread that's both resolved AND outdated counts in
+    // threads_resolved; threads_outdated overlaps (still surfaced as a
+    // separate count for the stats tile). The resolution rate stays in
+    // [0, 1] by construction because resolved <= total.
     let db = fresh_db();
     let conn = db.lock().unwrap();
     conn.execute_batch(
@@ -354,8 +360,7 @@ fn stats_resolved_and_outdated_intersection_does_not_overshoot_rate() {
             (id, repo_id, number, title, state, draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (400, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
-         -- 7 threads total: 3 strictly-active resolved + 4 resolved-and-outdated.
-         -- Pre-fix this rendered as 7/(7-4)=233%; post-fix it must read 3/3=100%.
+         -- 7 threads total: 3 strict-active resolved + 4 resolved-and-outdated.
          INSERT INTO review_threads
             (id, pull_request_id, is_resolved, is_outdated, original_line,
              path, node_id, created_at, resolved_at, reply_count)
@@ -372,15 +377,18 @@ fn stats_resolved_and_outdated_intersection_does_not_overshoot_rate() {
     assert_eq!(stats.threads_total, 7);
     assert_eq!(stats.threads_outdated, 4);
     assert_eq!(
-        stats.threads_resolved, 3,
-        "threads_resolved is strict-active (excludes outdated)"
+        stats.threads_resolved, 7,
+        "all seven threads have is_resolved = 1"
     );
     assert_eq!(stats.threads_unresolved, 0);
     assert_eq!(stats.resolution_rate, 1.0);
 }
 
 #[test]
-fn stats_all_outdated_yields_zero_rate_and_no_oldest() {
+fn stats_all_outdated_unresolved_count_normally() {
+    // ADR 0012: outdated threads count in the denominator. Two outdated
+    // unresolved threads => total=2, resolved=0, rate=0/2=0. The oldest
+    // unresolved timestamp now includes outdated rows.
     let db = fresh_db();
     let conn = db.lock().unwrap();
     conn.execute_batch(
@@ -400,10 +408,14 @@ fn stats_all_outdated_yields_zero_rate_and_no_oldest() {
     )
     .unwrap();
     let stats = query::get_conversation_stats(&conn, 400).unwrap();
-    // total=2, outdated=2 -> denominator zero -> rate zero.
-    assert_eq!(stats.resolution_rate, 0.0);
-    assert_eq!(stats.oldest_unresolved_at, None);
+    assert_eq!(stats.resolution_rate, 0.0, "no resolved threads");
+    assert_eq!(
+        stats.oldest_unresolved_at,
+        Some(100),
+        "outdated-unresolved row still surfaces as oldest"
+    );
     assert_eq!(stats.threads_outdated, 2);
+    assert_eq!(stats.threads_unresolved, 2);
 }
 
 #[test]
@@ -446,14 +458,14 @@ fn stats_unaccounted_account_does_not_break_query() {
 }
 
 #[test]
-fn bob_sees_himself_in_threads_he_commented_on() {
+fn bob_is_involved_in_threads_he_commented_on() {
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     // Bob authored the head on threads 1000, 1001, and replied on 1001.
     let threads = query::list_pr_threads(&conn, PR_ID, Some(BOB_ID)).unwrap();
     let map: std::collections::HashMap<i64, bool> =
-        threads.iter().map(|t| (t.id, t.is_you_in)).collect();
+        threads.iter().map(|t| (t.id, t.is_involved)).collect();
     assert!(map[&1000]);
     assert!(map[&1001]);
     assert!(!map[&1002]);

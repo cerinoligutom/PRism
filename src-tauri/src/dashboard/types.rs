@@ -82,13 +82,18 @@ pub struct CiSummary {
 
 /// Per-PR review-thread rollup, pre-aggregated by the sync cycle into the
 /// `pull_requests.threads_*` columns. See `docs/contracts/conversation-depth.md`
-/// ("Dashboard rollup") and ADR 0010.
+/// ("Dashboard rollup"), ADR 0010, and ADR 0012 (four-bucket redesign).
+///
+/// The four bucket fields are disjoint over the full thread set (including
+/// outdated). `total` equals the sum of the four. Outdated threads sort into
+/// whichever bucket matches their (resolved x involved) state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadsSummary {
     pub total: i64,
-    pub unresolved: i64,
-    /// Threads where the active account has at least one comment.
-    pub involved: i64,
+    pub unresolved_involved: i64,
+    pub unresolved_uninvolved: i64,
+    pub resolved_involved: i64,
+    pub resolved_uninvolved: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

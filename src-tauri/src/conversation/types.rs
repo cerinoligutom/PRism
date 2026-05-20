@@ -38,7 +38,7 @@ pub struct PullRequestThread {
     pub last_reply_at: Option<i64>,
     /// True when the active account's login appears as a comment author
     /// anywhere in this thread.
-    pub is_you_in: bool,
+    pub is_involved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,18 +56,17 @@ pub struct ConversationStats {
     pub threads_unresolved: i64,
     pub threads_resolved: i64,
     pub threads_outdated: i64,
-    /// Oldest `review_threads.created_at` among non-resolved + non-outdated
-    /// threads. `None` when there are zero active threads.
+    /// Oldest `review_threads.created_at` among unresolved threads (outdated
+    /// or not, per ADR 0012). `None` when there are zero unresolved threads.
     pub oldest_unresolved_at: Option<i64>,
     /// Average gap (in seconds) between consecutive `review_comments.created_at`
     /// within each thread, averaged across threads with two or more comments.
     /// `None` when no thread has a reply yet.
     pub avg_response_seconds: Option<i64>,
-    /// `active_resolved / (total - outdated)`, where `active_resolved` is
-    /// `COUNT(*) WHERE is_resolved = 1 AND is_outdated = 0`. Threads that
-    /// are both resolved AND outdated count only in `threads_outdated`,
-    /// keeping the rate in `[0.0, 1.0]`. `0.0` when total-non-outdated is
-    /// zero.
+    /// `threads_resolved / threads_total`. Outdated threads are counted
+    /// in both numerator and denominator according to their `is_resolved`
+    /// flag (see ADR 0012). Stays in `[0.0, 1.0]` by construction; `0.0`
+    /// when `threads_total` is zero.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
 }
