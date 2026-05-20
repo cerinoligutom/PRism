@@ -74,6 +74,7 @@ pub fn run() {
             conversation::commands::fetch_pr_conversation,
             conversation::commands::get_pr_conversation_stats,
             conversation::commands::list_pr_threads,
+            conversation::commands::list_pr_timeline_events,
             dashboard::commands::list_dashboard_pull_requests,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,

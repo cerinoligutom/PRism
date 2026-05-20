@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 
 import type { DashboardPullRequest } from "@/types/dashboard";
+import type { TimelineEventRecord } from "@/types/conversation";
 
 import { formatRelativeAgo } from "./_format";
 
@@ -12,29 +14,137 @@ interface Props {
 const props = defineProps<Props>();
 
 /**
- * v1 reads only the DTO fields already on `DashboardPullRequest`. The M1
- * `timeline_events` table is populated by the sync worker but no Tauri command
- * exposes its rows yet; a follow-up ticket (post-M3) will wire the full event
- * stream into this tab. Today's events: opened, marked ready, current state.
+ * The tab reads persisted rows from `timeline_events` via
+ * `list_pr_timeline_events`. The sync worker writes the qualifying-event set
+ * (ADR 0007) every cycle (wipe-and-rewrite); a freshly-discovered PR whose
+ * timeline hasn't synced yet falls back to a synthesised view built from
+ * `DashboardPullRequest` so the tab never renders blank.
  */
 
-type EventKind = "opened" | "ready" | "approvals" | "changes" | "ci" | "current";
+type Icon = "circle" | "dot" | "check" | "bang" | "x";
 
-interface TimelineEvent {
-  readonly kind: EventKind;
-  readonly icon: "circle" | "dot" | "check" | "bang" | "x";
+interface TimelineRow {
+  readonly key: string;
+  readonly icon: Icon;
   readonly label: string;
   readonly who: string | null;
   readonly when: string;
   readonly state: "done" | "current";
 }
 
-const events = computed<readonly TimelineEvent[]>(() => {
-  const pr = props.pullRequest;
-  const items: TimelineEvent[] = [];
+const events = ref<readonly TimelineEventRecord[]>([]);
+const isLoading = ref(false);
+const loadError = ref<string | null>(null);
 
-  items.push({
-    kind: "opened",
+async function load(prId: number): Promise<void> {
+  isLoading.value = true;
+  loadError.value = null;
+  try {
+    const result = await invoke<TimelineEventRecord[]>("list_pr_timeline_events", {
+      pullRequestId: prId,
+    });
+    events.value = result;
+  } catch (err) {
+    loadError.value = formatError(err);
+    events.value = [];
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "Couldn't load timeline.";
+}
+
+onMounted(() => {
+  void load(props.pullRequest.id);
+});
+
+watch(
+  () => props.pullRequest.id,
+  (next) => {
+    void load(next);
+  },
+);
+
+/**
+ * Map a persisted GitHub timeline event to its visible row. The label mirrors
+ * what `synthesisedRows` produces for the equivalent state, so a PR with a
+ * fully-populated `timeline_events` table renders the same shape as a PR
+ * whose row falls back to the dashboard-DTO heuristic.
+ */
+function persistedRow(event: TimelineEventRecord, index: number): TimelineRow {
+  const when = formatRelativeAgo(event.created_at);
+  const who = event.actor_login !== null ? `@${event.actor_login}` : null;
+  const key = `${event.event_type}-${event.created_at}-${index}`;
+  switch (event.event_type) {
+    case "ready_for_review":
+      return { key, icon: "dot", label: "Marked ready", who, when, state: "done" };
+    case "convert_to_draft":
+      return { key, icon: "circle", label: "Converted to draft", who, when, state: "done" };
+    case "review_requested":
+      return { key, icon: "dot", label: "Review requested", who, when, state: "done" };
+    case "reviewed":
+      return {
+        key,
+        icon: reviewIcon(event.review_state),
+        label: reviewLabel(event.review_state),
+        who,
+        when,
+        state: "done",
+      };
+    case "merged":
+      return { key, icon: "check", label: "Merged", who, when, state: "done" };
+    case "closed":
+      return { key, icon: "x", label: "Closed", who, when, state: "done" };
+    case "reopened":
+      return { key, icon: "circle", label: "Reopened", who, when, state: "done" };
+    default:
+      return { key, icon: "circle", label: event.event_type, who, when, state: "done" };
+  }
+}
+
+function reviewIcon(state: string | null): Icon {
+  switch (state) {
+    case "APPROVED":
+      return "check";
+    case "CHANGES_REQUESTED":
+      return "bang";
+    case "DISMISSED":
+      return "x";
+    default:
+      return "dot";
+  }
+}
+
+function reviewLabel(state: string | null): string {
+  switch (state) {
+    case "APPROVED":
+      return "Approved";
+    case "CHANGES_REQUESTED":
+      return "Changes requested";
+    case "DISMISSED":
+      return "Review dismissed";
+    case "COMMENTED":
+      return "Reviewed";
+    default:
+      return "Reviewed";
+  }
+}
+
+/**
+ * Synthesise a timeline from the dashboard DTO. Used as a fallback when the
+ * persisted `timeline_events` table is empty (e.g. a PR discovered this cycle
+ * whose enrichment hasn't landed yet).
+ */
+function synthesisedRows(): TimelineRow[] {
+  const pr = props.pullRequest;
+  const rows: TimelineRow[] = [];
+
+  rows.push({
+    key: "opened",
     icon: "circle",
     label: "Opened",
     who: `@${pr.author_login}`,
@@ -43,21 +153,22 @@ const events = computed<readonly TimelineEvent[]>(() => {
   });
 
   if (!pr.is_draft) {
-    items.push({
-      kind: "ready",
+    rows.push({
+      key: "ready",
       icon: "dot",
       label: "Marked ready",
       who: null,
-      when: pr.latest_status_change_at !== null
-        ? formatRelativeAgo(pr.latest_status_change_at)
-        : formatRelativeAgo(pr.created_at),
+      when:
+        pr.latest_status_change_at !== null
+          ? formatRelativeAgo(pr.latest_status_change_at)
+          : formatRelativeAgo(pr.created_at),
       state: "done",
     });
   }
 
   if (pr.review_decision === "APPROVED") {
-    items.push({
-      kind: "approvals",
+    rows.push({
+      key: "approved",
       icon: "check",
       label: "Approved",
       who: null,
@@ -65,8 +176,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
       state: "done",
     });
   } else if (pr.review_decision === "CHANGES_REQUESTED") {
-    items.push({
-      kind: "changes",
+    rows.push({
+      key: "changes",
       icon: "bang",
       label: "Changes requested",
       who: null,
@@ -77,8 +188,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
 
   if (pr.ci !== null) {
     if (pr.ci.state === "FAILURE" || pr.ci.state === "ERROR") {
-      items.push({
-        kind: "ci",
+      rows.push({
+        key: "ci",
         icon: "x",
         label: `CI failed (${pr.ci.passing}/${pr.ci.total} passing)`,
         who: null,
@@ -86,8 +197,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
         state: "done",
       });
     } else if (pr.ci.state === "SUCCESS") {
-      items.push({
-        kind: "ci",
+      rows.push({
+        key: "ci",
         icon: "check",
         label: `CI passing (${pr.ci.passing}/${pr.ci.total})`,
         who: null,
@@ -97,10 +208,9 @@ const events = computed<readonly TimelineEvent[]>(() => {
     }
   }
 
-  // Current state: mergeable / merged / closed / draft / open.
   if (pr.state === "merged") {
-    items.push({
-      kind: "current",
+    rows.push({
+      key: "current",
       icon: "check",
       label: "Merged",
       who: null,
@@ -108,8 +218,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
       state: "current",
     });
   } else if (pr.state === "closed") {
-    items.push({
-      kind: "current",
+    rows.push({
+      key: "current",
       icon: "x",
       label: "Closed",
       who: null,
@@ -117,8 +227,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
       state: "current",
     });
   } else if (pr.is_draft) {
-    items.push({
-      kind: "current",
+    rows.push({
+      key: "current",
       icon: "circle",
       label: "Draft",
       who: null,
@@ -126,8 +236,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
       state: "current",
     });
   } else if (pr.mergeable === "CONFLICTING") {
-    items.push({
-      kind: "current",
+    rows.push({
+      key: "current",
       icon: "bang",
       label: "Conflicts",
       who: null,
@@ -135,8 +245,8 @@ const events = computed<readonly TimelineEvent[]>(() => {
       state: "current",
     });
   } else if (pr.mergeable === "MERGEABLE") {
-    items.push({
-      kind: "current",
+    rows.push({
+      key: "current",
       icon: "dot",
       label: "Mergeable",
       who: null,
@@ -145,46 +255,65 @@ const events = computed<readonly TimelineEvent[]>(() => {
     });
   }
 
-  // Ensure the last entry is rendered as "current" even if no terminal state
-  // qualifier landed above (e.g. unknown mergeable, no CI, no review).
-  if (items.length > 0 && items.every((e) => e.state === "done")) {
-    const last = items[items.length - 1]!;
-    items[items.length - 1] = { ...last, state: "current" };
+  if (rows.length > 0 && rows.every((r) => r.state === "done")) {
+    const last = rows[rows.length - 1]!;
+    rows[rows.length - 1] = { ...last, state: "current" };
+  }
+  return rows;
+}
+
+const rows = computed<readonly TimelineRow[]>(() => {
+  if (events.value.length === 0) {
+    return synthesisedRows();
   }
 
-  return items;
+  // Opened row is synthesised from the PR DTO because GitHub's timeline events
+  // start with the first non-creation event; the dashboard row already carries
+  // `created_at` and `author_login` and we want the user to see the same first
+  // row regardless of persistence state.
+  const pr = props.pullRequest;
+  const opened: TimelineRow = {
+    key: "opened",
+    icon: "circle",
+    label: "Opened",
+    who: `@${pr.author_login}`,
+    when: formatRelativeAgo(pr.created_at),
+    state: "done",
+  };
+  const persisted: TimelineRow[] = events.value.map((e, i) => persistedRow(e, i));
+  const combined = [opened, ...persisted];
+
+  if (combined.length > 0) {
+    const last = combined[combined.length - 1]!;
+    combined[combined.length - 1] = { ...last, state: "current" };
+  }
+  return combined;
 });
 
-function iconChar(kind: TimelineEvent["icon"]): string {
-  switch (kind) {
-    case "circle":
-      return "o";
-    case "dot":
-      return "*";
-    case "check":
-      return "v";
-    case "bang":
-      return "!";
-    case "x":
-      return "x";
-  }
-}
+const showFallbackNote = computed(() => events.value.length === 0 && loadError.value === null);
 </script>
 
 <template>
   <div class="timeline-tab">
-    <div class="timeline-tab__list">
-      <template v-for="(event, idx) in events" :key="idx">
+    <div v-if="isLoading && rows.length === 0" class="timeline-tab__loading" aria-busy="true">
+      <span class="dot dot-pulse" aria-hidden="true"></span>
+      <span>Loading timeline…</span>
+    </div>
+    <div v-else-if="loadError !== null" class="timeline-tab__error" role="alert">
+      {{ loadError }}
+    </div>
+    <div v-else class="timeline-tab__list">
+      <template v-for="(row, idx) in rows" :key="row.key">
         <div
           :class="[
             'timeline-row',
-            event.state === 'current' && 'timeline-row--current',
-            event.state === 'done' && 'timeline-row--done',
+            row.state === 'current' && 'timeline-row--current',
+            row.state === 'done' && 'timeline-row--done',
           ]"
         >
           <span class="timeline-row__icon" aria-hidden="true">
             <svg
-              v-if="event.icon === 'check'"
+              v-if="row.icon === 'check'"
               width="10"
               height="10"
               viewBox="0 0 16 16"
@@ -197,7 +326,7 @@ function iconChar(kind: TimelineEvent["icon"]): string {
               <path d="M3 8.5l3 3 7-7" />
             </svg>
             <svg
-              v-else-if="event.icon === 'x'"
+              v-else-if="row.icon === 'x'"
               width="10"
               height="10"
               viewBox="0 0 16 16"
@@ -209,7 +338,7 @@ function iconChar(kind: TimelineEvent["icon"]): string {
               <path d="M4 4l8 8M12 4l-8 8" />
             </svg>
             <svg
-              v-else-if="event.icon === 'dot'"
+              v-else-if="row.icon === 'dot'"
               width="8"
               height="8"
               viewBox="0 0 8 8"
@@ -217,7 +346,7 @@ function iconChar(kind: TimelineEvent["icon"]): string {
               <circle cx="4" cy="4" r="3" fill="currentColor" />
             </svg>
             <svg
-              v-else-if="event.icon === 'bang'"
+              v-else-if="row.icon === 'bang'"
               width="10"
               height="10"
               viewBox="0 0 16 16"
@@ -239,21 +368,20 @@ function iconChar(kind: TimelineEvent["icon"]): string {
             >
               <circle cx="8" cy="8" r="5" />
             </svg>
-            <span class="sr-only">{{ iconChar(event.icon) }}</span>
           </span>
           <div class="timeline-row__label">
-            <span>{{ event.label }}</span>
-            <span v-if="event.who !== null" class="timeline-row__who">{{ event.who }}</span>
+            <span>{{ row.label }}</span>
+            <span v-if="row.who !== null" class="timeline-row__who">{{ row.who }}</span>
           </div>
-          <div class="timeline-row__when">{{ event.when }}</div>
+          <div class="timeline-row__when">{{ row.when }}</div>
         </div>
-        <div v-if="idx < events.length - 1" class="timeline-tab__rule" aria-hidden="true">
+        <div v-if="idx < rows.length - 1" class="timeline-tab__rule" aria-hidden="true">
           <div class="timeline-tab__line"></div>
         </div>
       </template>
     </div>
-    <p class="timeline-tab__note">
-      Showing a summary view. Full event history lands in a follow-up ticket.
+    <p v-if="showFallbackNote" class="timeline-tab__note">
+      Showing a summary view until the first sync cycle lands the full event history.
     </p>
   </div>
 </template>
@@ -268,6 +396,20 @@ function iconChar(kind: TimelineEvent["icon"]): string {
 .timeline-tab__list {
   display: flex;
   flex-direction: column;
+}
+
+.timeline-tab__loading,
+.timeline-tab__error {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+  padding: var(--s-3) 0;
+}
+
+.timeline-tab__error {
+  color: var(--danger);
 }
 
 .timeline-row {
@@ -342,17 +484,5 @@ function iconChar(kind: TimelineEvent["icon"]): string {
   font-size: var(--fs-10);
   color: var(--text-faint);
   font-style: italic;
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }
 </style>

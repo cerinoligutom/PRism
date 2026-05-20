@@ -11,7 +11,9 @@ use tauri::State;
 
 use crate::auth::store::{Account, AccountStore};
 use crate::conversation::query;
-use crate::conversation::types::{ConversationStats, HydratedConversation, PullRequestThread};
+use crate::conversation::types::{
+    ConversationStats, HydratedConversation, PullRequestThread, TimelineEventRecord,
+};
 use crate::db::DbHandle;
 use crate::github::graphql::{
     IssueCommentNode, PrCommentsData, PullRequestComments, ReviewCommentNode, ReviewThreadComments,
@@ -55,6 +57,21 @@ pub fn get_pr_conversation_stats(
     let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     query::get_conversation_stats(&conn, pull_request_id)
         .map_err(|e| format!("get_pr_conversation_stats: {e}"))
+}
+
+/// List the persisted timeline events for a PR. Reads from the local cache
+/// only; no network round-trip. The events are populated by the sync worker
+/// each cycle (wipe-and-rewrite) so the list always reflects the latest
+/// upstream history at the granularity of the qualifying-event set defined in
+/// ADR 0007.
+#[tauri::command]
+pub fn list_pr_timeline_events(
+    pull_request_id: i64,
+    db: State<'_, DbHandle>,
+) -> Result<Vec<TimelineEventRecord>, String> {
+    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    query::list_pr_timeline_events(&conn, pull_request_id)
+        .map_err(|e| format!("list_pr_timeline_events: {e}"))
 }
 
 /// Lazy hydration: fetch full thread replies + issue-comment bodies from

@@ -13,5 +13,5 @@ pub mod types;
 pub use commands::{AccountStoreHandle, ClientFactoryHandle};
 pub use types::{
     CommentBreakdown, ConversationStats, HydratedConversation, IssueComment, PullRequestReview,
-    PullRequestThread, ThreadComment, ThreadHeadComment, ThreadState,
+    PullRequestThread, ThreadComment, ThreadHeadComment, ThreadState, TimelineEventRecord,
 };

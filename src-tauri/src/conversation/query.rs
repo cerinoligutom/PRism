@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, Row};
 
 use crate::conversation::types::{
     CommentBreakdown, ConversationStats, IssueComment, PullRequestReview, PullRequestThread,
-    ThreadComment, ThreadHeadComment, ThreadState,
+    ThreadComment, ThreadHeadComment, ThreadState, TimelineEventRecord,
 };
 
 /// List per-thread state for a PR, joined to the head-comment snapshot. The
@@ -341,6 +341,37 @@ pub fn list_reviews(
             state: row.get(3)?,
             body: row.get(4)?,
             submitted_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
+/// List persisted timeline events for a PR, ordered by `created_at`.
+///
+/// `payload` is parsed inline via SQLite's `json_extract` so the DTO carries
+/// the only field the frontend needs (`state` on `reviewed` events) without
+/// dragging the full JSON blob over the IPC boundary. Rows with malformed
+/// payload JSON surface `None` for `review_state` rather than failing the
+/// whole read.
+pub fn list_pr_timeline_events(
+    conn: &Connection,
+    pull_request_id: i64,
+) -> Result<Vec<TimelineEventRecord>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT event_type,
+                actor_login,
+                created_at,
+                json_extract(payload, '$.state') AS review_state
+           FROM timeline_events
+          WHERE pull_request_id = ?1
+          ORDER BY created_at, id",
+    )?;
+    let rows = stmt.query_map(params![pull_request_id], |row| {
+        Ok(TimelineEventRecord {
+            event_type: row.get(0)?,
+            actor_login: row.get(1)?,
+            created_at: row.get(2)?,
+            review_state: row.get(3)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()

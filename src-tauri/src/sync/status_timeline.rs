@@ -42,10 +42,12 @@ impl QualifyingEvent {
 
 /// A single timeline event as surfaced by the GitHub REST timeline API.
 ///
-/// Only the fields the derivation function actually uses are modelled here.
-/// The REST client (issue #12) is expected to deserialise raw responses
-/// into this shape; additional fields can be added when downstream consumers
-/// need them without breaking the derivation contract.
+/// The `event` + `created_at` pair drives the latest-status-change derivation
+/// (see [`latest_status_change`]). `actor_login` and `review_state` carry the
+/// extra context the M3 persistence path writes into `timeline_events`; they
+/// are `None` when GitHub did not surface the field (e.g. system-generated
+/// events with no actor, or non-`reviewed` events for which `review_state` is
+/// meaningless).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TimelineEvent {
     /// GitHub's `event` string, e.g. `"ready_for_review"`, `"labeled"`.
@@ -53,6 +55,14 @@ pub struct TimelineEvent {
     /// ISO-8601 timestamp from GitHub. Parsed via `serde-well-known` (RFC 3339).
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Actor login (the user who triggered the event). `None` for events with
+    /// no associated user (rare; mostly system-driven `closed` events).
+    #[serde(default)]
+    pub actor_login: Option<String>,
+    /// Review state for `reviewed` events: `APPROVED`, `CHANGES_REQUESTED`,
+    /// `COMMENTED`, `DISMISSED`. `None` for non-`reviewed` events.
+    #[serde(default)]
+    pub review_state: Option<String>,
 }
 
 /// The result of derivation: the qualifying event type and its timestamp.
@@ -99,6 +109,8 @@ mod tests {
         TimelineEvent {
             event: kind.to_string(),
             created_at: at,
+            actor_login: None,
+            review_state: None,
         }
     }
 

@@ -421,6 +421,43 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
         .unwrap();
     assert_eq!(issue_count, 7);
 
+    // timeline_events: the REST fixture has eight qualifying events
+    // (ready_for_review x 2, review_requested, reviewed, convert_to_draft,
+    // merged, closed, reopened); non-qualifying events (labeled, committed,
+    // assigned) are filtered upstream of persistence.
+    type TimelineRow = (String, Option<String>, i64, String);
+    let timeline_rows: Vec<TimelineRow> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_type, actor_login, created_at, payload
+                   FROM timeline_events
+                  WHERE pull_request_id = 999
+                  ORDER BY created_at, id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        timeline_rows.len(),
+        8,
+        "eight qualifying events from the REST fixture",
+    );
+    // First qualifying event in the fixture is ready_for_review by alice.
+    assert_eq!(timeline_rows[0].0, "ready_for_review");
+    assert_eq!(timeline_rows[0].1.as_deref(), Some("alice"));
+    assert_eq!(timeline_rows[0].3, "{}");
+    // The `reviewed` event carries its review state in the payload column.
+    let reviewed = timeline_rows
+        .iter()
+        .find(|r| r.0 == "reviewed")
+        .expect("reviewed event present");
+    assert_eq!(reviewed.1.as_deref(), Some("bob"));
+    assert_eq!(reviewed.3, r#"{"state":"APPROVED"}"#);
+
     // Status event fired at least twice (Syncing + Synced).
     assert!(harness.emit.count("sync://status") >= 2);
     assert_eq!(harness.reauth.count(), 0);
@@ -1230,4 +1267,122 @@ async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycl
         )
         .unwrap();
     assert_eq!(issue_count, 8);
+}
+
+/// Two-cycle integration: the persisted timeline must wipe-and-rewrite cleanly
+/// when the second cycle returns a changed event set.
+#[tokio::test]
+async fn timeline_events_wipe_and_rewrite_across_two_cycles() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    // Cycle 1: a short timeline with ready_for_review + a reviewed APPROVED.
+    let cycle1_timeline = r#"[
+        {
+            "event": "ready_for_review",
+            "created_at": "2026-05-02T14:30:00Z",
+            "actor": { "login": "alice", "id": 1 }
+        },
+        {
+            "event": "reviewed",
+            "submitted_at": "2026-05-03T10:00:00Z",
+            "state": "approved",
+            "user": { "login": "bob", "id": 2 }
+        }
+    ]"#;
+    let cycle1_mock = Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(
+            rate_headers(4998, 5000)
+                .set_body_raw(cycle1_timeline.as_bytes().to_vec(), "application/json"),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+    drop(cycle1_mock);
+
+    let rows_after_cycle1: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM timeline_events WHERE pull_request_id = 999",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows_after_cycle1, 2);
+
+    // Cycle 2: a different event set - the prior reviewed APPROVED is gone
+    // (rare backfill simulation), replaced by a CHANGES_REQUESTED review and a
+    // merged event. The wipe-and-rewrite policy must replace the whole set.
+    let cycle2_timeline = r#"[
+        {
+            "event": "ready_for_review",
+            "created_at": "2026-05-02T14:30:00Z",
+            "actor": { "login": "alice", "id": 1 }
+        },
+        {
+            "event": "reviewed",
+            "submitted_at": "2026-05-04T11:00:00Z",
+            "state": "changes_requested",
+            "user": { "login": "bob", "id": 2 }
+        },
+        {
+            "event": "merged",
+            "created_at": "2026-05-06T11:00:00Z",
+            "actor": { "login": "alice", "id": 1 }
+        }
+    ]"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(
+            rate_headers(4997, 5000)
+                .set_body_raw(cycle2_timeline.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    type TimelineRow = (String, Option<String>, String);
+    let rows: Vec<TimelineRow> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_type, actor_login, payload FROM timeline_events
+                  WHERE pull_request_id = 999 ORDER BY created_at, id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(rows.len(), 3, "wipe-and-rewrite replaced the previous set");
+    let states: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(states, vec!["ready_for_review", "reviewed", "merged"]);
+    // The reviewed event's payload reflects the new state, proving the
+    // overwrite is observed on the cached row.
+    let reviewed = rows.iter().find(|r| r.0 == "reviewed").unwrap();
+    assert_eq!(reviewed.2, r#"{"state":"CHANGES_REQUESTED"}"#);
 }
