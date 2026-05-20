@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PRismInput from "@/components/ui/PRismInput.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
 import { useSyncStore, type AccountSyncState } from "@/stores/sync";
 
@@ -133,6 +134,65 @@ const tokenCreateUrl = computed(() => {
   }
   return "https://github.com/settings/tokens/new?scopes=repo,read:org,read:user&description=PRism";
 });
+
+interface PermissionRow {
+  name: string;
+  desc: string;
+  access: string;
+  required?: boolean;
+}
+
+interface PermissionGroup {
+  title?: string;
+  rows: readonly PermissionRow[];
+  orgOnly?: boolean;
+}
+
+const fineGrainedGroups: readonly PermissionGroup[] = [
+  {
+    title: "Repository permissions",
+    rows: [
+      {
+        name: "Contents",
+        desc: "Repository contents, commits, branches, downloads, releases, and merges.",
+        access: "Read-only",
+      },
+      {
+        name: "Pull requests",
+        desc: "Pull requests and related comments, assignees, labels, milestones, and merges.",
+        access: "Read-only",
+      },
+      {
+        name: "Metadata",
+        desc: "Search repositories, list collaborators, and access repository metadata.",
+        access: "Read-only",
+        required: true,
+      },
+    ],
+  },
+  {
+    title: "Organization permissions",
+    orgOnly: true,
+    rows: [
+      {
+        name: "Members",
+        desc: "Organization members and teams.",
+        access: "Read-only",
+      },
+    ],
+  },
+];
+
+interface ClassicScope {
+  name: string;
+  desc: string;
+}
+
+const classicScopes: readonly ClassicScope[] = [
+  { name: "repo", desc: "Full control of private repositories." },
+  { name: "read:org", desc: "Read org and team membership, read org projects." },
+  { name: "read:user", desc: "Read all user profile data." },
+];
 
 onMounted(() => {
   void syncStore.bind();
@@ -346,54 +406,65 @@ onUnmounted(() => {
               {{ form.flavour === "fine-grained" ? "FINE-GRAINED" : "CLASSIC" }}
             </span>
           </header>
-          <div class="onboarding-scope">
-            <span class="onboarding-scope__check" aria-hidden="true">
-              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8.5l3 3 7-7" />
-              </svg>
-            </span>
-            <div>
-              <div class="onboarding-scope__name">Contents</div>
-              <div class="onboarding-scope__desc">Read pull request commits and refs.</div>
+
+          <template v-if="form.flavour === 'fine-grained'">
+            <div
+              v-for="group in fineGrainedGroups"
+              :key="group.title"
+              class="onboarding-scopes__group"
+            >
+              <header class="onboarding-scopes__group-head">
+                <span>{{ group.title }}</span>
+                <PRismTooltip v-if="group.orgOnly" side="left" :side-offset="10">
+                  <span class="onboarding-scopes__group-hint" tabindex="0">
+                    ORG ACCOUNTS ONLY
+                  </span>
+                  <template #content>
+                    <strong class="onboarding-tooltip__title">Only shown for organisation PATs.</strong>
+                    Fine-grained tokens only surface an "Organization permissions" section when
+                    the Resource owner is an org. Skip this when connecting a personal account.
+                  </template>
+                </PRismTooltip>
+              </header>
+              <div
+                v-for="row in group.rows"
+                :key="row.name"
+                class="onboarding-scope"
+              >
+                <span class="onboarding-scope__check" aria-hidden="true">
+                  <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 8.5l3 3 7-7" />
+                  </svg>
+                </span>
+                <div>
+                  <div class="onboarding-scope__name">
+                    {{ row.name }}
+                    <span v-if="row.required" class="onboarding-scope__required">Required</span>
+                  </div>
+                  <div class="onboarding-scope__desc">{{ row.desc }}</div>
+                </div>
+                <span class="onboarding-scope__tag">{{ row.access }}</span>
+              </div>
             </div>
-            <span class="onboarding-scope__tag">READ</span>
-          </div>
-          <div class="onboarding-scope">
-            <span class="onboarding-scope__check" aria-hidden="true">
-              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8.5l3 3 7-7" />
-              </svg>
-            </span>
-            <div>
-              <div class="onboarding-scope__name">Pull requests</div>
-              <div class="onboarding-scope__desc">Read PRs, reviews, threads, timelines.</div>
+          </template>
+
+          <template v-else>
+            <div
+              v-for="scope in classicScopes"
+              :key="scope.name"
+              class="onboarding-scope"
+            >
+              <span class="onboarding-scope__check" aria-hidden="true">
+                <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 8.5l3 3 7-7" />
+                </svg>
+              </span>
+              <div>
+                <div class="onboarding-scope__name onboarding-scope__name--scope">{{ scope.name }}</div>
+                <div class="onboarding-scope__desc">{{ scope.desc }}</div>
+              </div>
             </div>
-            <span class="onboarding-scope__tag">READ</span>
-          </div>
-          <div class="onboarding-scope">
-            <span class="onboarding-scope__check" aria-hidden="true">
-              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8.5l3 3 7-7" />
-              </svg>
-            </span>
-            <div>
-              <div class="onboarding-scope__name">Metadata</div>
-              <div class="onboarding-scope__desc">Read repo info — owner, name, visibility.</div>
-            </div>
-            <span class="onboarding-scope__tag">READ</span>
-          </div>
-          <div class="onboarding-scope">
-            <span class="onboarding-scope__check" aria-hidden="true">
-              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8.5l3 3 7-7" />
-              </svg>
-            </span>
-            <div>
-              <div class="onboarding-scope__name">Members (org)</div>
-              <div class="onboarding-scope__desc">Resolve org members for team views.</div>
-            </div>
-            <span class="onboarding-scope__tag">READ</span>
-          </div>
+          </template>
         </section>
 
         <PRismCallout variant="accent">
@@ -614,21 +685,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--s-5);
   position: relative;
-}
-
-.onboarding-step--1::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(50% 40% at 30% 20%, oklch(0.32 0.08 var(--accent-h) / 0.4), transparent 70%),
-    radial-gradient(40% 35% at 90% 95%, oklch(0.28 0.12 25 / 0.3), transparent 70%);
-  pointer-events: none;
-}
-
-.onboarding-step--1 > * {
-  position: relative;
-  z-index: 1;
 }
 
 .onboarding-step__head {
@@ -873,6 +929,68 @@ onUnmounted(() => {
   padding: 1px 6px;
   background: var(--bg-4);
   border-radius: var(--r-1);
+}
+
+.onboarding-scope__name--scope {
+  color: var(--accent-strong);
+}
+
+.onboarding-scope__required {
+  font-family: var(--font-sans);
+  font-size: var(--fs-9);
+  color: var(--warning);
+  background: var(--warning-bg);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: var(--r-1);
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.onboarding-scopes__group {
+  border-top: 1px solid var(--border-1);
+}
+
+.onboarding-scopes__group:first-of-type {
+  border-top: 0;
+}
+
+.onboarding-scopes__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 8px 14px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.onboarding-scopes__group-hint {
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  color: var(--info);
+  background: var(--info-bg);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 1px 6px;
+  border-radius: var(--r-1);
+  cursor: help;
+  outline: none;
+  margin-left: auto;
+}
+
+.onboarding-scopes__group-hint:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.onboarding-tooltip__title {
+  display: block;
+  color: var(--text-strong);
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .onboarding-validate {
