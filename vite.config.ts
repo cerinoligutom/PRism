@@ -32,8 +32,12 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
+    // Tauri's webview baseline: macOS Safari 15+ (macOS 11+) and WebView2
+    // (Chromium evergreen) on Windows. Older safari13 / chrome105 targets
+    // trip esbuild 0.28 + Vite 8's stricter downlevel checks (e.g. array
+    // destructuring assignment in vue-router).
     target:
-      process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
+      process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome120" : "safari15",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
