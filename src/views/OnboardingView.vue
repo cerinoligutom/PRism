@@ -595,6 +595,7 @@ onUnmounted(() => {
 
 .onboarding__body {
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   display: flex;
   justify-content: center;
