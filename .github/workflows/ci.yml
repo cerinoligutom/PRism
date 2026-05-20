@@ -110,17 +110,15 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Tauri Linux build deps
+        # Only the bits that aren't on the ubuntu-latest runner image already.
+        # libssl-dev / pkg-config / build-essential are preinstalled.
+        # libsoup-3.0 and libgtk-3 come in transitively via libwebkit2gtk-4.1-dev.
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            libssl-dev \
-            libgtk-3-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev \
-            pkg-config \
-            build-essential
+            librsvg2-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -146,17 +144,15 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Tauri Linux build deps
+        # Only the bits that aren't on the ubuntu-latest runner image already.
+        # libssl-dev / pkg-config / build-essential are preinstalled.
+        # libsoup-3.0 and libgtk-3 come in transitively via libwebkit2gtk-4.1-dev.
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            libssl-dev \
-            libgtk-3-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev \
-            pkg-config \
-            build-essential
+            librsvg2-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
