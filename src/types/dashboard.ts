@@ -53,6 +53,8 @@ export interface ReviewerEntry {
   readonly login: string;
   readonly state: ReviewerState;
   readonly is_you: boolean;
+  /** GitHub avatar URL for `login`; see ADR 0013. */
+  readonly avatar_url: string | null;
 }
 
 export interface RepoRef {
@@ -74,6 +76,9 @@ export interface DashboardPullRequest {
   /** `"APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED"`. */
   readonly review_decision: string | null;
   readonly author_login: string;
+  /** GitHub avatar URL for `author_login`; see ADR 0013. `null` when the
+   * sync cycle hasn't seen this login yet. */
+  readonly author_avatar_url: string | null;
   readonly base_ref: string;
   readonly head_ref: string;
   /** Unix seconds. */

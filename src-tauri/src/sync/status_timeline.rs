@@ -59,6 +59,11 @@ pub struct TimelineEvent {
     /// no associated user (rare; mostly system-driven `closed` events).
     #[serde(default)]
     pub actor_login: Option<String>,
+    /// GitHub avatar URL for the actor, used to populate the users cache when
+    /// the REST timeline page lands. `None` when the event has no actor or
+    /// when an upstream payload omits the field (older mock fixtures).
+    #[serde(default)]
+    pub actor_avatar_url: Option<String>,
     /// Review state for `reviewed` events: `APPROVED`, `CHANGES_REQUESTED`,
     /// `COMMENTED`, `DISMISSED`. `None` for non-`reviewed` events.
     #[serde(default)]
@@ -110,6 +115,7 @@ mod tests {
             event: kind.to_string(),
             created_at: at,
             actor_login: None,
+            actor_avatar_url: None,
             review_state: None,
         }
     }

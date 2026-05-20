@@ -15,6 +15,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0003_accounts_expires_at.sql"),
     include_str!("../../migrations/0004_conversation_depth.sql"),
     include_str!("../../migrations/0005_threads_breakdown.sql"),
+    include_str!("../../migrations/0006_users_table.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -103,6 +104,7 @@ mod tests {
             "etags",
             "requested_reviewers",
             "pull_request_viewer_relations",
+            "users",
         ];
         for name in expected {
             let count: i64 = conn

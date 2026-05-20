@@ -14,6 +14,10 @@ export type ThreadState = "unresolved" | "resolved" | "outdated";
 
 export interface ThreadHeadComment {
   readonly author_login: string;
+  /** GitHub avatar URL resolved from the local `users` cache. `null` when the
+   * sync cycle hasn't seen this login yet — the frontend falls back to the
+   * initials avatar. See ADR 0013. */
+  readonly avatar_url: string | null;
   readonly body_text: string;
   /** Unix seconds. */
   readonly created_at: number;
@@ -65,6 +69,8 @@ export interface PullRequestReview {
   readonly id: number;
   readonly node_id: string;
   readonly author_login: string;
+  /** GitHub avatar URL for `author_login`; see ADR 0013. */
+  readonly avatar_url: string | null;
   /** `APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING`. */
   readonly state: string;
   readonly body: string | null;
@@ -76,6 +82,8 @@ export interface ThreadComment {
   readonly id: number;
   readonly thread_id: number;
   readonly author_login: string;
+  /** GitHub avatar URL for `author_login`; see ADR 0013. */
+  readonly avatar_url: string | null;
   readonly body: string;
   /** Unix seconds. */
   readonly created_at: number;
@@ -87,6 +95,8 @@ export interface ThreadComment {
 export interface IssueComment {
   readonly id: number;
   readonly author_login: string;
+  /** GitHub avatar URL for `author_login`; see ADR 0013. */
+  readonly avatar_url: string | null;
   readonly body: string;
   /** Unix seconds. */
   readonly created_at: number;
@@ -112,6 +122,8 @@ export interface HydratedConversation {
 export interface TimelineEventRecord {
   readonly event_type: string;
   readonly actor_login: string | null;
+  /** GitHub avatar URL for `actor_login`; see ADR 0013. */
+  readonly actor_avatar_url: string | null;
   /** Unix seconds. */
   readonly created_at: number;
   readonly review_state: string | null;

@@ -5,11 +5,10 @@ import type { PullRequestThread, ThreadState } from "@/types/conversation";
 
 import {
   EM_DASH,
-  avatarSeed,
   formatRelativeAgo,
-  initials,
   secondsSince,
 } from "@/lib/format";
+import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 
 interface Props {
   threads: readonly PullRequestThread[];
@@ -133,11 +132,13 @@ function isStale(t: PullRequestThread): boolean {
           </div>
 
           <div class="thread-card__snippet">
-            <span
+            <PRismAvatar
               v-if="snippetAuthor(thread) !== ''"
-              :class="['avatar', 'sm', avatarSeed(snippetAuthor(thread)), 'thread-card__avatar']"
-              :title="snippetAuthor(thread)"
-            >{{ initials(snippetAuthor(thread)) }}</span>
+              :login="snippetAuthor(thread)"
+              :avatar-url="thread.head_comment?.avatar_url ?? null"
+              size="sm"
+              class="thread-card__avatar"
+            />
             <p>
               <span v-if="snippetAuthor(thread) !== ''" class="thread-card__author">
                 {{ snippetAuthor(thread) }}:

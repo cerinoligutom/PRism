@@ -873,6 +873,21 @@ These belong here so Wave-2 / Wave-3 agents don't reinvent them, but they don't 
 - **Outdated rendering.** Outdated threads always render in the list with a dim treatment + `OUTDATED` badge (ADR 0012). The earlier `showOutdated` local toggle is gone.
 - **Status timeline tab.** Reads from the `timeline_events` table populated each sync cycle by the worker. The frontend invokes `list_pr_timeline_events` on mount and renders the qualifying-event list per ADR 0007; a synthesised view from `DashboardPullRequest` fills in when the table is empty for the PR (e.g. before the first enrichment cycle has landed). The persistence policy is **wipe-and-rewrite per PR per cycle** rather than upsert: GitHub timelines are append-only on the server, so the latest fetch is authoritative for the PR's history, and the wipe keeps the table consistent with the latest-status-change derivation that runs alongside the insert.
 
+## Avatar caching (ADR 0013)
+
+Layered on top of the schema and DTOs above: a `users(login PRIMARY KEY, avatar_url, last_seen_at)` table caches the GitHub avatar URL per login. The sync cycle's existing GraphQL selections (`PR_DETAIL_QUERY`, `PR_COMMENTS_QUERY`, `PR_TIMELINE_QUERY`, `DISCOVERY_QUERY`) extend each `author { login }` / `actor { login }` / `requestedReviewer ... on User { login }` branch to also request `avatarUrl`. The REST timeline payload (`/issues/{n}/timeline`) already carries `actor.avatar_url`; both paths funnel into the same `users` UPSERT inside `write_pr_updates`.
+
+Read-side, every DTO that surfaces a login grows an `avatar_url: Option<String>` sibling field, resolved via a `LEFT JOIN users` at query time. DTOs touched:
+
+- `dashboard::DashboardPullRequest` gains `author_avatar_url`.
+- `dashboard::ReviewerEntry` gains `avatar_url`.
+- `conversation::ThreadHeadComment`, `ThreadComment`, `IssueComment`, `PullRequestReview` each gain `avatar_url`.
+- `conversation::TimelineEventRecord` gains `actor_avatar_url`.
+
+Writes never store NULL avatar URLs; a partial payload (e.g. an older fixture missing `avatarUrl`) can't blank a row a previous cycle populated. Pruning is intentionally absent in v1 — the table is small (~80–100 bytes per row) and historical logins surfaced through old comments stay queryable. See ADR 0013 for the full rationale and multi-account behaviour.
+
+Frontend: a `PRismAvatar` primitive at `src/components/ui/PRismAvatar.vue` renders `<img src=avatarUrl>` when the URL is present and falls back to the existing initials-in-coloured-circle pattern (`initials(login)` + `avatarSeed(login)` from `src/lib/format.ts`) on null URL or `<img>` onerror. Every existing avatar call site (dashboard row author, reviewer stack, threads list head comment, reviews tab, status-timeline tab actor) routes through it.
+
 ## ADR cross-references
 
 - ADR [0004](../adr/0004-sync-polling-with-etag.md) — polling cadence and rate budget; the extended `PR_DETAIL_QUERY` still fits within the existing envelope.
@@ -880,3 +895,4 @@ These belong here so Wave-2 / Wave-3 agents don't reinvent them, but they don't 
 - ADR [0007](../adr/0007-status-timeline-from-timeline-events-api.md) — the status-timeline tab consumes the derivation this ADR pinned.
 - ADR [0010](../adr/0010-conversation-depth-storage.md) — records the thread-ID storage choice, the original three-column rollup decision (now superseded by 0012), and the lazy-hydrate-on-detail-open strategy.
 - ADR [0012](../adr/0012-threads-bar-four-state-and-outdated-counted.md) — four-bucket bar redesign and outdated-counted-normally policy. Supersedes ADR 0010's implicit "outdated excluded from the bar" stance and replaces the v4 `threads_unresolved` / `threads_involved` columns with the four `threads_(un)resolved_(un)involved` columns.
+- ADR [0013](../adr/0013-user-avatars-cache.md) — the `users` table layered on top of this contract.

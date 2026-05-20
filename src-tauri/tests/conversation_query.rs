@@ -485,9 +485,7 @@ fn make_comment(id: &str, db_id: i64, login: &str, created_at: &str) -> ReviewCo
     ReviewCommentNode {
         id: id.into(),
         database_id: Some(db_id),
-        author: Some(Actor {
-            login: login.into(),
-        }),
+        author: Some(Actor::new(login)),
         body: format!("body of {id}"),
         body_text: format!("body of {id}"),
         created_at: created_at.into(),
@@ -502,9 +500,7 @@ fn make_issue(id: &str, db_id: i64, login: &str) -> IssueCommentNode {
     IssueCommentNode {
         id: id.into(),
         database_id: Some(db_id),
-        author: Some(Actor {
-            login: login.into(),
-        }),
+        author: Some(Actor::new(login)),
         body: format!("issue body {id}"),
         body_text: format!("issue body {id}"),
         created_at: "2026-05-19T13:00:00Z".into(),
@@ -872,4 +868,58 @@ fn list_pr_timeline_events_returns_empty_for_unknown_pr() {
     let conn = db.lock().unwrap();
     let events = query::list_pr_timeline_events(&conn, 9999).unwrap();
     assert!(events.is_empty());
+}
+
+#[test]
+fn list_pr_threads_resolves_head_comment_avatar_via_users_join() {
+    // ADR 0013: the threads list reads the head-comment author's avatar URL
+    // through `LEFT JOIN users`. Logins absent from `users` surface `None`.
+    let db = fresh_db();
+    seed_fixture(&db);
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (login, avatar_url, last_seen_at)
+                VALUES ('bob', 'https://avatars/bob.png', 0)",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = db.lock().unwrap();
+    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
+    let bob_thread = threads.iter().find(|t| t.id == 1000).unwrap();
+    let head = bob_thread.head_comment.as_ref().unwrap();
+    assert_eq!(head.author_login, "bob");
+    assert_eq!(head.avatar_url.as_deref(), Some("https://avatars/bob.png"));
+
+    let carol_thread = threads.iter().find(|t| t.id == 1003).unwrap();
+    let head = carol_thread.head_comment.as_ref().unwrap();
+    assert_eq!(head.author_login, "carol");
+    assert!(head.avatar_url.is_none(), "carol is not in users");
+}
+
+#[test]
+fn list_pr_timeline_events_resolves_actor_avatar_via_users_join() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    seed_timeline_events(&db);
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (login, avatar_url, last_seen_at)
+                VALUES ('alice', 'https://avatars/alice.png', 0)",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = db.lock().unwrap();
+    let events = query::list_pr_timeline_events(&conn, PR_ID).unwrap();
+    let alice_event = events
+        .iter()
+        .find(|e| e.actor_login.as_deref() == Some("alice"))
+        .expect("alice timeline event seeded by fixture");
+    assert_eq!(
+        alice_event.actor_avatar_url.as_deref(),
+        Some("https://avatars/alice.png"),
+    );
 }

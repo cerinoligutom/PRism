@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
-import { avatarSeed, formatRelativeAgo, initials, secondsSince } from "@/lib/format";
+import { formatRelativeAgo, secondsSince } from "@/lib/format";
+import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
 import MergeableBadge from "./MergeableBadge.vue";
@@ -152,9 +153,12 @@ function onKey(event: KeyboardEvent): void {
         </span>
         <span class="pr-row__sep" aria-hidden="true">·</span>
         <span class="pr-row__author">
-          <span :class="['avatar', 'sm', avatarSeed(pullRequest.author_login), 'pr-row__author-avatar']">
-            {{ initials(pullRequest.author_login) }}
-          </span>
+          <PRismAvatar
+            :login="pullRequest.author_login"
+            :avatar-url="pullRequest.author_avatar_url"
+            size="sm"
+            class="pr-row__author-avatar"
+          />
           {{ pullRequest.author_login }}
         </span>
         <template v-if="linesAdditions !== null && linesDeletions !== null">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ReviewerEntry, ReviewerState } from "@/types/dashboard";
+import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 
 interface Props {
   reviewers: readonly ReviewerEntry[];
@@ -27,35 +28,6 @@ const approvedCount = computed<number>(
 const changesCount = computed<number>(
   () => props.reviewers.filter((r) => r.state === "changes-requested").length,
 );
-
-function initials(login: string): string {
-  if (login.length === 0) return "?";
-  const cleaned = login.replace(/^[-_]+|[-_]+$/g, "");
-  const parts = cleaned.split(/[-_]+/).filter((p) => p.length > 0);
-  if (parts.length === 0) {
-    return login.slice(0, 2).toUpperCase();
-  }
-  if (parts.length === 1) {
-    return (parts[0] ?? "").slice(0, 2).toUpperCase();
-  }
-  const first = (parts[0] ?? "").slice(0, 1);
-  const last = (parts[parts.length - 1] ?? "").slice(0, 1);
-  return `${first}${last}`.toUpperCase();
-}
-
-/**
- * Deterministic colour seed for an avatar placeholder. The CSS provides eight
- * `av-N` classes; hash the login modulo 8 so the same user always lands on the
- * same swatch within a session.
- */
-function avatarSeed(login: string): string {
-  let hash = 0;
-  for (let i = 0; i < login.length; i += 1) {
-    hash = (hash * 31 + login.charCodeAt(i)) | 0;
-  }
-  const slot = (Math.abs(hash) % 8) + 1;
-  return `av-${slot}`;
-}
 
 function stateClass(state: ReviewerState): string {
   switch (state) {
@@ -91,21 +63,19 @@ function titleFor(reviewer: ReviewerEntry): string {
     no reviewers
   </span>
   <span v-else class="reviewer-stack">
-    <span
+    <PRismAvatar
       v-for="reviewer in visible"
       :key="reviewer.login"
+      :login="reviewer.login"
+      :avatar-url="reviewer.avatar_url"
+      size="sm"
+      :title="titleFor(reviewer)"
       :class="[
-        'avatar',
-        'sm',
-        avatarSeed(reviewer.login),
         'reviewer-stack__avatar',
         stateClass(reviewer.state),
         reviewer.is_you && 'reviewer-stack__avatar--you',
       ]"
-      :title="titleFor(reviewer)"
-    >
-      {{ initials(reviewer.login) }}
-    </span>
+    />
     <span
       v-if="overflow > 0"
       class="reviewer-stack__overflow"

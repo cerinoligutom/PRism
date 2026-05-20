@@ -29,6 +29,10 @@ pub fn list_pr_threads(
     pull_request_id: i64,
     account_id: Option<i64>,
 ) -> Result<Vec<PullRequestThread>, rusqlite::Error> {
+    // The `LEFT JOIN users` resolves the head-comment author's avatar URL
+    // (ADR 0013). The join is via `t.head_comment_author_login`; threads that
+    // pre-date the M3 sync or whose head author has never been seen produce a
+    // NULL `avatar_url`, which the frontend renders as the initials fallback.
     let sql = "
         SELECT
             t.id,
@@ -47,6 +51,7 @@ pub fn list_pr_threads(
             t.head_comment_author_login,
             t.head_comment_body_text,
             t.head_comment_created_at,
+            u.avatar_url AS head_author_avatar_url,
             CASE
                 WHEN ?2 IS NULL THEN 0
                 WHEN EXISTS (
@@ -58,6 +63,7 @@ pub fn list_pr_threads(
                 ELSE 0
             END AS is_involved
         FROM review_threads t
+        LEFT JOIN users u ON u.login = t.head_comment_author_login
         WHERE t.pull_request_id = ?1
         ORDER BY COALESCE(t.created_at, 0), t.id
     ";
@@ -86,11 +92,13 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let head_author: Option<String> = row.get(13)?;
     let head_body: Option<String> = row.get(14)?;
     let head_created_at: Option<i64> = row.get(15)?;
-    let is_involved: i64 = row.get(16)?;
+    let head_avatar_url: Option<String> = row.get(16)?;
+    let is_involved: i64 = row.get(17)?;
 
     let head_comment = match (head_author, head_body, head_created_at) {
         (Some(author_login), Some(body_text), Some(created_at)) => Some(ThreadHeadComment {
             author_login,
+            avatar_url: head_avatar_url,
             body_text,
             created_at,
         }),
@@ -277,14 +285,19 @@ fn compute_resolution_rate(resolved: i64, total: i64) -> f64 {
 
 /// Every thread comment for a PR, ordered by `created_at`. Returned alongside
 /// the hydrated DTO so the frontend renders without a second round-trip.
+///
+/// The `LEFT JOIN users` resolves the avatar URL for each comment author per
+/// ADR 0013; unseen logins surface `avatar_url = None`.
 pub fn list_thread_comments(
     conn: &Connection,
     pull_request_id: i64,
 ) -> Result<Vec<ThreadComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.review_thread_id, c.author_login, c.body, c.created_at, c.line, c.side
+        "SELECT c.id, c.review_thread_id, c.author_login, u.avatar_url,
+                c.body, c.created_at, c.line, c.side
            FROM review_comments c
            JOIN review_threads t ON t.id = c.review_thread_id
+           LEFT JOIN users u ON u.login = c.author_login
           WHERE t.pull_request_id = ?1
           ORDER BY c.review_thread_id, c.created_at, c.id",
     )?;
@@ -293,10 +306,11 @@ pub fn list_thread_comments(
             id: row.get(0)?,
             thread_id: row.get(1)?,
             author_login: row.get(2)?,
-            body: row.get(3)?,
-            created_at: row.get(4)?,
-            line: row.get(5)?,
-            side: row.get(6)?,
+            avatar_url: row.get(3)?,
+            body: row.get(4)?,
+            created_at: row.get(5)?,
+            line: row.get(6)?,
+            side: row.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -307,17 +321,19 @@ pub fn list_issue_comments(
     pull_request_id: i64,
 ) -> Result<Vec<IssueComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, author_login, body, created_at
-           FROM issue_comments
-          WHERE pull_request_id = ?1
-          ORDER BY created_at, id",
+        "SELECT ic.id, ic.author_login, u.avatar_url, ic.body, ic.created_at
+           FROM issue_comments ic
+           LEFT JOIN users u ON u.login = ic.author_login
+          WHERE ic.pull_request_id = ?1
+          ORDER BY ic.created_at, ic.id",
     )?;
     let rows = stmt.query_map(params![pull_request_id], |row| {
         Ok(IssueComment {
             id: row.get(0)?,
             author_login: row.get(1)?,
-            body: row.get(2)?,
-            created_at: row.get(3)?,
+            avatar_url: row.get(2)?,
+            body: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -328,10 +344,12 @@ pub fn list_reviews(
     pull_request_id: i64,
 ) -> Result<Vec<PullRequestReview>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, node_id, reviewer_login, state, body, submitted_at
-           FROM reviews
-          WHERE pull_request_id = ?1
-          ORDER BY COALESCE(submitted_at, 0), id",
+        "SELECT r.id, r.node_id, r.reviewer_login, u.avatar_url,
+                r.state, r.body, r.submitted_at
+           FROM reviews r
+           LEFT JOIN users u ON u.login = r.reviewer_login
+          WHERE r.pull_request_id = ?1
+          ORDER BY COALESCE(r.submitted_at, 0), r.id",
     )?;
     let rows = stmt.query_map(params![pull_request_id], |row| {
         let node_id: Option<String> = row.get(1)?;
@@ -339,9 +357,10 @@ pub fn list_reviews(
             id: row.get(0)?,
             node_id: node_id.unwrap_or_default(),
             author_login: row.get(2)?,
-            state: row.get(3)?,
-            body: row.get(4)?,
-            submitted_at: row.get(5)?,
+            avatar_url: row.get(3)?,
+            state: row.get(4)?,
+            body: row.get(5)?,
+            submitted_at: row.get(6)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -359,20 +378,23 @@ pub fn list_pr_timeline_events(
     pull_request_id: i64,
 ) -> Result<Vec<TimelineEventRecord>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT event_type,
-                actor_login,
-                created_at,
-                json_extract(payload, '$.state') AS review_state
-           FROM timeline_events
-          WHERE pull_request_id = ?1
-          ORDER BY created_at, id",
+        "SELECT te.event_type,
+                te.actor_login,
+                u.avatar_url,
+                te.created_at,
+                json_extract(te.payload, '$.state') AS review_state
+           FROM timeline_events te
+           LEFT JOIN users u ON u.login = te.actor_login
+          WHERE te.pull_request_id = ?1
+          ORDER BY te.created_at, te.id",
     )?;
     let rows = stmt.query_map(params![pull_request_id], |row| {
         Ok(TimelineEventRecord {
             event_type: row.get(0)?,
             actor_login: row.get(1)?,
-            created_at: row.get(2)?,
-            review_state: row.get(3)?,
+            actor_avatar_url: row.get(2)?,
+            created_at: row.get(3)?,
+            review_state: row.get(4)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()

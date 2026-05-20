@@ -108,10 +108,12 @@ fn parse_timeline_page(bytes: &Bytes) -> Result<Vec<TimelineEvent>, GitHubError>
         .collect())
 }
 
-/// Actor entry on a timeline event payload. Only the login is consumed.
+/// Actor entry on a timeline event payload.
 #[derive(Debug, Deserialize)]
 struct RawActor {
     login: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 /// Reviewer entry on the `reviewed` event - GitHub puts the user under `user`
@@ -119,6 +121,8 @@ struct RawActor {
 #[derive(Debug, Deserialize)]
 struct RawReviewedUser {
     login: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 /// Wire-shape for one element of the `/issues/{n}/timeline` list.
@@ -191,54 +195,71 @@ enum RawTimelineEvent {
 impl RawTimelineEvent {
     fn into_event(self) -> Option<TimelineEvent> {
         match self {
-            Self::ReadyForReview { created_at, actor } => Some(TimelineEvent {
-                event: "ready_for_review".into(),
+            Self::ReadyForReview { created_at, actor } => Some(event_from_actor(
+                "ready_for_review",
                 created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
-            Self::ConvertToDraft { created_at, actor } => Some(TimelineEvent {
-                event: "convert_to_draft".into(),
+                actor,
+                None,
+            )),
+            Self::ConvertToDraft { created_at, actor } => Some(event_from_actor(
+                "convert_to_draft",
                 created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
-            Self::ReviewRequested { created_at, actor } => Some(TimelineEvent {
-                event: "review_requested".into(),
+                actor,
+                None,
+            )),
+            Self::ReviewRequested { created_at, actor } => Some(event_from_actor(
+                "review_requested",
                 created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
+                actor,
+                None,
+            )),
             Self::Reviewed {
                 submitted_at,
                 user,
                 state,
-            } => Some(TimelineEvent {
-                event: "reviewed".into(),
-                created_at: submitted_at,
-                actor_login: user.map(|u| u.login),
-                review_state: state.map(|s| s.to_uppercase()),
-            }),
-            Self::Merged { created_at, actor } => Some(TimelineEvent {
-                event: "merged".into(),
-                created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
-            Self::Closed { created_at, actor } => Some(TimelineEvent {
-                event: "closed".into(),
-                created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
-            Self::Reopened { created_at, actor } => Some(TimelineEvent {
-                event: "reopened".into(),
-                created_at,
-                actor_login: actor.map(|a| a.login),
-                review_state: None,
-            }),
+            } => {
+                let (actor_login, actor_avatar_url) = match user {
+                    Some(u) => (Some(u.login), u.avatar_url),
+                    None => (None, None),
+                };
+                Some(TimelineEvent {
+                    event: "reviewed".into(),
+                    created_at: submitted_at,
+                    actor_login,
+                    actor_avatar_url,
+                    review_state: state.map(|s| s.to_uppercase()),
+                })
+            }
+            Self::Merged { created_at, actor } => {
+                Some(event_from_actor("merged", created_at, actor, None))
+            }
+            Self::Closed { created_at, actor } => {
+                Some(event_from_actor("closed", created_at, actor, None))
+            }
+            Self::Reopened { created_at, actor } => {
+                Some(event_from_actor("reopened", created_at, actor, None))
+            }
             Self::Committed | Self::Other => None,
         }
+    }
+}
+
+fn event_from_actor(
+    event: &str,
+    created_at: OffsetDateTime,
+    actor: Option<RawActor>,
+    review_state: Option<String>,
+) -> TimelineEvent {
+    let (actor_login, actor_avatar_url) = match actor {
+        Some(a) => (Some(a.login), a.avatar_url),
+        None => (None, None),
+    };
+    TimelineEvent {
+        event: event.into(),
+        created_at,
+        actor_login,
+        actor_avatar_url,
+        review_state,
     }
 }
 

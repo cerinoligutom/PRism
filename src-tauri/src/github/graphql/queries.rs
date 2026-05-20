@@ -32,7 +32,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
       url
       createdAt
       updatedAt
-      author { login }
+      author { login avatarUrl }
       baseRefName
       headRefName
       reviewDecision
@@ -43,7 +43,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
         nodes {
           requestedReviewer {
             __typename
-            ... on User { login }
+            ... on User { login avatarUrl }
             ... on Team { slug }
           }
         }
@@ -79,7 +79,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
             totalCount
             nodes {
               id
-              author { login }
+              author { login avatarUrl }
               bodyText
               createdAt
             }
@@ -92,7 +92,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           state
           body
           submittedAt
-          author { login }
+          author { login avatarUrl }
         }
       }
       issueComments: comments(first: 50) {
@@ -130,13 +130,13 @@ query PrTimeline($owner: String!, $name: String!, $number: Int!, $after: String)
         pageInfo { hasNextPage endCursor }
         nodes {
           __typename
-          ... on ReadyForReviewEvent { createdAt actor { login } }
-          ... on ConvertToDraftEvent { createdAt actor { login } }
-          ... on ReviewRequestedEvent { createdAt actor { login } }
-          ... on PullRequestReview { createdAt state author { login } }
-          ... on MergedEvent { createdAt actor { login } }
-          ... on ClosedEvent { createdAt actor { login } }
-          ... on ReopenedEvent { createdAt actor { login } }
+          ... on ReadyForReviewEvent { createdAt actor { login avatarUrl } }
+          ... on ConvertToDraftEvent { createdAt actor { login avatarUrl } }
+          ... on ReviewRequestedEvent { createdAt actor { login avatarUrl } }
+          ... on PullRequestReview { createdAt state author { login avatarUrl } }
+          ... on MergedEvent { createdAt actor { login avatarUrl } }
+          ... on ClosedEvent { createdAt actor { login avatarUrl } }
+          ... on ReopenedEvent { createdAt actor { login avatarUrl } }
         }
       }
     }
@@ -165,7 +165,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
             nodes {
               id
               databaseId
-              author { login }
+              author { login avatarUrl }
               body
               bodyText
               createdAt
@@ -213,7 +213,7 @@ query DiscoverPrs($q: String!, $after: String) {
         isDraft
         createdAt
         updatedAt
-        author { login }
+        author { login avatarUrl }
         baseRefName
         headRefName
         repository {
@@ -293,10 +293,12 @@ pub struct ReviewRequest {
 /// carry an identifier (`login` for users, `slug` for teams) that's persisted
 /// to `requested_reviewers.login`; the variant distinguishes `reviewer_type`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "__typename")]
+#[serde(tag = "__typename", rename_all_fields = "camelCase")]
 pub enum RequestedReviewer {
     User {
         login: String,
+        #[serde(default)]
+        avatar_url: Option<String>,
     },
     Team {
         slug: String,
@@ -419,9 +421,27 @@ pub struct IssueCommentConnection {
     pub total_count: i64,
 }
 
+/// Author / actor surfaced by GraphQL. `avatar_url` is populated by every
+/// query that selects `avatarUrl` on its `author { ... }` / `actor { ... }`
+/// branches; older queries that only requested `login` deserialise with
+/// `avatar_url = None`, which is what the users-table writer expects (it
+/// upserts only when an avatar URL is present).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Actor {
     pub login: String,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+}
+
+impl Actor {
+    /// Convenience constructor for tests / fixtures that only carry a login.
+    pub fn new(login: impl Into<String>) -> Self {
+        Self {
+            login: login.into(),
+            avatar_url: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -697,7 +717,7 @@ mod tests {
             "changedFiles",
             "reviewRequests(first: 20)",
             "requestedReviewer",
-            "... on User { login }",
+            "... on User { login avatarUrl }",
             "... on Team { slug }",
             "commits(last: 1)",
             "statusCheckRollup",
@@ -807,7 +827,8 @@ mod tests {
         assert_eq!(
             user,
             RequestedReviewer::User {
-                login: "alice".into()
+                login: "alice".into(),
+                avatar_url: None,
             }
         );
 
@@ -1035,9 +1056,7 @@ mod tests {
     fn discovery_repository_visibility_reports_private() {
         let repo = DiscoveryRepository {
             database_id: 1,
-            owner: Actor {
-                login: "owner".into(),
-            },
+            owner: Actor::new("owner"),
             name: "repo".into(),
             is_private: true,
         };
