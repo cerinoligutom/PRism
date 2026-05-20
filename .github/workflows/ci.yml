@@ -64,11 +64,10 @@ jobs:
             adr
             repo
           requireScope: false
-          # Subject should start lowercase to match the rest of the catalogue.
-          subjectPattern: ^[a-z].+$
-          subjectPatternError: |
-            The subject of the PR title (after the `<type>(<scope>):` prefix) must
-            start with a lowercase letter. See CONTRIBUTING.md → Conventional Commits.
+          # No subjectPattern: Conventional Commits doesn't restrict case, and
+          # CONTRIBUTING.md's own examples include uppercase-led subjects
+          # ("feat(github): GraphQL query ..."). The previous lowercase-only
+          # rule contradicted the documented catalogue.
 
   frontend:
     name: Frontend — typecheck + build
