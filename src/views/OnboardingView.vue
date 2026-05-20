@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PRismInput from "@/components/ui/PRismInput.vue";
-import { useAccountsStore, type ValidateTokenResult } from "@/stores/accounts";
+import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
+import { useSyncStore, type AccountSyncState } from "@/stores/sync";
 
 type StepIndex = 1 | 2 | 3;
 type TokenFlavour = "fine-grained" | "classic";
@@ -17,9 +18,11 @@ type ValidationState =
 
 const router = useRouter();
 const accountsStore = useAccountsStore();
+const syncStore = useSyncStore();
 
 const currentStep = ref<StepIndex>(1);
 const submitting = ref(false);
+const newAccount = ref<Account | null>(null);
 
 const form = reactive({
   flavour: "fine-grained" as TokenFlavour,
@@ -39,8 +42,39 @@ const canConnect = computed(() => {
   );
 });
 
+const syncStateForNewAccount = computed<AccountSyncState | null>(() => {
+  if (newAccount.value === null) return null;
+  return syncStore.accounts.find((a) => a.account_id === newAccount.value!.id) ?? null;
+});
+
+const syncDisplay = computed<{ label: string; spinning: boolean }>(() => {
+  const state = syncStateForNewAccount.value;
+  const host = newAccount.value?.host ?? "github.com";
+  // No state yet — the worker hot-add hook fires after addAccount returns,
+  // but the sync-status event may not have arrived this tick.
+  if (state === null || state.phase === "idle") {
+    return { label: "Starting first sync…", spinning: true };
+  }
+  if (state.phase === "syncing") {
+    return { label: `Fetching authored PRs from ${host}`, spinning: true };
+  }
+  if (state.phase === "synced") {
+    return { label: "First sync complete", spinning: false };
+  }
+  if (state.phase === "unauthorized") {
+    return { label: "Token rejected — re-check the PAT", spinning: false };
+  }
+  if (state.phase === "rate_limited") {
+    return { label: "Rate-limited — sync paused", spinning: false };
+  }
+  return { label: state.message ?? "Sync error — see status bar", spinning: false };
+});
+
 function goTo(step: StepIndex): void {
   currentStep.value = step;
+  if (step === 2) {
+    validation.value = { kind: "idle" };
+  }
 }
 
 async function handleValidate(): Promise<void> {
@@ -63,11 +97,13 @@ async function handleValidate(): Promise<void> {
 async function handleConnect(): Promise<void> {
   submitting.value = true;
   try {
-    await accountsStore.addAccount({
+    const account = await accountsStore.addAccount({
       label: form.label.trim(),
       host: form.host.trim(),
       token: form.token.trim(),
     });
+    newAccount.value = account;
+    void syncStore.refreshSnapshot();
     goTo(3);
   } catch (err) {
     validation.value = {
@@ -77,6 +113,14 @@ async function handleConnect(): Promise<void> {
   } finally {
     submitting.value = false;
   }
+}
+
+function handleAddAnother(): void {
+  form.label = "";
+  form.token = "";
+  validation.value = { kind: "idle" };
+  newAccount.value = null;
+  goTo(2);
 }
 
 function handleFinish(): void {
@@ -89,38 +133,67 @@ const tokenCreateUrl = computed(() => {
   }
   return "https://github.com/settings/tokens/new?scopes=repo,read:org,read:user&description=PRism";
 });
+
+onMounted(() => {
+  void syncStore.bind();
+});
+
+onUnmounted(() => {
+  // Leave the sync store bound for other views — it's a singleton.
+});
 </script>
 
 <template>
   <section class="onboarding">
-    <div class="onboarding__steps">
-      <!-- STEP 1: Welcome -->
-      <section
-        class="onboarding-step onboarding-step--1"
-        :class="{
-          'onboarding-step--active': currentStep === 1,
-          'onboarding-step--done': currentStep > 1,
-        }"
-      >
-        <div class="onboarding-brand">
-          <span class="onboarding-brand__mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
-              <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
-              <path d="M16 4 L28 26 L4 26 Z" />
-              <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)" />
-              <line x1="21" y1="19" x2="30" y2="16" stroke="oklch(0.78 0.15 80)" />
-              <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)" />
-              <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
-            </svg>
-          </span>
-          <span class="onboarding-brand__name">
-            <span>PR</span><span class="onboarding-brand__suffix">ism</span>
-          </span>
-          <span class="onboarding-brand__version">v0.1</span>
-        </div>
+    <header class="onboarding__header">
+      <div class="onboarding-brand">
+        <span class="onboarding-brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
+            <path d="M16 4 L28 26 L4 26 Z" />
+            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)" />
+            <line x1="21" y1="19" x2="30" y2="16" stroke="oklch(0.78 0.15 80)" />
+            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)" />
+            <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
+          </svg>
+        </span>
+        <span class="onboarding-brand__name">
+          <span>PR</span><span class="onboarding-brand__suffix">ism</span>
+        </span>
+        <span class="onboarding-brand__version">v0.1</span>
+      </div>
 
+      <ol class="onboarding-progress" aria-label="Onboarding progress">
+        <li
+          v-for="step in [1, 2, 3] as StepIndex[]"
+          :key="step"
+          class="onboarding-progress__item"
+          :class="{
+            'onboarding-progress__item--active': currentStep === step,
+            'onboarding-progress__item--done': currentStep > step,
+          }"
+          :aria-current="currentStep === step ? 'step' : undefined"
+        >
+          <span class="onboarding-progress__num">
+            <template v-if="currentStep > step">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 8.5l3 3 7-7" />
+              </svg>
+            </template>
+            <template v-else>{{ step }}</template>
+          </span>
+          <span class="onboarding-progress__label">
+            {{ step === 1 ? "Welcome" : step === 2 ? "Connect" : "First sync" }}
+          </span>
+        </li>
+      </ol>
+    </header>
+
+    <div class="onboarding__body">
+      <!-- STEP 1: Welcome -->
+      <section v-if="currentStep === 1" class="onboarding-step onboarding-step--1">
         <div class="onboarding-step__head">
-          <span class="onboarding-step__num">1</span>
+          <span class="onboarding-step__num onboarding-step__num--active">1</span>
           Welcome
         </div>
         <h2 class="onboarding-step__title">Every PR you touch, in one quiet place.</h2>
@@ -184,15 +257,9 @@ const tokenCreateUrl = computed(() => {
       </section>
 
       <!-- STEP 2: PAT entry -->
-      <section
-        class="onboarding-step onboarding-step--2"
-        :class="{
-          'onboarding-step--active': currentStep === 2,
-          'onboarding-step--done': currentStep > 2,
-        }"
-      >
+      <section v-else-if="currentStep === 2" class="onboarding-step onboarding-step--2">
         <div class="onboarding-step__head">
-          <span class="onboarding-step__num">2</span>
+          <span class="onboarding-step__num onboarding-step__num--active">2</span>
           Connect an account
         </div>
         <h2 class="onboarding-step__title">Add a Personal Access Token.</h2>
@@ -367,28 +434,32 @@ const tokenCreateUrl = computed(() => {
         </div>
       </section>
 
-      <!-- STEP 3: First sync (placeholder for M1; real sync arrives in #13) -->
-      <section
-        class="onboarding-step onboarding-step--3"
-        :class="{ 'onboarding-step--active': currentStep === 3 }"
-      >
+      <!-- STEP 3: First sync -->
+      <section v-else class="onboarding-step onboarding-step--3">
         <div class="onboarding-step__head">
-          <span class="onboarding-step__num">3</span>
+          <span class="onboarding-step__num onboarding-step__num--active">3</span>
           You're in
         </div>
-        <h2 class="onboarding-step__title">First sync running…</h2>
+        <h2 class="onboarding-step__title">Account connected.</h2>
         <p class="onboarding-step__lede">
-          PRism is pulling the PRs you care about. The full org / repo picker lands with the
-          sync worker (issue #13) — until then, every authored PR you can see on github.com
-          appears in the dashboard.
+          <strong>{{ newAccount?.login }}</strong> on
+          <code>{{ newAccount?.host }}</code> is saved. Until the full org / repo picker
+          lands, every authored PR you can see on github.com appears in the dashboard.
         </p>
 
         <div class="onboarding-sync">
-          <div class="onboarding-sync__ring" aria-hidden="true"></div>
-          <div class="onboarding-sync__text">
-            Fetching authored PRs from {{ accountsStore.accounts[accountsStore.accounts.length - 1]?.host }}
+          <div
+            v-if="syncDisplay.spinning"
+            class="onboarding-sync__ring"
+            aria-hidden="true"
+          ></div>
+          <div v-else class="onboarding-sync__dot" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="6" />
+              <path d="M5.5 8l2 2 3-3.5" />
+            </svg>
           </div>
-          <div class="onboarding-sync__ago">~12s</div>
+          <div class="onboarding-sync__text">{{ syncDisplay.label }}</div>
         </div>
 
         <PRismCallout variant="info">
@@ -403,7 +474,7 @@ const tokenCreateUrl = computed(() => {
         </PRismCallout>
 
         <div class="onboarding-step__foot">
-          <PRismButton @click="goTo(2)">Add another account</PRismButton>
+          <PRismButton @click="handleAddAnother">Add another account</PRismButton>
           <PRismButton variant="primary" size="lg" @click="handleFinish">
             Open PRism
           </PRismButton>
@@ -417,25 +488,126 @@ const tokenCreateUrl = computed(() => {
 .onboarding {
   height: 100%;
   background: var(--bg-1);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.onboarding__steps {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 1px;
-  background: var(--border-1);
-  min-height: 100%;
+.onboarding__header {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  padding: var(--s-5) var(--s-8);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-1);
+  flex: 0 0 auto;
+}
+
+.onboarding-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.onboarding-brand__mark {
+  width: 24px;
+  height: 24px;
+  color: var(--text-strong);
+}
+
+.onboarding-brand__name {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: var(--text-strong);
+}
+
+.onboarding-brand__suffix {
+  font-weight: 400;
+  color: var(--text-mute);
+}
+
+.onboarding-brand__version {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-faint);
+  letter-spacing: 1px;
+}
+
+.onboarding-progress {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+}
+
+.onboarding-progress__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-faint);
+  position: relative;
+}
+
+.onboarding-progress__item + .onboarding-progress__item::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  background: var(--border-2);
+  margin-right: var(--s-3);
+}
+
+.onboarding-progress__num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  color: var(--text-mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-10);
+  border: 1px solid var(--border-2);
+}
+
+.onboarding-progress__item--active .onboarding-progress__num {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.onboarding-progress__item--active .onboarding-progress__label {
+  color: var(--text);
+}
+
+.onboarding-progress__item--done .onboarding-progress__num {
+  background: var(--success);
+  color: #001a08;
+  border-color: transparent;
+}
+
+.onboarding__body {
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
 }
 
 .onboarding-step {
-  background: var(--bg-1);
-  padding: var(--s-9) var(--s-8) var(--s-7);
+  width: 100%;
+  max-width: 640px;
+  padding: var(--s-7) var(--s-8) var(--s-7);
   display: flex;
   flex-direction: column;
-  gap: var(--s-6);
+  gap: var(--s-5);
   position: relative;
-  overflow: hidden;
 }
 
 .onboarding-step--1::before {
@@ -451,39 +623,6 @@ const tokenCreateUrl = computed(() => {
 .onboarding-step--1 > * {
   position: relative;
   z-index: 1;
-}
-
-.onboarding-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  margin-bottom: calc(-1 * var(--s-2));
-}
-
-.onboarding-brand__mark {
-  width: 28px;
-  height: 28px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__name {
-  font-size: var(--fs-16);
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__suffix {
-  font-weight: 400;
-  color: var(--text-mute);
-}
-
-.onboarding-brand__version {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-faint);
-  letter-spacing: 1px;
 }
 
 .onboarding-step__head {
@@ -510,17 +649,11 @@ const tokenCreateUrl = computed(() => {
   border: 1px solid var(--border-2);
 }
 
-.onboarding-step--active .onboarding-step__num {
+.onboarding-step__num--active {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: transparent;
   font-weight: 600;
-}
-
-.onboarding-step--done .onboarding-step__num {
-  background: var(--success);
-  color: #001a08;
-  border-color: transparent;
 }
 
 .onboarding-step__title {
@@ -537,12 +670,18 @@ const tokenCreateUrl = computed(() => {
   font-size: var(--fs-13);
   line-height: var(--lh-body);
   margin: calc(-1 * var(--s-3)) 0 0;
-  max-width: 380px;
+  max-width: 540px;
 }
 
 .onboarding-step__lede :deep(strong) {
   color: var(--text);
   font-weight: 600;
+}
+
+.onboarding-step__lede :deep(code) {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
 }
 
 .onboarding-bullets {
@@ -586,7 +725,7 @@ const tokenCreateUrl = computed(() => {
 }
 
 .onboarding-step__foot {
-  margin-top: auto;
+  margin-top: var(--s-3);
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -790,6 +929,15 @@ const tokenCreateUrl = computed(() => {
   animation: onboarding-sync-spin 1.4s linear infinite;
 }
 
+.onboarding-sync__dot {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+}
+
 @keyframes onboarding-sync-spin {
   to {
     transform: rotate(360deg);
@@ -800,11 +948,5 @@ const tokenCreateUrl = computed(() => {
   flex: 1;
   font-size: var(--fs-12);
   color: var(--text);
-}
-
-.onboarding-sync__ago {
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-faint);
 }
 </style>
