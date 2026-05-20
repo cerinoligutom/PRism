@@ -1,8 +1,11 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 
+import type { PrDetailSurface } from "@/types/conversation";
+
 export type ThemeMode = "dark" | "light" | "system";
 export type Density = "tight" | "comfortable" | "roomy";
+export type { PrDetailSurface };
 
 export interface AccentHue {
   /** OKLCH hue in degrees (0-360). */
@@ -30,12 +33,14 @@ interface PersistedState {
   mode: ThemeMode;
   density: Density;
   accent: AccentHue;
+  prDetailSurface: PrDetailSurface;
 }
 
 const DEFAULT_STATE: PersistedState = {
   mode: "dark",
   density: "comfortable",
   accent: ACCENT_PRESETS.magenta!,
+  prDetailSurface: "drawer",
 };
 
 function readPersisted(): PersistedState {
@@ -64,6 +69,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
   const mode = ref<ThemeMode>(DEFAULT_STATE.mode);
   const density = ref<Density>(DEFAULT_STATE.density);
   const accent = ref<AccentHue>({ ...DEFAULT_STATE.accent });
+  const prDetailSurface = ref<PrDetailSurface>(DEFAULT_STATE.prDetailSurface);
 
   function effectiveTheme(): "dark" | "light" {
     if (mode.value === "system") return prefersDark() ? "dark" : "light";
@@ -85,6 +91,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
       mode: mode.value,
       density: density.value,
       accent: { ...accent.value },
+      prDetailSurface: prDetailSurface.value,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
@@ -94,6 +101,11 @@ export const useAppearanceStore = defineStore("appearance", () => {
     mode.value = stored.mode;
     density.value = stored.density;
     accent.value = { ...stored.accent };
+    // Guard against stale persisted values from earlier app versions that
+    // pre-date the surface selector — anything other than the two enabled
+    // options is coerced back to the default.
+    prDetailSurface.value =
+      stored.prDetailSurface === "route" ? "route" : "drawer";
     applyToDocument();
 
     // Always-on OS theme listener so switching to "system" mid-session also
@@ -107,7 +119,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
     }
   }
 
-  watch([mode, density, accent], () => {
+  watch([mode, density, accent, prDetailSurface], () => {
     applyToDocument();
     persist();
   }, { deep: true });
@@ -124,15 +136,24 @@ export const useAppearanceStore = defineStore("appearance", () => {
   function setAccentHue(hue: number): void {
     accent.value = { ...accent.value, h: clampHue(hue) };
   }
+  function setPrDetailSurface(next: PrDetailSurface): void {
+    // `'inline'` is reserved for a post-M3 follow-up host; the settings
+    // selector renders it disabled, but the guard here keeps a stale value
+    // from a manual localStorage edit out of the runtime path.
+    if (next === "inline") return;
+    prDetailSurface.value = next;
+  }
 
   return {
     mode,
     density,
     accent,
+    prDetailSurface,
     hydrate,
     setMode,
     setDensity,
     setAccent,
     setAccentHue,
+    setPrDetailSurface,
   };
 });
