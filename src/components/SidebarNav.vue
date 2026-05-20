@@ -1,8 +1,25 @@
 <script setup lang="ts">
 import { RouterLink } from "vue-router";
 
+import { useDashboardStore, type DashboardView } from "@/stores/dashboard";
+
 // PRism brand mark — the logo carries refraction lines in semantic colours.
 // Kept inline so the strokes inherit `currentColor` from the surrounding nav.
+
+const dashboard = useDashboardStore();
+
+interface NavLink {
+  readonly view: DashboardView;
+  readonly to: string;
+  readonly label: string;
+}
+
+const links: readonly NavLink[] = [
+  { view: "authored", to: "/dashboard/authored", label: "Authored by me" },
+  { view: "assigned", to: "/dashboard/assigned", label: "Assigned to me" },
+  { view: "watching", to: "/dashboard/watching", label: "Watching" },
+  { view: "team", to: "/dashboard/team", label: "Team" },
+];
 </script>
 
 <template>
@@ -23,30 +40,30 @@ import { RouterLink } from "vue-router";
 
     <h6 class="section-title sidebar__section-heading">Views</h6>
     <nav class="sidebar__nav" aria-label="Primary views">
-      <RouterLink to="/" class="nav-item" :class="{ active: $route.name === 'dashboard' }" exact-active-class="">
+      <RouterLink
+        v-for="link in links"
+        :key="link.view"
+        :to="link.to"
+        class="nav-item"
+        active-class="active"
+      >
         <span class="nav-icon">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7l6-4 6 4-6 4z" /><path d="M2 11l6 4 6-4" /></svg>
+          <template v-if="link.view === 'authored'">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7l6-4 6 4-6 4z" /><path d="M2 11l6 4 6-4" /></svg>
+          </template>
+          <template v-else-if="link.view === 'assigned'">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="6" r="2.5" /><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4" /></svg>
+          </template>
+          <template v-else-if="link.view === 'watching'">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8C3 4.5 5.5 3 8 3s5 1.5 6.5 5C13 11.5 10.5 13 8 13s-5-1.5-6.5-5z" /></svg>
+          </template>
+          <template v-else>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="6" r="2" /><circle cx="11" cy="6" r="2" /><path d="M1 14c.5-2 2-3 4-3s3.5 1 4 3M7 14c.5-2 2-3 4-3s3.5 1 4 3" /></svg>
+          </template>
         </span>
-        Authored by me
+        {{ link.label }}
+        <span class="count">{{ dashboard.counts[link.view] }}</span>
       </RouterLink>
-      <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M2">
-        <span class="nav-icon">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="6" r="2.5" /><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4" /></svg>
-        </span>
-        Assigned to me
-      </span>
-      <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M2">
-        <span class="nav-icon">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8C3 4.5 5.5 3 8 3s5 1.5 6.5 5C13 11.5 10.5 13 8 13s-5-1.5-6.5-5z" /></svg>
-        </span>
-        Watching
-      </span>
-      <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M2">
-        <span class="nav-icon">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="6" r="2" /><circle cx="11" cy="6" r="2" /><path d="M1 14c.5-2 2-3 4-3s3.5 1 4 3M7 14c.5-2 2-3 4-3s3.5 1 4 3" /></svg>
-        </span>
-        Team
-      </span>
     </nav>
 
     <div class="sidebar__foot">
@@ -109,21 +126,5 @@ import { RouterLink } from "vue-router";
   margin-top: auto;
   border-top: 1px solid var(--border-1);
   padding: 10px 0;
-}
-
-/* nav-item--disabled is the local modifier for the primitives.css `.nav-item`
- * block. Renders the "Lands in M2+" affordance without removing the row. */
-.nav-item--disabled {
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
-
-.nav-item--disabled:hover {
-  background: transparent;
-  color: var(--text-disabled);
-}
-
-.nav-item--disabled .nav-icon {
-  color: var(--text-disabled);
 }
 </style>

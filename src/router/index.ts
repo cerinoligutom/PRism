@@ -1,14 +1,41 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import DashboardView from "@/views/DashboardView.vue";
+import type { DashboardView as DashboardViewName } from "@/stores/dashboard";
 
+// The four dashboard views share the same component and differ only by the
+// `view` route meta. The store reads `to.meta.dashboardView` on each navigation
+// and reloads.
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: "/",
-      name: "dashboard",
+      redirect: { name: "dashboard.authored" },
+    },
+    {
+      path: "/dashboard/authored",
+      name: "dashboard.authored",
       component: DashboardView,
+      meta: { dashboardView: "authored" satisfies DashboardViewName },
+    },
+    {
+      path: "/dashboard/assigned",
+      name: "dashboard.assigned",
+      component: DashboardView,
+      meta: { dashboardView: "assigned" satisfies DashboardViewName },
+    },
+    {
+      path: "/dashboard/watching",
+      name: "dashboard.watching",
+      component: DashboardView,
+      meta: { dashboardView: "watching" satisfies DashboardViewName },
+    },
+    {
+      path: "/dashboard/team",
+      name: "dashboard.team",
+      component: DashboardView,
+      meta: { dashboardView: "team" satisfies DashboardViewName },
     },
     {
       path: "/onboarding",
