@@ -11,10 +11,20 @@ export interface Account {
   readonly expires_at: string | null;
 }
 
+export type PermissionState = "granted" | "missing" | "unknown";
+
+export interface PermissionChecks {
+  readonly contents: PermissionState;
+  readonly pull_requests: PermissionState;
+  readonly metadata: PermissionState;
+  readonly members: PermissionState;
+}
+
 export interface ValidateTokenResult {
   readonly login: string;
   readonly scopes: readonly string[];
   readonly expires_at: string | null;
+  readonly permissions: PermissionChecks;
 }
 
 export interface AddAccountInput {

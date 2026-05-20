@@ -3,9 +3,20 @@
 //! Runs once at account-add time so the token is only ever stored if it
 //! actually works. Returns the GitHub login, the granted scopes, and the
 //! token expiry — everything the metadata store needs.
+//!
+//! `check_permissions` runs only from the onboarding "Validate" flow and
+//! verifies each required PRism permission against GitHub. Only classic
+//! PATs can be verified — the `x-oauth-scopes` header lists granted
+//! scopes verbatim. Fine-grained PATs deliberately return Unknown across
+//! the board because GitHub doesn't expose granted permissions through
+//! any documented API and resource-endpoint probing is unreliable (the
+//! permission check is bypassed for public-repo data). The UI treats
+//! Unknown rows as informational so Connect for fine-grained PATs gates
+//! only on token validity, not on permission verification.
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use serde::Serialize;
 use thiserror::Error;
 
 /// Resolved identity for a PAT, written to the account store on success.
@@ -127,6 +138,79 @@ fn read_expiry(headers: &reqwest::header::HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Per-permission grant state surfaced to the onboarding UI so it can show
+/// each row as pending / granted / missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionState {
+    Granted,
+    Missing,
+    /// We weren't able to verify the permission — e.g. a fine-grained PAT
+    /// with no repositories selected leaves us nothing to probe, and the
+    /// Members permission requires knowing an org the user belongs to.
+    /// Unknown rows do not block Connect; the UI flags them so the user
+    /// can verify manually.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PermissionChecks {
+    pub contents: PermissionState,
+    pub pull_requests: PermissionState,
+    pub metadata: PermissionState,
+    pub members: PermissionState,
+}
+
+/// Returns the per-permission grant state for a validated token.
+///
+/// Classic PATs (which always populate `x-oauth-scopes`) are derived from
+/// the scope set — no extra network calls. Fine-grained PATs return all
+/// Unknown: GitHub publishes no introspection endpoint for them, and
+/// probing resource endpoints is unreliable (public-repo data bypasses
+/// the per-permission check). The frontend treats Unknown rows as
+/// informational and doesn't gate Connect on them for fine-grained.
+pub fn check_permissions(scopes: &[String]) -> PermissionChecks {
+    if scopes.is_empty() {
+        return fine_grained_unknown();
+    }
+    classic_checks(scopes)
+}
+
+fn classic_checks(scopes: &[String]) -> PermissionChecks {
+    let has = |s: &str| scopes.iter().any(|x| x == s);
+    // `repo` is the umbrella scope PRism's create-token URL pre-fills; it
+    // implicitly covers contents, pull_requests, and metadata for both
+    // public and private repos. `public_repo` is the public-only subset.
+    let has_repo = has("repo") || has("public_repo");
+    // `read:org` is the minimum org membership read scope. The fuller
+    // `admin:org` / `write:org` also grant it.
+    let has_org = has("read:org") || has("admin:org") || has("write:org");
+    let repo_state = if has_repo {
+        PermissionState::Granted
+    } else {
+        PermissionState::Missing
+    };
+    PermissionChecks {
+        contents: repo_state,
+        pull_requests: repo_state,
+        metadata: repo_state,
+        members: if has_org {
+            PermissionState::Granted
+        } else {
+            PermissionState::Missing
+        },
+    }
+}
+
+fn fine_grained_unknown() -> PermissionChecks {
+    PermissionChecks {
+        contents: PermissionState::Unknown,
+        pull_requests: PermissionState::Unknown,
+        metadata: PermissionState::Unknown,
+        members: PermissionState::Unknown,
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +353,51 @@ mod tests {
         let got = validate_against(&server, "tok").await.unwrap();
         assert!(got.scopes.is_empty());
         assert!(got.expires_at.is_none());
+    }
+
+    // ────── Permission checks ──────
+
+    fn s(v: &str) -> Vec<String> {
+        v.split_whitespace().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn classic_with_repo_and_read_org_grants_everything() {
+        let checks = check_permissions(&s("repo read:org read:user"));
+        assert_eq!(checks.contents, PermissionState::Granted);
+        assert_eq!(checks.pull_requests, PermissionState::Granted);
+        assert_eq!(checks.metadata, PermissionState::Granted);
+        assert_eq!(checks.members, PermissionState::Granted);
+    }
+
+    #[test]
+    fn classic_with_only_public_repo_still_grants_contents() {
+        let checks = check_permissions(&s("public_repo"));
+        assert_eq!(checks.contents, PermissionState::Granted);
+        assert_eq!(checks.pull_requests, PermissionState::Granted);
+        // read:org missing means members not granted.
+        assert_eq!(checks.members, PermissionState::Missing);
+    }
+
+    #[test]
+    fn classic_without_repo_marks_contents_missing() {
+        let checks = check_permissions(&s("read:user read:org"));
+        assert_eq!(checks.contents, PermissionState::Missing);
+        assert_eq!(checks.pull_requests, PermissionState::Missing);
+        assert_eq!(checks.metadata, PermissionState::Missing);
+        assert_eq!(checks.members, PermissionState::Granted);
+    }
+
+    #[test]
+    fn fine_grained_reports_all_unknown() {
+        // Empty scopes ≡ fine-grained PAT. GitHub doesn't expose granted
+        // permissions for these, so we deliberately return Unknown across
+        // the board — the UI renders the rows as informational and
+        // doesn't gate Connect on them.
+        let checks = check_permissions(&[]);
+        assert_eq!(checks.contents, PermissionState::Unknown);
+        assert_eq!(checks.pull_requests, PermissionState::Unknown);
+        assert_eq!(checks.metadata, PermissionState::Unknown);
+        assert_eq!(checks.members, PermissionState::Unknown);
     }
 }
