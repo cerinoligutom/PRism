@@ -174,6 +174,23 @@ Australian English in prose, documentation, comments, and code identifiers.
 - Async/await over raw promises. Optional chaining and nullish coalescing.
 - Never hardcode style values; use the design tokens from Tailwind / Reka UI.
 
+### Components — three-layer primitives stack
+
+PRism's UI is layered, lowest to highest:
+
+1. **CSS primitives** in [`src/assets/styles/primitives.css`](src/assets/styles/primitives.css) — `.btn`, `.badge`, `.avatar`, `.nav-item`, etc. The bespoke equivalent of Tailwind utilities, mirrored from [`docs/design/app.css`](docs/design/app.css).
+2. **Headless behaviour** from [Reka UI](https://reka-ui.com/) — `DialogRoot`, `SwitchRoot`, `PopoverRoot`, `RadioGroupRoot`, etc. Provides focus management, keyboard handling, ARIA wiring.
+3. **Vue component primitives** in `src/components/ui/`, named `PRism*` (e.g. `PRismButton.vue`, `PRismBadge.vue`, `PRismDialog.vue`). Wrap layers 1 and 2 with a typed `<script setup lang="ts">` API and `defineProps<{ variant?: ... }>()`.
+
+**Rules:**
+
+- **Reach for a `PRism*` primitive first** when you need a button, badge, avatar, input, card, chip, dialog, etc. If one doesn't exist, decide whether to add it (see below) or use the underlying CSS / Reka primitive directly.
+- **Extract a new primitive when a pattern is about to appear in three places.** Two places is borderline; one place is premature. The point is centralising shared behaviour, not pre-building everything.
+- **Component API surface:** `defineProps<{ ... }>()` with explicit unions (`variant?: "default" | "primary" | "ghost"`) rather than `string`. Use `withDefaults` for default values. Slots for content; props for variants and behaviour flags.
+- **Where applicable, let the primitive render different elements via a prop** (`to` → `RouterLink`, `href` → `<a>`, default → `<button>`) so call sites read like `<PRismButton to="/settings">` instead of nesting `RouterLink` + class chains.
+- **Keep `PRism*` primitives styled via the CSS primitives layer** (`.btn`, `.badge`, etc.) — don't reintroduce hex codes or pixel values. New variants extend the CSS primitives first, then the Vue prop type.
+- **App-level components** (`AppShell`, `SidebarNav`, `StatusBar`, view components) sit on top of `PRism*` primitives. They live in `src/components/` (top level) or `src/views/`, not `src/components/ui/`.
+
 ### CSS and styling
 
 - **Prefer Tailwind utilities.** Layout, spacing, colour, typography, sizing — all default to Tailwind classes (`flex`, `gap-3`, `bg-surface`, `text-fg-mute`, `border-border-faint`). The Tailwind theme in [`src/assets/styles/main.css`](src/assets/styles/main.css) already aliases every design token, so utilities like `text-accent`, `bg-surface-raised`, `text-fg-strong` resolve against the OKLCH-backed CSS variables.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { RouterLink } from "vue-router";
+import PRismButton from "@/components/ui/PRismButton.vue";
 </script>
 
 <template>
@@ -26,9 +26,9 @@ import { RouterLink } from "vue-router";
           PRism watches the pull requests you care about across every repo and
           org you choose. Your token never leaves your machine.
         </p>
-        <RouterLink to="/onboarding" class="btn btn-primary btn-lg">
+        <PRismButton to="/onboarding" variant="primary" size="lg">
           Connect GitHub
-        </RouterLink>
+        </PRismButton>
       </div>
     </div>
   </section>

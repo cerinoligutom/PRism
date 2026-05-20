@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { RouterLink } from "vue-router";
+import PRismButton from "@/components/ui/PRismButton.vue";
 
 // Full 3-step onboarding (welcome → PAT → org/repo select) lands with issue
 // #10. This placeholder anchors the route and confirms the shell handles
@@ -16,7 +16,7 @@ import { RouterLink } from "vue-router";
           issue #10
         </a>.
       </p>
-      <RouterLink to="/" class="btn">Back to dashboard</RouterLink>
+      <PRismButton to="/">Back to dashboard</PRismButton>
     </div>
   </section>
 </template>

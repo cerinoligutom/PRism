@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import PRismButton from "@/components/ui/PRismButton.vue";
+
 // Real Accounts panel (PAT add/list/remove, expired-token banner, scopes
 // hint, re-auth flow) lands with issue #10. This placeholder shows the
 // section chrome so the routing + scroll behaviour can be verified.
@@ -21,7 +23,7 @@
 
       <div class="accounts-panel__empty">
         <p class="accounts-panel__empty-copy">No accounts connected yet.</p>
-        <a class="btn btn-primary" href="/onboarding">Connect an account</a>
+        <PRismButton to="/onboarding" variant="primary">Connect an account</PRismButton>
       </div>
     </section>
   </div>
