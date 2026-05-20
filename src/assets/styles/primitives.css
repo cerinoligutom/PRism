@@ -278,6 +278,49 @@ kbd {
   line-height: 1.2;
 }
 
+/* ────── PR row state strip (left edge accent) ────── */
+.row-strip-needs    { background: var(--accent); }
+.row-strip-approved { background: var(--success); }
+.row-strip-changes  { background: var(--danger); }
+.row-strip-stale    { background: var(--warning); }
+.row-strip-draft    { background: var(--draft); }
+.row-strip-merged   { background: var(--merged); }
+.row-strip-none     { background: transparent; }
+
+/* ────── Segmented control (density toggle, group selector, sort) ────── */
+.segmented {
+  display: inline-flex;
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+.segmented button {
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  padding: 0 10px;
+  height: 28px;
+  font-size: var(--fs-11);
+  font-weight: 500;
+  cursor: pointer;
+  border-right: 1px solid var(--border-1);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.segmented button:last-child { border-right: 0; }
+.segmented button.active {
+  color: var(--text-strong);
+  background: var(--bg-4);
+}
+.segmented button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+.segmented .ico { color: var(--text-faint); display: inline-flex; }
+.segmented button.active .ico { color: var(--text); }
+
 /* ────── In-app scrollbars ────── */
 .scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .scroll::-webkit-scrollbar-thumb {
