@@ -7,17 +7,19 @@
 //! short-circuit its sleep and run one cycle immediately (subject to the
 //! rate-budget guard).
 //!
-//! Per-account isolation is enforced by `tokio::spawn`'ing a distinct task
-//! per account: one task panicking or hanging never touches the others, and
-//! the parent token cancels them all on app shutdown.
+//! Per-account isolation is enforced by spawning a distinct task per account
+//! on Tauri's async runtime: one task panicking or hanging never touches the
+//! others, and the parent token cancels them all on app shutdown. We use
+//! `tauri::async_runtime::spawn` (not `tokio::spawn`) so the setup hook can
+//! start the pool without entering a runtime first.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rusqlite::params;
+use tauri::async_runtime::JoinHandle;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -307,7 +309,7 @@ fn start_account_task(
     let task = {
         let cancel = cancel.clone();
         let refresh = refresh.clone();
-        tokio::spawn(account_loop(ctx, account, cancel, refresh))
+        tauri::async_runtime::spawn(account_loop(ctx, account, cancel, refresh))
     };
 
     (
