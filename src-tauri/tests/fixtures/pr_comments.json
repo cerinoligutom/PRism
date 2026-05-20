@@ -1,0 +1,58 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "id": "PRRT_fix1",
+              "comments": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": [
+                  {
+                    "id": "PRRC_h1",
+                    "databaseId": 4001,
+                    "author": { "login": "bob" },
+                    "body": "**should this** be wrapped?",
+                    "bodyText": "should this be wrapped?",
+                    "createdAt": "2026-05-19T10:00:00Z",
+                    "path": "src/lib.rs",
+                    "line": 42,
+                    "originalLine": 42,
+                    "side": "RIGHT"
+                  },
+                  {
+                    "id": "PRRC_r1",
+                    "databaseId": 4002,
+                    "author": { "login": "alice" },
+                    "body": "good catch",
+                    "bodyText": "good catch",
+                    "createdAt": "2026-05-19T10:05:00Z",
+                    "path": "src/lib.rs",
+                    "line": 42,
+                    "originalLine": 42,
+                    "side": "RIGHT"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "issueComments": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "id": "IC_1",
+              "databaseId": 8001,
+              "author": { "login": "carol" },
+              "body": "Nice work overall.",
+              "bodyText": "Nice work overall.",
+              "createdAt": "2026-05-19T11:00:00Z"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

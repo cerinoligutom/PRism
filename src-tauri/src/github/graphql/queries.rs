@@ -1,12 +1,14 @@
 //! GraphQL query strings and response types.
 //!
-//! Three queries ship in v1:
+//! Four queries ship in v1:
 //!
 //! 1. `PR_DETAIL_QUERY` - full PR shape with `reviewThreads.isResolved`, which is
 //!    the only place GitHub exposes thread resolution state (ADR 0006).
 //! 2. `PR_TIMELINE_QUERY` - the timeline event types listed in ADR 0007, plus
 //!    cursors for pagination.
-//! 3. `DISCOVERY_QUERY` - the search-API call the discovery phase fans out three
+//! 3. `PR_COMMENTS_QUERY` - the lazy-hydration query M3 uses to pull full thread
+//!    and issue-comment bodies on drawer / route open (ADR 0010).
+//! 4. `DISCOVERY_QUERY` - the search-API call the discovery phase fans out three
 //!    times per account per cycle to enumerate Authored / Assigned / Watching
 //!    PRs (ADR 0009).
 //!
@@ -135,6 +137,55 @@ query PrTimeline($owner: String!, $name: String!, $number: Int!, $after: String)
           ... on MergedEvent { createdAt actor { login } }
           ... on ClosedEvent { createdAt actor { login } }
           ... on ReopenedEvent { createdAt actor { login } }
+        }
+      }
+    }
+  }
+}
+"#;
+
+/// Full thread + issue-comment bodies for the lazy hydrator (M3, ADR 0010).
+///
+/// Called once per `fetch_pr_conversation` invocation. The sync cycle pulls a
+/// head-comment snapshot via `PR_DETAIL_QUERY`; this query fills in the rest of
+/// the conversation when the drawer / route opens. Capped at 100 threads per
+/// page x 100 comments per thread + 100 issue comments per page (the lazy
+/// hydrator caps total pulls at 200 comments / 200 issue comments per the
+/// contract).
+pub const PR_COMMENTS_QUERY: &str = r#"
+query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: String, $issueCommentsAfter: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $threadsAfter) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          comments(first: 100) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              databaseId
+              author { login }
+              body
+              bodyText
+              createdAt
+              path
+              line
+              originalLine
+              side
+            }
+          }
+        }
+      }
+      issueComments(first: 100, after: $issueCommentsAfter) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          databaseId
+          author { login }
+          body
+          bodyText
+          createdAt
         }
       }
     }
@@ -380,6 +431,89 @@ pub struct PageInfo {
     pub has_next_page: bool,
     #[serde(default)]
     pub end_cursor: Option<String>,
+}
+
+// ===== PR comments (lazy hydration) =====
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PrCommentsData {
+    pub repository: Option<PrCommentsRepository>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PrCommentsRepository {
+    #[serde(rename = "pullRequest")]
+    pub pull_request: Option<PullRequestComments>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestComments {
+    pub review_threads: ReviewThreadCommentsConnection,
+    pub issue_comments: IssueCommentNodeConnection,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThreadCommentsConnection {
+    pub page_info: PageInfo,
+    pub nodes: Vec<ReviewThreadComments>,
+}
+
+/// One review thread, paired with the hydrated comment array.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThreadComments {
+    pub id: String,
+    pub comments: ReviewCommentConnection,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCommentConnection {
+    pub page_info: PageInfo,
+    pub nodes: Vec<ReviewCommentNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCommentNode {
+    pub id: String,
+    #[serde(default)]
+    pub database_id: Option<i64>,
+    #[serde(default)]
+    pub author: Option<Actor>,
+    pub body: String,
+    pub body_text: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub line: Option<i64>,
+    #[serde(default)]
+    pub original_line: Option<i64>,
+    #[serde(default)]
+    pub side: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueCommentNodeConnection {
+    pub page_info: PageInfo,
+    pub nodes: Vec<IssueCommentNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueCommentNode {
+    pub id: String,
+    #[serde(default)]
+    pub database_id: Option<i64>,
+    #[serde(default)]
+    pub author: Option<Actor>,
+    pub body: String,
+    pub body_text: String,
+    pub created_at: String,
 }
 
 // ===== Timeline =====
@@ -821,6 +955,80 @@ mod tests {
         let json = serde_json::json!({ "__typename": "Issue", "id": "I_1" });
         let node: DiscoveryNode = serde_json::from_value(json).unwrap();
         assert_eq!(node, DiscoveryNode::Other);
+    }
+
+    #[test]
+    fn pr_comments_query_includes_threads_and_issue_comments() {
+        for field in [
+            "reviewThreads(first: 100",
+            "issueComments(first: 100",
+            "comments(first: 100)",
+            "databaseId",
+            "bodyText",
+            "originalLine",
+            "side",
+        ] {
+            assert!(
+                PR_COMMENTS_QUERY.contains(field),
+                "pr comments query missing field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_comments_data_deserialises_full_payload() {
+        let json = serde_json::json!({
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [{
+                            "id": "PRRT_1",
+                            "comments": {
+                                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                                "nodes": [{
+                                    "id": "PRRC_1",
+                                    "databaseId": 4242,
+                                    "author": { "login": "alice" },
+                                    "body": "**hello**",
+                                    "bodyText": "hello",
+                                    "createdAt": "2026-05-19T10:00:00Z",
+                                    "path": "src/lib.rs",
+                                    "line": 12,
+                                    "originalLine": 10,
+                                    "side": "RIGHT"
+                                }]
+                            }
+                        }]
+                    },
+                    "issueComments": {
+                        "pageInfo": { "hasNextPage": true, "endCursor": "c1" },
+                        "nodes": [{
+                            "id": "IC_1",
+                            "databaseId": 9001,
+                            "author": { "login": "bob" },
+                            "body": "looks good",
+                            "bodyText": "looks good",
+                            "createdAt": "2026-05-19T11:00:00Z"
+                        }]
+                    }
+                }
+            }
+        });
+        let parsed: PrCommentsData = serde_json::from_value(json).unwrap();
+        let pr = parsed.repository.unwrap().pull_request.unwrap();
+        assert_eq!(pr.review_threads.nodes.len(), 1);
+        assert_eq!(pr.review_threads.nodes[0].comments.nodes.len(), 1);
+        let c = &pr.review_threads.nodes[0].comments.nodes[0];
+        assert_eq!(c.database_id, Some(4242));
+        assert_eq!(c.path.as_deref(), Some("src/lib.rs"));
+        assert_eq!(c.side.as_deref(), Some("RIGHT"));
+        assert_eq!(pr.issue_comments.nodes.len(), 1);
+        assert!(pr.issue_comments.page_info.has_next_page);
+        assert_eq!(
+            pr.issue_comments.page_info.end_cursor.as_deref(),
+            Some("c1")
+        );
     }
 
     #[test]
