@@ -53,6 +53,10 @@ pub struct DashboardPullRequest {
     /// `"REVIEW_REQUIRED"`.
     pub review_decision: Option<String>,
     pub author_login: String,
+    /// GitHub avatar URL for `author_login`. Resolved via `LEFT JOIN users`
+    /// at query time. `None` when the user hasn't been seen by any sync cycle
+    /// yet (frontend falls back to the initials avatar). See ADR 0013.
+    pub author_avatar_url: Option<String>,
     pub base_ref: String,
     pub head_ref: String,
     pub created_at: i64,
@@ -102,6 +106,9 @@ pub struct ReviewerEntry {
     pub state: ReviewerState,
     /// True when the reviewer's login matches the account's viewer login.
     pub is_you: bool,
+    /// GitHub avatar URL for `login`. Resolved via `LEFT JOIN users` at query
+    /// time. See ADR 0013.
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

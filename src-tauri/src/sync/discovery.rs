@@ -261,6 +261,25 @@ fn upsert_pull_request(
         ],
     )?;
 
+    // Users cache (ADR 0013). Discovery is the only place where a PR's author
+    // first lands, so the avatar URL we surface here primes the cache before
+    // the per-PR enrichment cycle runs. Skip when GraphQL didn't return an
+    // avatar URL (ghost author, mocked fixture).
+    if let Some(actor) = pr.author.as_ref() {
+        if let Some(url) = actor.avatar_url.as_deref() {
+            if !actor.login.is_empty() && !url.is_empty() {
+                conn.execute(
+                    "INSERT INTO users (login, avatar_url, last_seen_at)
+                        VALUES (?1, ?2, ?3)
+                     ON CONFLICT(login) DO UPDATE SET
+                        avatar_url = excluded.avatar_url,
+                        last_seen_at = excluded.last_seen_at",
+                    params![actor.login, url, updated],
+                )?;
+            }
+        }
+    }
+
     Ok(pr.database_id)
 }
 
@@ -365,16 +384,12 @@ mod tests {
             is_draft: false,
             created_at: "2026-05-18T10:00:00Z".into(),
             updated_at: "2026-05-19T10:00:00Z".into(),
-            author: Some(Actor {
-                login: owner.into(),
-            }),
+            author: Some(Actor::new(owner)),
             base_ref_name: "main".into(),
             head_ref_name: "feat/x".into(),
             repository: DiscoveryRepository {
                 database_id: repo_id,
-                owner: Actor {
-                    login: owner.into(),
-                },
+                owner: Actor::new(owner),
                 name: "repo".into(),
                 is_private: false,
             },

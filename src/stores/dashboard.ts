@@ -45,6 +45,8 @@ export interface ReviewerEntry {
   readonly login: string;
   readonly state: ReviewerState;
   readonly is_you: boolean;
+  /** GitHub avatar URL for `login`; see ADR 0013. */
+  readonly avatar_url: string | null;
 }
 
 export interface RepoRef {
@@ -63,6 +65,8 @@ export interface DashboardPullRequest {
   readonly mergeable: string | null;
   readonly review_decision: string | null;
   readonly author_login: string;
+  /** GitHub avatar URL for `author_login`; see ADR 0013. */
+  readonly author_avatar_url: string | null;
   readonly base_ref: string;
   readonly head_ref: string;
   readonly created_at: number;

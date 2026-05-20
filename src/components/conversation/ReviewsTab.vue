@@ -3,7 +3,8 @@ import { computed } from "vue";
 
 import type { PullRequestReview } from "@/types/conversation";
 
-import { avatarSeed, formatRelativeAgo, initials } from "@/lib/format";
+import { formatRelativeAgo } from "@/lib/format";
+import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 
 interface Props {
   reviews: readonly PullRequestReview[];
@@ -67,10 +68,12 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
       :key="entry.review.id"
       class="review-card"
     >
-      <span
-        :class="['avatar', avatarSeed(entry.review.author_login), 'review-card__avatar']"
-        :title="entry.review.author_login"
-      >{{ initials(entry.review.author_login) }}</span>
+      <PRismAvatar
+        :login="entry.review.author_login"
+        :avatar-url="entry.review.avatar_url"
+        size="lg"
+        class="review-card__avatar"
+      />
 
       <div class="review-card__body">
         <div class="review-card__header">

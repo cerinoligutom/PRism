@@ -506,3 +506,44 @@ fn threads_projects_four_buckets_when_populated() {
     assert_eq!(threads.resolved_involved, 1);
     assert_eq!(threads.resolved_uninvolved, 1);
 }
+
+#[test]
+fn author_and_reviewer_avatar_urls_left_join_users_table() {
+    // ADR 0013: dashboard list reads `avatar_url` for the PR author and each
+    // reviewer via `LEFT JOIN users`. Missing rows produce `None`, which the
+    // frontend renders as the initials fallback.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    // Seed two users: the PR author + one reviewer. The remaining reviewers
+    // intentionally have no users row to assert the `None` branch.
+    conn.execute_batch(
+        r#"
+        INSERT INTO users (login, avatar_url, last_seen_at) VALUES
+            ('alice', 'https://avatars/alice.png', 0),
+            ('bob',   'https://avatars/bob.png',   0);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert_eq!(pr.author_login, "alice");
+    assert_eq!(
+        pr.author_avatar_url.as_deref(),
+        Some("https://avatars/alice.png"),
+    );
+
+    let bob = pr.reviewers.iter().find(|r| r.login == "bob").unwrap();
+    assert_eq!(bob.avatar_url.as_deref(), Some("https://avatars/bob.png"));
+
+    // `carol` was a reviewer but no users row exists → avatar_url is None.
+    let carol = pr.reviewers.iter().find(|r| r.login == "carol").unwrap();
+    assert!(carol.avatar_url.is_none());
+}

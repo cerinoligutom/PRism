@@ -20,6 +20,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0010](0010-conversation-depth-storage.md) | Conversation-depth storage and hydration | Accepted | [#68](https://github.com/cerinoligutom/PRism/issues/68) |
 | [0011](0011-cancel-inline-pr-detail-surface.md) | Cancel inline expansion as a third PR detail surface | Accepted | [#88](https://github.com/cerinoligutom/PRism/issues/88) |
 | [0012](0012-threads-bar-four-state-and-outdated-counted.md) | Threads-bar four-state redesign and outdated counted in the denominator | Accepted | [#98](https://github.com/cerinoligutom/PRism/issues/98) |
+| [0013](0013-user-avatars-cache.md) | User avatar caching via a `users` table | Accepted | [#99](https://github.com/cerinoligutom/PRism/issues/99) |
 
 ## Statuses
 

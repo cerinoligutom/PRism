@@ -311,6 +311,9 @@ fn upsert_review_comment(
         .map(|a| a.login.as_str())
         .unwrap_or("");
     let created_at = parse_rfc3339(&comment.created_at).unwrap_or(0);
+    if let Some(actor) = comment.author.as_ref() {
+        upsert_user_avatar(tx, &actor.login, actor.avatar_url.as_deref(), created_at)?;
+    }
     // The unique constraint on `node_id` is a partial index
     // (`WHERE node_id IS NOT NULL`) so the conflict target needs the matching
     // predicate. The hydrator always writes a non-null `node_id`.
@@ -352,6 +355,9 @@ fn upsert_issue_comment(
         .map(|a| a.login.as_str())
         .unwrap_or("");
     let created_at = parse_rfc3339(&comment.created_at).unwrap_or(0);
+    if let Some(actor) = comment.author.as_ref() {
+        upsert_user_avatar(tx, &actor.login, actor.avatar_url.as_deref(), created_at)?;
+    }
     tx.execute(
         "INSERT INTO issue_comments
             (pull_request_id, author_login, body, created_at, node_id, database_id)
@@ -370,6 +376,35 @@ fn upsert_issue_comment(
             comment.id,
             comment.database_id,
         ],
+    )?;
+    Ok(())
+}
+
+/// Mirror of the worker's user-cache upsert (ADR 0013) used by the lazy
+/// hydrator. The hydrator processes payload comments outside the sync cycle,
+/// so populating `users` from here keeps every fresh avatar URL the lazy
+/// fetch surfaced (e.g. a reviewer who first commented after the last sync).
+/// No-op when `avatar_url` is `None` or empty — we never blank an existing
+/// row with a NULL on a partial payload.
+fn upsert_user_avatar(
+    tx: &rusqlite::Transaction<'_>,
+    login: &str,
+    avatar_url: Option<&str>,
+    last_seen_at: i64,
+) -> Result<(), rusqlite::Error> {
+    let Some(url) = avatar_url else {
+        return Ok(());
+    };
+    if login.is_empty() || url.is_empty() {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO users (login, avatar_url, last_seen_at)
+            VALUES (?1, ?2, ?3)
+         ON CONFLICT(login) DO UPDATE SET
+            avatar_url = excluded.avatar_url,
+            last_seen_at = excluded.last_seen_at",
+        params![login, url, last_seen_at],
     )?;
     Ok(())
 }
@@ -487,9 +522,7 @@ mod tests {
         ReviewCommentNode {
             id: id.into(),
             database_id: Some(db),
-            author: Some(Actor {
-                login: login.into(),
-            }),
+            author: Some(Actor::new(login)),
             body: body.into(),
             body_text: body.into(),
             created_at: "2026-05-19T10:00:00Z".into(),

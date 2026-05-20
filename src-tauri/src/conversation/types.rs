@@ -44,6 +44,10 @@ pub struct PullRequestThread {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadHeadComment {
     pub author_login: String,
+    /// GitHub avatar URL for `author_login`, resolved via `LEFT JOIN users`
+    /// at query time. `None` when the user hasn't been seen by any sync cycle
+    /// yet (frontend falls back to the initials avatar). See ADR 0013.
+    pub avatar_url: Option<String>,
     pub body_text: String,
     pub created_at: i64,
 }
@@ -90,6 +94,9 @@ pub struct PullRequestReview {
     pub id: i64,
     pub node_id: String,
     pub author_login: String,
+    /// GitHub avatar URL for `author_login`. Resolved via `LEFT JOIN users`
+    /// at query time. See ADR 0013.
+    pub avatar_url: Option<String>,
     /// GraphQL `PullRequestReviewState`: `APPROVED`, `CHANGES_REQUESTED`,
     /// `COMMENTED`, `DISMISSED`, `PENDING`.
     pub state: String,
@@ -104,6 +111,9 @@ pub struct ThreadComment {
     pub id: i64,
     pub thread_id: i64,
     pub author_login: String,
+    /// GitHub avatar URL for `author_login`. Resolved via `LEFT JOIN users`
+    /// at query time. See ADR 0013.
+    pub avatar_url: Option<String>,
     pub body: String,
     pub created_at: i64,
     pub line: Option<i64>,
@@ -116,6 +126,9 @@ pub struct ThreadComment {
 pub struct IssueComment {
     pub id: i64,
     pub author_login: String,
+    /// GitHub avatar URL for `author_login`. Resolved via `LEFT JOIN users`
+    /// at query time. See ADR 0013.
+    pub avatar_url: Option<String>,
     pub body: String,
     pub created_at: i64,
 }
@@ -144,6 +157,10 @@ pub struct HydratedConversation {
 pub struct TimelineEventRecord {
     pub event_type: String,
     pub actor_login: Option<String>,
+    /// GitHub avatar URL for `actor_login`. Resolved via `LEFT JOIN users`
+    /// at query time. `None` when the user hasn't been seen by any sync cycle
+    /// yet. See ADR 0013.
+    pub actor_avatar_url: Option<String>,
     /// Unix seconds.
     pub created_at: i64,
     pub review_state: Option<String>,

@@ -36,6 +36,7 @@ const PR_PROJECTION_COLUMNS: &str = "
     pr.mergeable,
     pr.review_decision,
     pr.author_login,
+    author_u.avatar_url AS author_avatar_url,
     pr.base_ref,
     pr.head_ref,
     pr.created_at,
@@ -104,6 +105,7 @@ fn relation_view_query(
          JOIN pull_requests pr ON pr.id = rel.pull_request_id
          JOIN repos r ON r.id = pr.repo_id
          JOIN accounts a ON a.id = rel.account_id
+         LEFT JOIN users author_u ON author_u.login = pr.author_login
          WHERE rel.{flag_column} = 1"
     );
     let mut params: Vec<i64> = Vec::new();
@@ -121,6 +123,7 @@ fn team_view_query(sort: DashboardSort, account_id: Option<i64>) -> (String, Vec
         "FROM pull_requests pr
          JOIN repos r ON r.id = pr.repo_id
          JOIN accounts a ON a.id = r.account_id
+         LEFT JOIN users author_u ON author_u.login = pr.author_login
          WHERE r.is_team_tracked = 1",
     );
     let mut params: Vec<i64> = Vec::new();
@@ -161,9 +164,9 @@ pub fn list_pull_requests(
 /// Project one PR row using the column order in [`PR_PROJECTION_COLUMNS`].
 fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error> {
     let draft: i64 = row.get(4)?;
-    let ci_state: Option<String> = row.get(16)?;
-    let ci_total: Option<i64> = row.get(17)?;
-    let ci_passing: Option<i64> = row.get(18)?;
+    let ci_state: Option<String> = row.get(17)?;
+    let ci_total: Option<i64> = row.get(18)?;
+    let ci_passing: Option<i64> = row.get(19)?;
     let ci = ci_state.map(|state| CiSummary {
         state,
         total: ci_total.unwrap_or(0),
@@ -175,11 +178,11 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     // the board. Emit `None` for that case so the frontend can render the
     // muted em-dash state (per the contract's "Dashboard rollup" section)
     // rather than an all-zeros summary.
-    let threads_total: i64 = row.get(19)?;
-    let threads_unresolved_involved: i64 = row.get(20)?;
-    let threads_unresolved_uninvolved: i64 = row.get(21)?;
-    let threads_resolved_involved: i64 = row.get(22)?;
-    let threads_resolved_uninvolved: i64 = row.get(23)?;
+    let threads_total: i64 = row.get(20)?;
+    let threads_unresolved_involved: i64 = row.get(21)?;
+    let threads_unresolved_uninvolved: i64 = row.get(22)?;
+    let threads_resolved_involved: i64 = row.get(23)?;
+    let threads_resolved_uninvolved: i64 = row.get(24)?;
     let threads = if threads_total == 0 {
         None
     } else {
@@ -192,11 +195,11 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         })
     };
 
-    let repo_id: i64 = row.get(24)?;
-    let repo_owner: String = row.get(25)?;
-    let repo_name: String = row.get(26)?;
-    let account_id: i64 = row.get(27)?;
-    let account_host: String = row.get(28)?;
+    let repo_id: i64 = row.get(25)?;
+    let repo_owner: String = row.get(26)?;
+    let repo_name: String = row.get(27)?;
+    let account_id: i64 = row.get(28)?;
+    let account_host: String = row.get(29)?;
 
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");
@@ -211,14 +214,15 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         mergeable: row.get(5)?,
         review_decision: row.get(6)?,
         author_login: row.get(7)?,
-        base_ref: row.get(8)?,
-        head_ref: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        latest_status_change_at: row.get(12)?,
-        additions: row.get(13)?,
-        deletions: row.get(14)?,
-        changed_files: row.get(15)?,
+        author_avatar_url: row.get(8)?,
+        base_ref: row.get(9)?,
+        head_ref: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        latest_status_change_at: row.get(13)?,
+        additions: row.get(14)?,
+        deletions: row.get(15)?,
+        changed_files: row.get(16)?,
         ci,
         threads,
         reviewers: Vec::new(),
@@ -259,11 +263,13 @@ fn hydrate_reviewers(
 
     let mut reviewers_by_pr: HashMap<i64, Vec<ReviewerEntry>> = HashMap::new();
 
-    // Submitted reviews.
+    // Submitted reviews. `LEFT JOIN users` resolves the reviewer's avatar
+    // URL (ADR 0013). Unseen logins surface `avatar_url = None`.
     let sql_reviews = format!(
-        "SELECT pull_request_id, reviewer_login, state
-           FROM reviews
-          WHERE pull_request_id IN ({placeholders})"
+        "SELECT r.pull_request_id, r.reviewer_login, r.state, u.avatar_url
+           FROM reviews r
+           LEFT JOIN users u ON u.login = r.reviewer_login
+          WHERE r.pull_request_id IN ({placeholders})"
     );
     {
         let mut stmt = conn.prepare(&sql_reviews)?;
@@ -272,6 +278,7 @@ fn hydrate_reviewers(
             let pr_id: i64 = row.get(0)?;
             let login: String = row.get(1)?;
             let state_str: String = row.get(2)?;
+            let avatar_url: Option<String> = row.get(3)?;
             let Some(state) = map_review_state(&state_str) else {
                 continue;
             };
@@ -282,15 +289,17 @@ fn hydrate_reviewers(
                     login,
                     state,
                     is_you: false,
+                    avatar_url,
                 });
         }
     }
 
     // Requested-but-not-submitted reviewers.
     let sql_requested = format!(
-        "SELECT pull_request_id, login
-           FROM requested_reviewers
-          WHERE pull_request_id IN ({placeholders})"
+        "SELECT rr.pull_request_id, rr.login, u.avatar_url
+           FROM requested_reviewers rr
+           LEFT JOIN users u ON u.login = rr.login
+          WHERE rr.pull_request_id IN ({placeholders})"
     );
     {
         let mut stmt = conn.prepare(&sql_requested)?;
@@ -298,6 +307,7 @@ fn hydrate_reviewers(
         while let Some(row) = rows.next()? {
             let pr_id: i64 = row.get(0)?;
             let login: String = row.get(1)?;
+            let avatar_url: Option<String> = row.get(2)?;
             reviewers_by_pr
                 .entry(pr_id)
                 .or_default()
@@ -305,6 +315,7 @@ fn hydrate_reviewers(
                     login,
                     state: ReviewerState::Pending,
                     is_you: false,
+                    avatar_url,
                 });
         }
     }

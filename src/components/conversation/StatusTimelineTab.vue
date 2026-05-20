@@ -6,6 +6,7 @@ import type { DashboardPullRequest } from "@/types/dashboard";
 import type { TimelineEventRecord } from "@/types/conversation";
 
 import { formatRelativeAgo } from "@/lib/format";
+import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 
 interface Props {
   pullRequest: DashboardPullRequest;
@@ -28,6 +29,9 @@ interface TimelineRow {
   readonly icon: Icon;
   readonly label: string;
   readonly who: string | null;
+  /** Bare GitHub login for the avatar lookup (no leading `@`). */
+  readonly whoLogin: string | null;
+  readonly whoAvatarUrl: string | null;
   readonly when: string;
   readonly state: "done" | "current";
 }
@@ -78,31 +82,31 @@ watch(
 function persistedRow(event: TimelineEventRecord, index: number): TimelineRow {
   const when = formatRelativeAgo(event.created_at);
   const who = event.actor_login !== null ? `@${event.actor_login}` : null;
+  const whoLogin = event.actor_login;
+  const whoAvatarUrl = event.actor_avatar_url;
   const key = `${event.event_type}-${event.created_at}-${index}`;
+  const base = { key, who, whoLogin, whoAvatarUrl, when, state: "done" as const };
   switch (event.event_type) {
     case "ready_for_review":
-      return { key, icon: "dot", label: "Marked ready", who, when, state: "done" };
+      return { ...base, icon: "dot", label: "Marked ready" };
     case "convert_to_draft":
-      return { key, icon: "circle", label: "Converted to draft", who, when, state: "done" };
+      return { ...base, icon: "circle", label: "Converted to draft" };
     case "review_requested":
-      return { key, icon: "dot", label: "Review requested", who, when, state: "done" };
+      return { ...base, icon: "dot", label: "Review requested" };
     case "reviewed":
       return {
-        key,
+        ...base,
         icon: reviewIcon(event.review_state),
         label: reviewLabel(event.review_state),
-        who,
-        when,
-        state: "done",
       };
     case "merged":
-      return { key, icon: "check", label: "Merged", who, when, state: "done" };
+      return { ...base, icon: "check", label: "Merged" };
     case "closed":
-      return { key, icon: "x", label: "Closed", who, when, state: "done" };
+      return { ...base, icon: "x", label: "Closed" };
     case "reopened":
-      return { key, icon: "circle", label: "Reopened", who, when, state: "done" };
+      return { ...base, icon: "circle", label: "Reopened" };
     default:
-      return { key, icon: "circle", label: event.event_type, who, when, state: "done" };
+      return { ...base, icon: "circle", label: event.event_type };
   }
 }
 
@@ -148,6 +152,8 @@ function synthesisedRows(): TimelineRow[] {
     icon: "circle",
     label: "Opened",
     who: `@${pr.author_login}`,
+    whoLogin: pr.author_login,
+    whoAvatarUrl: pr.author_avatar_url,
     when: formatRelativeAgo(pr.created_at),
     state: "done",
   });
@@ -158,6 +164,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "dot",
       label: "Marked ready",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when:
         pr.latest_status_change_at !== null
           ? formatRelativeAgo(pr.latest_status_change_at)
@@ -172,6 +180,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "check",
       label: "Approved",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "done",
     });
@@ -181,6 +191,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "bang",
       label: "Changes requested",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "done",
     });
@@ -193,6 +205,8 @@ function synthesisedRows(): TimelineRow[] {
         icon: "x",
         label: `CI failed (${pr.ci.passing}/${pr.ci.total} passing)`,
         who: null,
+        whoLogin: null,
+        whoAvatarUrl: null,
         when: formatRelativeAgo(pr.updated_at),
         state: "done",
       });
@@ -202,6 +216,8 @@ function synthesisedRows(): TimelineRow[] {
         icon: "check",
         label: `CI passing (${pr.ci.passing}/${pr.ci.total})`,
         who: null,
+        whoLogin: null,
+        whoAvatarUrl: null,
         when: formatRelativeAgo(pr.updated_at),
         state: "done",
       });
@@ -214,6 +230,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "check",
       label: "Merged",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "current",
     });
@@ -223,6 +241,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "x",
       label: "Closed",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "current",
     });
@@ -232,6 +252,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "circle",
       label: "Draft",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "current",
     });
@@ -241,6 +263,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "bang",
       label: "Conflicts",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "current",
     });
@@ -250,6 +274,8 @@ function synthesisedRows(): TimelineRow[] {
       icon: "dot",
       label: "Mergeable",
       who: null,
+      whoLogin: null,
+      whoAvatarUrl: null,
       when: formatRelativeAgo(pr.updated_at),
       state: "current",
     });
@@ -277,6 +303,8 @@ const rows = computed<readonly TimelineRow[]>(() => {
     icon: "circle",
     label: "Opened",
     who: `@${pr.author_login}`,
+    whoLogin: pr.author_login,
+    whoAvatarUrl: pr.author_avatar_url,
     when: formatRelativeAgo(pr.created_at),
     state: "done",
   };
@@ -371,7 +399,16 @@ const showFallbackNote = computed(() => events.value.length === 0 && loadError.v
           </span>
           <div class="timeline-row__label">
             <span>{{ row.label }}</span>
-            <span v-if="row.who !== null" class="timeline-row__who">{{ row.who }}</span>
+            <span v-if="row.who !== null" class="timeline-row__who-block">
+              <PRismAvatar
+                v-if="row.whoLogin !== null"
+                :login="row.whoLogin"
+                :avatar-url="row.whoAvatarUrl"
+                size="sm"
+                class="timeline-row__avatar"
+              />
+              <span class="timeline-row__who">{{ row.who }}</span>
+            </span>
           </div>
           <div class="timeline-row__when">{{ row.when }}</div>
         </div>
@@ -456,6 +493,12 @@ const showFallbackNote = computed(() => events.value.length === 0 && loadError.v
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-10);
+}
+
+.timeline-row__who-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .timeline-row__when {

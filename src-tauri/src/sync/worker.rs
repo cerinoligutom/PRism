@@ -954,6 +954,13 @@ pub fn write_pr_updates(
         write_timeline_events(&tx, pr_id, events)?;
     }
 
+    // Users cache (ADR 0013 — avatar caching). Walks every (login, avatar_url)
+    // pair the detail + events payload surfaced and UPSERTs them into `users`.
+    // The dashboard / conversation read queries `LEFT JOIN users` to surface
+    // the URL; entries without an avatar URL are skipped so we never overwrite
+    // a populated row with a null on a partial payload.
+    write_user_avatars(&tx, detail, events)?;
+
     // Threads rollup (ADR 0012, four-bucket redesign). Recomputed from the
     // just-written `review_threads` / `review_comments` rows for the active
     // account so the dashboard row + conversation surface bars render
@@ -1067,10 +1074,90 @@ fn reviewer_type_and_login(
 ) -> Option<(&'static str, &str)> {
     use crate::github::graphql::RequestedReviewer;
     match request.requested_reviewer.as_ref()? {
-        RequestedReviewer::User { login } => Some(("user", login.as_str())),
+        RequestedReviewer::User { login, .. } => Some(("user", login.as_str())),
         RequestedReviewer::Team { slug } => Some(("team", slug.as_str())),
         RequestedReviewer::Other => None,
     }
+}
+
+/// Collect every `(login, avatar_url)` pair surfaced by this cycle's payload
+/// and UPSERT them into `users`. Only entries with a populated `avatar_url`
+/// are written: we never store NULLs, so a partial payload (e.g. an older
+/// fixture or a comment-edit response that drops the avatar field) can't
+/// blank a row a previous cycle populated.
+///
+/// Dedup happens via the SQL UPSERT itself; collecting into a HashMap first
+/// would also work but every login on a typical PR (author + reviewers +
+/// thread/issue comment heads + review submitters + timeline actors) hits a
+/// small bound, so the cycle-time win isn't worth the extra allocation.
+fn write_user_avatars(
+    tx: &rusqlite::Transaction<'_>,
+    detail: Option<&crate::github::graphql::PullRequestDetail>,
+    events: Option<&[crate::sync::status_timeline::TimelineEvent]>,
+) -> Result<(), rusqlite::Error> {
+    use crate::github::graphql::RequestedReviewer;
+
+    let now = unix_now();
+    let upsert = |login: &str, avatar_url: &Option<String>| -> Result<(), rusqlite::Error> {
+        let Some(url) = avatar_url.as_deref() else {
+            return Ok(());
+        };
+        if login.is_empty() || url.is_empty() {
+            return Ok(());
+        }
+        tx.execute(
+            "INSERT INTO users (login, avatar_url, last_seen_at)
+                VALUES (?1, ?2, ?3)
+             ON CONFLICT(login) DO UPDATE SET
+                avatar_url = excluded.avatar_url,
+                last_seen_at = excluded.last_seen_at",
+            params![login, url, now],
+        )?;
+        Ok(())
+    };
+
+    if let Some(d) = detail {
+        if let Some(author) = d.author.as_ref() {
+            upsert(&author.login, &author.avatar_url)?;
+        }
+        if let Some(rr) = d.review_requests.as_ref() {
+            for entry in &rr.nodes {
+                // Team reviewers have no avatar URL on the User branch; the
+                // `Team` and `Other` variants skip cleanly.
+                if let Some(RequestedReviewer::User { login, avatar_url }) =
+                    entry.requested_reviewer.as_ref()
+                {
+                    upsert(login, avatar_url)?;
+                }
+            }
+        }
+        for thread in &d.review_threads.nodes {
+            for comment in &thread.comments.nodes {
+                if let Some(actor) = comment.author.as_ref() {
+                    upsert(&actor.login, &actor.avatar_url)?;
+                }
+            }
+        }
+        if let Some(reviews) = d.reviews.as_ref() {
+            for review in &reviews.nodes {
+                if let Some(actor) = review.author.as_ref() {
+                    upsert(&actor.login, &actor.avatar_url)?;
+                }
+            }
+        }
+    }
+
+    if let Some(events) = events {
+        for event in events {
+            if let (Some(login), Some(_)) = (
+                event.actor_login.as_deref(),
+                event.actor_avatar_url.as_ref(),
+            ) {
+                upsert(login, &event.actor_avatar_url)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Upsert per-thread state. Tracks transitions on `is_resolved` so
@@ -1451,9 +1538,7 @@ mod tests {
             url: "https://github.com/owner/repo/pull/42".into(),
             created_at: "2026-05-18T10:00:00Z".into(),
             updated_at: "2026-05-19T11:00:00Z".into(),
-            author: Some(Actor {
-                login: "alice".into(),
-            }),
+            author: Some(Actor::new("alice")),
             base_ref_name: "main".into(),
             head_ref_name: "feat/thing".into(),
             review_decision: review_decision.map(str::to_string),
@@ -1581,6 +1666,7 @@ mod tests {
                     ReviewRequest {
                         requested_reviewer: Some(RequestedReviewer::User {
                             login: "dave".into(),
+                            avatar_url: Some("https://avatars/dave".into()),
                         }),
                     },
                     ReviewRequest {
@@ -1833,6 +1919,7 @@ mod tests {
                     ReviewRequest {
                         requested_reviewer: Some(RequestedReviewer::User {
                             login: "alice".into(),
+                            avatar_url: None,
                         }),
                     },
                 ],
@@ -1919,9 +2006,7 @@ mod tests {
             .head
             .map(|(id, login, created_at)| crate::github::graphql::Comment {
                 id: id.into(),
-                author: Some(Actor {
-                    login: login.into(),
-                }),
+                author: Some(Actor::new(login)),
                 body_text: "head body".into(),
                 created_at: created_at.into(),
             });
@@ -2209,18 +2294,14 @@ mod tests {
                         state: "APPROVED".into(),
                         body: Some("LGTM".into()),
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
-                        author: Some(Actor {
-                            login: "alice".into(),
-                        }),
+                        author: Some(Actor::new("alice")),
                     },
                     PullRequestReviewNode {
                         id: "PRR_drop".into(),
                         state: "COMMENTED".into(),
                         body: None,
                         submitted_at: Some("2026-05-18T13:00:00Z".into()),
-                        author: Some(Actor {
-                            login: "bob".into(),
-                        }),
+                        author: Some(Actor::new("bob")),
                     },
                 ],
             }),
@@ -2265,9 +2346,7 @@ mod tests {
                     state: "APPROVED".into(),
                     body: Some("LGTM".into()),
                     submitted_at: Some("2026-05-18T12:00:00Z".into()),
-                    author: Some(Actor {
-                        login: "alice".into(),
-                    }),
+                    author: Some(Actor::new("alice")),
                 }],
             }),
             None,
@@ -2357,9 +2436,7 @@ mod tests {
                         state: "APPROVED".into(),
                         body: Some("LGTM".into()),
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
-                        author: Some(Actor {
-                            login: "alice".into(),
-                        }),
+                        author: Some(Actor::new("alice")),
                     },
                     PullRequestReviewNode {
                         id: "PRR_b".into(),
@@ -2631,6 +2708,7 @@ mod tests {
             event: kind.into(),
             created_at: at,
             actor_login: actor.map(str::to_string),
+            actor_avatar_url: None,
             review_state: state.map(str::to_string),
         }
     }
@@ -2801,6 +2879,133 @@ mod tests {
             read_timeline_events(&db, pr_id).len(),
             1,
             "None events => no rewrite, no deletion"
+        );
+    }
+
+    // ===== users cache (ADR 0013) =====
+
+    fn read_user(db: &DbHandle, login: &str) -> Option<String> {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT avatar_url FROM users WHERE login = ?1",
+                params![login],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    fn detail_with_author_avatar(login: &str, url: &str) -> PullRequestDetail {
+        let mut d = detail_with(None, None, None, "MERGEABLE", None, None, None);
+        d.author = Some(Actor {
+            login: login.into(),
+            avatar_url: Some(url.into()),
+        });
+        d
+    }
+
+    #[test]
+    fn write_pr_updates_upserts_pr_author_avatar_into_users() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_author_avatar("alice", "https://avatars/alice.png");
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+        assert_eq!(
+            read_user(&db, "alice").as_deref(),
+            Some("https://avatars/alice.png"),
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_skips_users_upsert_when_avatar_missing() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with(None, None, None, "MERGEABLE", None, None, None);
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+        // Author is "alice" (from `detail_with`) with `avatar_url = None`; no
+        // users row should land because we never store NULL avatars.
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn write_pr_updates_upserts_thread_head_comment_authors() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let mut detail = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_1",
+                    "src/lib.rs",
+                    ("PRRC_1", "bob", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(1), None, None),
+            )]),
+            None,
+            None,
+        );
+        // Stamp an avatar URL onto the head comment's author so the upsert
+        // surfaces a populated row.
+        detail.review_threads.nodes[0].comments.nodes[0].author = Some(Actor {
+            login: "bob".into(),
+            avatar_url: Some("https://avatars/bob.png".into()),
+        });
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+        assert_eq!(
+            read_user(&db, "bob").as_deref(),
+            Some("https://avatars/bob.png"),
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_upserts_timeline_actor_avatars() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let events = vec![TimelineEvent {
+            event: "reviewed".into(),
+            created_at: datetime!(2026-05-03 10:00:00 UTC),
+            actor_login: Some("carol".into()),
+            actor_avatar_url: Some("https://avatars/carol.png".into()),
+            review_state: Some("APPROVED".into()),
+        }];
+        write_pr_updates(&db, 1, repo_id, pr_id, None, Some(&events)).unwrap();
+        assert_eq!(
+            read_user(&db, "carol").as_deref(),
+            Some("https://avatars/carol.png"),
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_refreshes_avatar_url_on_change() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        write_pr_updates(
+            &db,
+            1,
+            repo_id,
+            pr_id,
+            Some(&detail_with_author_avatar(
+                "alice",
+                "https://avatars/old.png",
+            )),
+            None,
+        )
+        .unwrap();
+        write_pr_updates(
+            &db,
+            1,
+            repo_id,
+            pr_id,
+            Some(&detail_with_author_avatar(
+                "alice",
+                "https://avatars/new.png",
+            )),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            read_user(&db, "alice").as_deref(),
+            Some("https://avatars/new.png"),
         );
     }
 }
