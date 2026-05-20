@@ -119,7 +119,11 @@ const titleLine = computed<string>(() => row.value?.title ?? "Pull request");
   top: 0;
   right: 0;
   bottom: 0;
-  width: min(480px, 100vw);
+  /* 80% of the dashboard content area (viewport minus the sidebar). The
+     dimmed overlay covers the sidebar; the calc keeps a slice of the list
+     visible on the left for context. Clamped to 100vw so narrow viewports
+     still render. */
+  width: min(calc((100vw - var(--sidebar-width)) * 0.8), 100vw);
   background: var(--bg-1);
   border-left: 1px solid var(--border-1);
   box-shadow: var(--shadow-3);
