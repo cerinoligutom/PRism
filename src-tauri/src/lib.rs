@@ -45,7 +45,14 @@ pub fn run() {
                 emit: Arc::new(sync::AppHandleEmitter::new(app.handle().clone())),
                 reauth: Arc::new(sync::AppHandleReauth::new(app.handle().clone())),
             };
-            app.manage(sync::spawn_worker(ctx));
+            let worker = Arc::new(sync::spawn_worker(ctx));
+            // Hook the worker into the auth commands so add/remove account
+            // hot-mutates the worker pool without an app restart.
+            let auth_state = app.state::<auth::commands::AuthState>();
+            auth_state.set_listener(
+                worker.clone() as Arc<dyn auth::commands::AccountChangeListener>,
+            );
+            app.manage(worker);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

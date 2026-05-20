@@ -215,6 +215,49 @@ impl WorkerHandle {
             }
         }
     }
+
+    /// Start polling for a newly-added account. No-op (returns `false`) if the
+    /// account is already tracked. Called by `auth::commands::add_account` via
+    /// the [`AccountChangeListener`] hook so new accounts sync without a
+    /// restart.
+    pub fn add_account(&self, account: Account) -> bool {
+        let account_id = account.id;
+        let mut guard = self.accounts.lock().expect("worker slots poisoned");
+        if guard.contains_key(&account_id) {
+            return false;
+        }
+        let (_, slot) = start_account_task(self.ctx.clone(), account, self.parent.clone());
+        guard.insert(account_id, slot);
+        true
+    }
+
+    /// Stop polling for an account and forget its sync state. Returns `false`
+    /// if the account wasn't being tracked. Called by
+    /// `auth::commands::remove_account` via the listener hook.
+    pub fn remove_account(&self, account_id: AccountId) -> bool {
+        let removed = {
+            let mut guard = self.accounts.lock().expect("worker slots poisoned");
+            guard.remove(&account_id)
+        };
+        match removed {
+            Some(slot) => {
+                slot.cancel.cancel();
+                self.ctx.state.forget(account_id);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl crate::auth::commands::AccountChangeListener for WorkerHandle {
+    fn on_added(&self, account: &Account) {
+        self.add_account(account.clone());
+    }
+
+    fn on_removed(&self, account_id: AccountId) {
+        self.remove_account(account_id);
+    }
 }
 
 /// Spawn one task per currently-known account. Returns the handle the caller
