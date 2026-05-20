@@ -9,7 +9,10 @@ use rusqlite_migration::{Migrations, M};
 
 /// SQL text for each migration, in apply order. Each entry corresponds to a
 /// file under `src-tauri/migrations/`.
-const MIGRATION_SOURCES: &[&str] = &[include_str!("../../migrations/0001_init.sql")];
+const MIGRATION_SOURCES: &[&str] = &[
+    include_str!("../../migrations/0001_init.sql"),
+    include_str!("../../migrations/0002_dashboard_fields.sql"),
+];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
 /// per call and validates lazily.
@@ -95,6 +98,8 @@ mod tests {
             "timeline_events",
             "check_runs",
             "etags",
+            "requested_reviewers",
+            "pull_request_viewer_relations",
         ];
         for name in expected {
             let count: i64 = conn
@@ -116,6 +121,10 @@ mod tests {
             "idx_pull_requests_author_state",
             "idx_pull_requests_latest_status_change_at",
             "idx_review_threads_pr_resolved",
+            "idx_requested_reviewers_pr",
+            "idx_pull_request_viewer_relations_account_authored",
+            "idx_pull_request_viewer_relations_account_review_requested",
+            "idx_pull_request_viewer_relations_account_involved",
         ];
         for name in expected {
             let count: i64 = conn
@@ -155,5 +164,84 @@ mod tests {
             .unwrap();
         assert_eq!(repos, 0, "repos should cascade from accounts");
         assert_eq!(prs, 0, "pull_requests should cascade from repos");
+    }
+
+    #[test]
+    fn dashboard_columns_exist_on_pull_requests() {
+        let conn = fresh();
+        let expected = [
+            "mergeable",
+            "review_decision",
+            "additions",
+            "deletions",
+            "changed_files",
+            "ci_state",
+            "ci_total",
+            "ci_passing",
+        ];
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_requests')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in expected {
+            assert!(
+                names.iter().any(|n| n == col),
+                "missing pull_requests column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_team_tracked_defaults_to_zero() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');",
+        )
+        .unwrap();
+        let tracked: i64 = conn
+            .query_row("SELECT is_team_tracked FROM repos WHERE id = 10", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tracked, 0);
+    }
+
+    #[test]
+    fn viewer_relations_cascade_on_account_delete() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at)
+                VALUES (1, 100, 1, 0, 1, 0);",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM accounts WHERE id = 1", [])
+            .unwrap();
+
+        let relations: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(relations, 0, "relations should cascade from accounts");
     }
 }
