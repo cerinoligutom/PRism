@@ -17,6 +17,7 @@ onBeforeUnmount(() => {
 interface SummaryLine {
   readonly phase: SyncPhase;
   readonly dotClass: string;
+  readonly labelClass: string;
   readonly label: string;
 }
 
@@ -24,20 +25,21 @@ const summary = computed<SummaryLine>(() => {
   const phase = sync.aggregate;
   switch (phase) {
     case "error":
-      return { phase, dotClass: "dot dot-danger", label: "Sync failed" };
+      return { phase, dotClass: "dot dot-danger", labelClass: "text-danger", label: "Sync failed" };
     case "unauthorized":
-      return { phase, dotClass: "dot dot-warning", label: "Reauth required" };
+      return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Reauth required" };
     case "rate_limited":
-      return { phase, dotClass: "dot dot-warning", label: "Rate limited" };
+      return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Rate limited" };
     case "syncing":
-      return { phase, dotClass: "dot dot-info dot-pulse", label: "Syncing" };
+      return { phase, dotClass: "dot dot-info dot-pulse", labelClass: "text-info", label: "Syncing" };
     case "synced":
-      return { phase, dotClass: "dot dot-success", label: "Live" };
+      return { phase, dotClass: "dot dot-success", labelClass: "text-success", label: "Live" };
     case "idle":
     default:
       return {
         phase,
         dotClass: "dot",
+        labelClass: "",
         label: accounts.isEmpty ? "Idle · no accounts" : "Idle",
       };
   }
@@ -55,7 +57,7 @@ const lastSyncedLabel = computed<string | null>(() => {
 });
 
 const nextSyncLabel = computed<string | null>(() => {
-  const secs = sync.nextSyncInSeconds;
+  const secs = sync.secondsUntilNextSync;
   if (secs === null) return null;
   return `next in ${formatRelative(secs)}`;
 });
@@ -81,7 +83,7 @@ function formatRelative(seconds: number): string {
   <footer class="status-bar">
     <span class="status-bar__item">
       <span :class="summary.dotClass" />
-      <span>{{ summary.label }}</span>
+      <span :class="summary.labelClass">{{ summary.label }}</span>
       <template v-if="accountsLabel !== null">
         <span aria-hidden="true">·</span>
         <span>{{ accountsLabel }}</span>
@@ -98,8 +100,9 @@ function formatRelative(seconds: number): string {
       {{ budgetLabel }}
     </span>
     <span class="status-bar__spacer" />
-    <span class="status-bar__item"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
-    <span class="status-bar__item"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
+    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span>
+    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
+    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
   </footer>
 </template>
 
@@ -131,5 +134,13 @@ function formatRelative(seconds: number): string {
 .status-bar kbd {
   font-size: var(--fs-9);
   padding: 0 4px;
+}
+
+/* Keyboard hints drop off first when the window is narrower than Tailwind's
+ * `sm` breakpoint so the live state, timing, and budget items still fit. */
+@media (max-width: 640px) {
+  .status-bar__item--hint {
+    display: none;
+  }
 }
 </style>
