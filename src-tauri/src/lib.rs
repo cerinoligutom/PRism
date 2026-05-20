@@ -49,9 +49,8 @@ pub fn run() {
             // Hook the worker into the auth commands so add/remove account
             // hot-mutates the worker pool without an app restart.
             let auth_state = app.state::<auth::commands::AuthState>();
-            auth_state.set_listener(
-                worker.clone() as Arc<dyn auth::commands::AccountChangeListener>,
-            );
+            auth_state
+                .set_listener(worker.clone() as Arc<dyn auth::commands::AccountChangeListener>);
             app.manage(worker);
             Ok(())
         })

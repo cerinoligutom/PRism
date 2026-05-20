@@ -46,7 +46,10 @@ pub struct RefreshNowResult {
 }
 
 #[tauri::command]
-pub fn refresh_now(worker: State<'_, Arc<WorkerHandle>>, input: RefreshNowInput) -> RefreshNowResult {
+pub fn refresh_now(
+    worker: State<'_, Arc<WorkerHandle>>,
+    input: RefreshNowInput,
+) -> RefreshNowResult {
     let triggered = match input.account_id {
         Some(id) => {
             if worker.refresh_account(id) {
