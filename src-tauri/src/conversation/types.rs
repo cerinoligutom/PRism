@@ -63,7 +63,11 @@ pub struct ConversationStats {
     /// within each thread, averaged across threads with two or more comments.
     /// `None` when no thread has a reply yet.
     pub avg_response_seconds: Option<i64>,
-    /// `resolved / (total - outdated)`. `0.0` when total-non-outdated is zero.
+    /// `active_resolved / (total - outdated)`, where `active_resolved` is
+    /// `COUNT(*) WHERE is_resolved = 1 AND is_outdated = 0`. Threads that
+    /// are both resolved AND outdated count only in `threads_outdated`,
+    /// keeping the rate in `[0.0, 1.0]`. `0.0` when total-non-outdated is
+    /// zero.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
 }

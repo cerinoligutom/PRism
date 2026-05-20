@@ -289,6 +289,49 @@ fn stats_all_resolved_yields_resolution_rate_one() {
 }
 
 #[test]
+fn stats_resolved_and_outdated_intersection_does_not_overshoot_rate() {
+    // Regression for the resolution-rate > 100% bug: a thread that's BOTH
+    // resolved and outdated must count only in `threads_outdated` (the
+    // outdated bucket wins), so the rate stays in [0, 1] and the visible
+    // "N resolved" caption matches the threads list (which hides outdated
+    // behind a toggle). See issue #90 / ADR 0010.
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref)
+            VALUES (400, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
+         -- 7 threads total: 3 strictly-active resolved + 4 resolved-and-outdated.
+         -- Pre-fix this rendered as 7/(7-4)=233%; post-fix it must read 3/3=100%.
+         INSERT INTO review_threads
+            (id, pull_request_id, is_resolved, is_outdated, original_line,
+             path, node_id, created_at, resolved_at, reply_count)
+            VALUES (1, 400, 1, 0, 1, 'f', 'A', 1, 2, 0),
+                   (2, 400, 1, 0, 1, 'f', 'B', 1, 2, 0),
+                   (3, 400, 1, 0, 1, 'f', 'C', 1, 2, 0),
+                   (4, 400, 1, 1, 1, 'f', 'D', 1, 2, 0),
+                   (5, 400, 1, 1, 1, 'f', 'E', 1, 2, 0),
+                   (6, 400, 1, 1, 1, 'f', 'F', 1, 2, 0),
+                   (7, 400, 1, 1, 1, 'f', 'G', 1, 2, 0);",
+    )
+    .unwrap();
+    let stats = query::get_conversation_stats(&conn, 400).unwrap();
+    assert_eq!(stats.threads_total, 7);
+    assert_eq!(stats.threads_outdated, 4);
+    assert_eq!(
+        stats.threads_resolved, 3,
+        "threads_resolved is strict-active (excludes outdated)"
+    );
+    assert_eq!(stats.threads_unresolved, 0);
+    assert_eq!(stats.resolution_rate, 1.0);
+}
+
+#[test]
 fn stats_all_outdated_yields_zero_rate_and_no_oldest() {
     let db = fresh_db();
     let conn = db.lock().unwrap();

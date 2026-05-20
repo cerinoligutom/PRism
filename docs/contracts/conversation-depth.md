@@ -379,7 +379,9 @@ pub struct ConversationStats {
     /// within each thread, averaged across threads with >= 2 comments.
     /// `None` when no thread has a reply yet.
     pub avg_response_seconds: Option<i64>,
-    /// resolved / (total - outdated). 0.0 when total-non-outdated is zero.
+    /// `active_resolved / (total - outdated)`, where `active_resolved`
+    /// counts threads with `is_resolved = 1 AND is_outdated = 0`. `0.0`
+    /// when total-non-outdated is zero. Stays in `[0.0, 1.0]`.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
 }
@@ -510,8 +512,16 @@ SELECT AVG(gap_seconds) FROM gaps WHERE gap_seconds IS NOT NULL;
 ### Resolution rate
 
 ```
-resolved / (total - outdated)
+active_resolved / (total - outdated)
+
+where  active_resolved = COUNT(*) WHERE is_resolved = 1 AND is_outdated = 0
+       outdated        = COUNT(*) WHERE is_outdated = 1
+       total           = COUNT(*)
 ```
+
+The numerator is strict-active — threads that are *both* resolved AND outdated count only in the outdated bucket, not in the resolved numerator. GitHub's `isResolved` and `isOutdated` are orthogonal, so the resolved-and-outdated intersection is real; counting it in the numerator while excluding it from the denominator (the original implementation) made the rate overshoot 100% on PRs where code changes invalidated previously-resolved threads.
+
+The three visible buckets — `threads_unresolved`, `threads_resolved`, `threads_outdated` — are disjoint over the active set, so they line up with the threads-list "Show N outdated" toggle and the segmented threads bar.
 
 `0.0` when `(total - outdated)` is zero. Returned as a `f64` in `[0.0, 1.0]`; frontend renders as percent.
 
