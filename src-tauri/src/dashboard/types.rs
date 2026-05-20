@@ -62,6 +62,10 @@ pub struct DashboardPullRequest {
     pub deletions: Option<i64>,
     pub changed_files: Option<i64>,
     pub ci: Option<CiSummary>,
+    /// Per-PR review-thread rollup written by the sync cycle. `None` when the
+    /// PR has never had a thread (`threads_total == 0`); the frontend renders
+    /// the muted em-dash state in that case.
+    pub threads: Option<ThreadsSummary>,
     pub reviewers: Vec<ReviewerEntry>,
     pub repo: RepoRef,
     pub account_id: i64,
@@ -74,6 +78,17 @@ pub struct CiSummary {
     pub state: String,
     pub total: i64,
     pub passing: i64,
+}
+
+/// Per-PR review-thread rollup, pre-aggregated by the sync cycle into the
+/// `pull_requests.threads_*` columns. See `docs/contracts/conversation-depth.md`
+/// ("Dashboard rollup") and ADR 0010.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadsSummary {
+    pub total: i64,
+    pub unresolved: i64,
+    /// Threads where the active account has at least one comment.
+    pub involved: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

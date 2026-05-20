@@ -25,6 +25,7 @@
 use prism_lib::dashboard::query::list_pull_requests;
 use prism_lib::dashboard::{DashboardSort, DashboardView, ReviewerEntry, ReviewerState};
 use prism_lib::db::migrate;
+use rusqlite::params;
 use rusqlite::Connection;
 
 fn fresh_db() -> Connection {
@@ -451,4 +452,53 @@ fn draft_flag_round_trips_as_bool() {
         list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(pr_300.is_draft);
+}
+
+// ===== threads rollup projection tests (M3-C) =====
+
+#[test]
+fn threads_is_none_when_pull_request_has_never_had_a_thread() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    // The fixture's PRs leave `threads_*` at the migration's `DEFAULT 0`, so
+    // every projected row reads `threads = None`. The frontend renders the
+    // muted em-dash state in that case.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    assert!(rows[0].threads.is_none());
+}
+
+#[test]
+fn threads_projects_total_unresolved_and_involved_when_populated() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    conn.execute(
+        "UPDATE pull_requests
+            SET threads_total = ?2,
+                threads_unresolved = ?3,
+                threads_involved = ?4
+          WHERE id = ?1",
+        params![100i64, 5i64, 3i64, 2i64],
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 5);
+    assert_eq!(threads.unresolved, 3);
+    assert_eq!(threads.involved, 2);
 }
