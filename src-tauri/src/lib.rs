@@ -7,8 +7,10 @@
 //! - `sync`: background worker
 //! - `dashboard`: dashboard query surface (M2)
 //! - `repos`: repo discovery + Team-tracked opt-in (M2-D)
+//! - `conversation`: per-thread state, conversation stats, lazy hydrator (M3)
 
 pub mod auth;
+pub mod conversation;
 pub mod dashboard;
 pub mod db;
 pub mod github;
@@ -62,6 +64,9 @@ pub fn run() {
             auth::commands::list_accounts,
             auth::commands::remove_account,
             auth::commands::validate_token_cmd,
+            conversation::commands::fetch_pr_conversation,
+            conversation::commands::get_pr_conversation_stats,
+            conversation::commands::list_pr_threads,
             dashboard::commands::list_dashboard_pull_requests,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,

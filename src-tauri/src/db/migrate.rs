@@ -13,6 +13,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_dashboard_fields.sql"),
     include_str!("../../migrations/0003_accounts_expires_at.sql"),
+    include_str!("../../migrations/0004_conversation_depth.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -126,6 +127,15 @@ mod tests {
             "idx_pull_request_viewer_relations_account_authored",
             "idx_pull_request_viewer_relations_account_review_requested",
             "idx_pull_request_viewer_relations_account_involved",
+            // 0004 conversation_depth.
+            "idx_review_threads_node_id",
+            "idx_review_threads_pr_active",
+            "idx_review_comments_node_id",
+            "idx_review_comments_thread",
+            "idx_issue_comments_node_id",
+            "idx_issue_comments_pr",
+            "idx_reviews_node_id",
+            "idx_reviews_pr_submitted_at",
         ];
         for name in expected {
             let count: i64 = conn
@@ -194,6 +204,92 @@ mod tests {
                 "missing pull_requests column: {col}"
             );
         }
+    }
+
+    #[test]
+    fn conversation_columns_exist_on_review_threads() {
+        let conn = fresh();
+        let expected = [
+            "node_id",
+            "is_outdated",
+            "created_at",
+            "resolved_at",
+            "last_reply_at",
+            "reply_count",
+            "head_comment_author_login",
+            "head_comment_body_text",
+            "head_comment_created_at",
+            "line",
+            "start_line",
+        ];
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('review_threads')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in expected {
+            assert!(
+                names.iter().any(|n| n == col),
+                "missing review_threads column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_rollup_columns_exist_on_pull_requests() {
+        let conn = fresh();
+        let expected = [
+            "threads_total",
+            "threads_unresolved",
+            "threads_involved",
+            "issue_comments_count",
+        ];
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_requests')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in expected {
+            assert!(
+                names.iter().any(|n| n == col),
+                "missing pull_requests column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn threads_rollup_defaults_to_zero() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');",
+        )
+        .unwrap();
+
+        let (total, unresolved, involved, issue_count): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT threads_total, threads_unresolved, threads_involved, issue_comments_count
+                   FROM pull_requests WHERE id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(total, 0);
+        assert_eq!(unresolved, 0);
+        assert_eq!(involved, 0);
+        assert_eq!(issue_count, 0);
     }
 
     #[test]
