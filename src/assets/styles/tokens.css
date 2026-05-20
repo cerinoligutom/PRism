@@ -115,6 +115,9 @@
   --row-h-tight: 36px;
   --row-h-comfortable: 48px;
   --row-h-roomy: 64px;
+
+  /* ────── Layout ────── */
+  --sidebar-width: 232px;
 }
 
 /* ────── Light theme override ────── */

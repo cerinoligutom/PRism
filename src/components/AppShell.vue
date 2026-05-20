@@ -17,7 +17,7 @@ import StatusBar from "./StatusBar.vue";
 <style scoped>
 .app-shell {
   display: grid;
-  grid-template-columns: 232px 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
   grid-template-rows: 1fr 28px;
   grid-template-areas:
     "sidebar main"
