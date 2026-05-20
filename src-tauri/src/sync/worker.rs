@@ -28,6 +28,7 @@ use crate::github::{
     list_pr_timeline, AccountHandle, AccountId, EtagStore, GitHubClient, GitHubError, ListTimeline,
     RepoCoord,
 };
+use crate::sync::discovery::DiscoveryError;
 use crate::sync::events::{
     SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ERROR_EVENT,
     SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
@@ -508,6 +509,7 @@ pub async fn run_one_cycle(
 
     let pre_used = snapshot.used.max(0);
     let pre_remaining = snapshot.remaining;
+    let cycle_start = unix_now();
     let mut report = SyncCycleReport {
         account_id: account.id,
         repos_visited: 0,
@@ -516,6 +518,44 @@ pub async fn run_one_cycle(
         outcome: CycleOutcome::Completed,
     };
 
+    // Phase 1: Discovery. Search-API fan-out, ADR 0009. Failure here is
+    // treated like any other phase failure: don't run enrichment, don't prune.
+    match crate::sync::discovery::discover_account(&ctx.db, client, account.id, cycle_start).await {
+        Ok((_, _discovery_report)) => {}
+        Err(DiscoveryError::GitHub(GitHubError::Unauthorized)) => {
+            let state = ctx.state.update(account.id, |s| {
+                s.phase = SyncPhase::Unauthorized;
+                s.message = Some("token rejected; reauthenticate".into());
+                s.next_sync_in_seconds = None;
+            });
+            emit_status(&ctx.emit, &state);
+            report.outcome = CycleOutcome::Unauthorized;
+            return finalise_with_budget(report, client, pre_used, pre_remaining);
+        }
+        Err(DiscoveryError::GitHub(GitHubError::RateLimited { retry_after })) => {
+            let reset_in = retry_after.map(|d| d.as_secs());
+            let state = ctx.state.update(account.id, |s| {
+                s.phase = SyncPhase::RateLimited;
+                s.message = Some("upstream throttled".into());
+                s.next_sync_in_seconds = reset_in.or(Some(ctx.config.interval_secs()));
+            });
+            emit_status(&ctx.emit, &state);
+            emit_rate_limit(ctx, account, 0, client.rate().snapshot().limit, retry_after);
+            report.outcome = CycleOutcome::RateLimited {
+                reset_in_seconds: reset_in,
+            };
+            return finalise_with_budget(report, client, pre_used, pre_remaining);
+        }
+        Err(err) => {
+            let message = format!("discovery: {err}");
+            record_failure(ctx, account, &message);
+            report.outcome = CycleOutcome::Failed { message };
+            return finalise_with_budget(report, client, pre_used, pre_remaining);
+        }
+    }
+
+    // Re-read repos after discovery so freshly-upserted rows feed the
+    // enrichment loop within the same cycle.
     let repos = match list_repos_for_account(&ctx.db, account.id) {
         Ok(r) => r,
         Err(err) => {
@@ -528,12 +568,20 @@ pub async fn run_one_cycle(
     };
 
     if repos.is_empty() {
+        // Discovery completed but found no PRs and no repos were pre-seeded.
+        // Still prune so a viewer who just dropped their last relation gets a
+        // clean slate on this cycle.
+        let _ = crate::sync::discovery::prune_stale_relations_for_account(
+            &ctx.db,
+            account.id,
+            cycle_start,
+        );
         let finished_at = SystemTime::now();
         finish_completed(ctx, account, client, finished_at);
         report.outcome = CycleOutcome::Skipped {
             reason: SkipReason::NoReposConfigured,
         };
-        return report;
+        return finalise_with_budget(report, client, pre_used, pre_remaining);
     }
 
     for repo in &repos {
@@ -574,9 +622,26 @@ pub async fn run_one_cycle(
         }
     }
 
+    // Phase final: Pruning. Runs only when enrichment completes so a transient
+    // discovery hiccup doesn't drop everything (the contract calls this out).
+    if let Err(err) =
+        crate::sync::discovery::prune_stale_relations_for_account(&ctx.db, account.id, cycle_start)
+    {
+        // A prune failure is logged, not fatal: stale rows are merely cosmetic
+        // and the next cycle's prune will retry.
+        eprintln!("sync prune (account {}): {err}", account.id);
+    }
+
     let finished_at = SystemTime::now();
     finish_completed(ctx, account, client, finished_at);
     finalise_with_budget(report, client, pre_used, pre_remaining)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn finish_completed(
