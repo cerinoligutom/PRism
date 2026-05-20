@@ -236,11 +236,17 @@ fn comment_breakdown(
     conn: &Connection,
     pull_request_id: i64,
 ) -> Result<CommentBreakdown, rusqlite::Error> {
+    // `review` sums `reply_count + 1` across the PR's threads. The sync cycle
+    // writes `reply_count = comments.totalCount - 1` for every thread, so the
+    // sum recovers the cycle-accurate review-comment total without depending
+    // on the lazy hydrator having populated `review_comments`. Pre-fix this
+    // counted rows in `review_comments` directly, which read zero on PRs that
+    // had never been drawer-opened.
     let (review, issue, summary): (i64, i64, i64) = conn.query_row(
         "SELECT
-             (SELECT COUNT(*) FROM review_comments c
-                JOIN review_threads t ON t.id = c.review_thread_id
-               WHERE t.pull_request_id = ?1),
+             (SELECT COALESCE(SUM(reply_count + 1), 0)
+                FROM review_threads
+               WHERE pull_request_id = ?1),
              (SELECT COALESCE(issue_comments_count, 0)
                 FROM pull_requests WHERE id = ?1),
              (SELECT COUNT(*) FROM reviews

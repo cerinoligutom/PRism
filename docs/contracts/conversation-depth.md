@@ -529,9 +529,8 @@ The three visible buckets — `threads_unresolved`, `threads_resolved`, `threads
 
 ```sql
 SELECT
-  (SELECT COUNT(*) FROM review_comments c
-     JOIN review_threads t ON t.id = c.review_thread_id
-     WHERE t.pull_request_id = ?)                                   AS review_count,
+  (SELECT COALESCE(SUM(reply_count + 1), 0) FROM review_threads
+     WHERE pull_request_id = ?)                                     AS review_count,
   (SELECT issue_comments_count FROM pull_requests WHERE id = ?)     AS issue_count,
   (SELECT COUNT(*) FROM reviews
      WHERE pull_request_id = ? AND body IS NOT NULL AND body <> '') AS summary_count;
@@ -539,7 +538,7 @@ SELECT
 
 `total = review + issue + summary`.
 
-Note that `review_count` reads `review_comments` directly (not the thread-level `reply_count` denormalisation) so the number reflects post-lazy-hydration state. Pre-hydration the count is zero — the comment-type breakdown tile reads as `0 review · N issue · M summary` until the drawer / route is opened, at which point the next stats fetch reflects the full count. Acceptable for v1; documented for future read-state work.
+`review_count` sums the per-thread total derived from the sync cycle's `comments.totalCount` write (`reply_count = totalCount - 1`, so `reply_count + 1` is the per-thread comment count). The breakdown is cycle-accurate even on PRs that have never been drawer-opened; it doesn't depend on the lazy hydrator having populated `review_comments` (ADR 0010's lazy-hydrate-on-detail-open decision still holds for the comment _bodies_).
 
 ## Dashboard rollup
 

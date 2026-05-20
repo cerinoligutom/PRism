@@ -41,14 +41,16 @@ fn seed_pr_with_thread(db: &DbHandle) {
 
         -- Pre-existing thread (sync cycle wrote the header) keyed by the same
         -- node id the fixture's comments reference, so resolve_thread_id finds
-        -- a row to attach the comments to.
+        -- a row to attach the comments to. `reply_count = 1` mirrors what the
+        -- cycle writes for a thread with `comments.totalCount = 2` (head + one
+        -- reply) — the comment-type breakdown reads this column.
         INSERT INTO review_threads
             (id, pull_request_id, is_resolved, is_outdated, original_line,
              path, node_id, created_at, reply_count,
              head_comment_author_login, head_comment_body_text,
              head_comment_created_at, line)
             VALUES (1000, 100, 0, 0, 42, 'src/lib.rs', 'PRRT_fix1',
-                    1000, 0, 'bob', 'should this be wrapped?', 1000, 42);
+                    1000, 1, 'bob', 'should this be wrapped?', 1000, 42);
 
         -- One review with a body so the breakdown's `summary` count is positive.
         INSERT INTO reviews
