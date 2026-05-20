@@ -4,6 +4,7 @@ import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
 import MergeableBadge from "./MergeableBadge.vue";
+import ThreadsBar from "./ThreadsBar.vue";
 
 interface Props {
   pullRequest: DashboardPullRequest;
@@ -204,6 +205,10 @@ function authorInitials(login: string): string {
       </div>
     </div>
 
+    <div class="pr-row__threads">
+      <ThreadsBar :threads="pullRequest.threads" />
+    </div>
+
     <div class="pr-row__reviewers">
       <ReviewerStack :reviewers="pullRequest.reviewers" />
     </div>
@@ -225,7 +230,7 @@ function authorInitials(login: string): string {
 .pr-row {
   position: relative;
   display: grid;
-  grid-template-columns: 4px 54px 1fr 180px 80px 80px 28px;
+  grid-template-columns: 4px 54px 1fr 144px 180px 80px 80px 28px;
   align-items: center;
   gap: 14px;
   padding: 0 var(--s-6) 0 0;
@@ -352,6 +357,12 @@ function authorInitials(login: string): string {
 .pr-row__lines-add { color: var(--success); }
 .pr-row__lines-del { color: var(--danger); }
 .pr-row__lines-files { color: var(--text-faint); }
+
+.pr-row__threads {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
 
 .pr-row__reviewers {
   display: flex;
