@@ -6,9 +6,9 @@ import { RouterLink } from "vue-router";
 </script>
 
 <template>
-  <aside class="side">
-    <div class="side-brand">
-      <span class="mark" aria-hidden="true">
+  <aside class="sidebar">
+    <div class="sidebar__brand">
+      <span class="sidebar__brand-mark" aria-hidden="true">
         <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
           <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
           <path d="M16 4 L28 26 L4 26 Z" />
@@ -18,11 +18,11 @@ import { RouterLink } from "vue-router";
           <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
         </svg>
       </span>
-      <span class="name"><span>PR</span><span class="ism">ism</span></span>
+      <span class="sidebar__brand-name"><span>PR</span><span class="sidebar__brand-suffix">ism</span></span>
     </div>
 
-    <h6 class="section-title">Views</h6>
-    <nav class="side-nav" aria-label="Primary views">
+    <h6 class="section-title sidebar__section-heading">Views</h6>
+    <nav class="sidebar__nav" aria-label="Primary views">
       <RouterLink to="/" class="nav-item" :class="{ active: $route.name === 'dashboard' }" exact-active-class="">
         <span class="nav-icon">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7l6-4 6 4-6 4z" /><path d="M2 11l6 4 6-4" /></svg>
@@ -49,7 +49,7 @@ import { RouterLink } from "vue-router";
       </span>
     </nav>
 
-    <div class="side-foot">
+    <div class="sidebar__foot">
       <RouterLink to="/settings" class="nav-item" :class="{ active: $route.name?.toString().startsWith('settings') }">
         <span class="nav-icon">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M13 8a5 5 0 01-.1 1l1.4 1.1-1 1.7-1.7-.5a5 5 0 01-1.7 1L9.5 14h-2L7 12.3a5 5 0 01-1.7-1l-1.7.5-1-1.7L3 9a5 5 0 01-.1-1 5 5 0 01.1-1L1.6 5.9l1-1.7 1.7.5a5 5 0 011.7-1L6.5 2h2l.5 1.7a5 5 0 011.7 1l1.7-.5 1 1.7L11.9 7c.1.3.1.7.1 1z" /></svg>
@@ -61,64 +61,68 @@ import { RouterLink } from "vue-router";
 </template>
 
 <style scoped>
-.side {
+.sidebar {
   display: flex;
   flex-direction: column;
-  padding: 12px 12px 0;
+  padding: var(--s-3) var(--s-3) 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.side-brand {
+.sidebar__brand {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 6px 6px 14px;
+  padding: 6px 6px var(--s-4);
 }
-.side-brand .mark {
+
+.sidebar__brand-mark {
   width: 22px;
   height: 22px;
   color: var(--text-strong);
   flex: 0 0 22px;
 }
-.side-brand .name {
-  font-size: 14px;
+
+.sidebar__brand-name {
+  font-size: var(--fs-14);
   font-weight: 600;
   letter-spacing: -0.4px;
   color: var(--text-strong);
 }
-.side-brand .name .ism {
+
+.sidebar__brand-suffix {
   font-weight: 400;
   color: var(--text-mute);
 }
 
-.section-title {
-  margin: 16px 6px 6px;
+.sidebar__section-heading {
+  margin: var(--s-4) 6px 6px;
 }
 
-.side-nav {
+.sidebar__nav {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
-.side-foot {
+.sidebar__foot {
   margin-top: auto;
   border-top: 1px solid var(--border-1);
   padding: 10px 0;
 }
 
-/* Disabled nav-items for M2+ surfaces. Visual cue mirrors the design's
- * de-emphasised text without removing the row from the layout — when the
- * destinations land in later milestones they swap to RouterLink. */
+/* nav-item--disabled is the local modifier for the primitives.css `.nav-item`
+ * block. Renders the "Lands in M2+" affordance without removing the row. */
 .nav-item--disabled {
   color: var(--text-disabled);
   cursor: not-allowed;
 }
+
 .nav-item--disabled:hover {
   background: transparent;
   color: var(--text-disabled);
 }
+
 .nav-item--disabled .nav-icon {
   color: var(--text-disabled);
 }

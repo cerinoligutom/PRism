@@ -6,12 +6,12 @@
 
 <template>
   <footer class="status-bar">
-    <span class="item">
+    <span class="status-bar__item">
       <span class="dot" />
       <span>Idle &middot; no accounts</span>
     </span>
-    <span class="spacer" />
-    <span class="item"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
+    <span class="status-bar__spacer" />
+    <span class="status-bar__item"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
   </footer>
 </template>
 
@@ -22,18 +22,26 @@
   background: var(--bg-2);
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  gap: 16px;
+  padding: 0 var(--s-4);
+  gap: var(--s-4);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-10);
   color: var(--text-faint);
   letter-spacing: 0.3px;
 }
-.status-bar .item {
+
+.status-bar__item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
-.status-bar .spacer { flex: 1; }
-.status-bar kbd { font-size: 9px; padding: 0 4px; }
+
+.status-bar__spacer {
+  flex: 1;
+}
+
+.status-bar kbd {
+  font-size: var(--fs-9);
+  padding: 0 4px;
+}
 </style>

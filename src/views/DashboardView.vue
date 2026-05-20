@@ -4,14 +4,14 @@ import { RouterLink } from "vue-router";
 
 <template>
   <section class="dashboard">
-    <header class="top">
-      <h1>Authored by me</h1>
-      <span class="count">0 open</span>
+    <header class="dashboard__header">
+      <h1 class="dashboard__title">Authored by me</h1>
+      <span class="dashboard__count">0 open</span>
     </header>
 
-    <div class="empty">
-      <div class="empty-card">
-        <span class="empty-mark" aria-hidden="true">
+    <div class="dashboard__empty">
+      <div class="dashboard-empty">
+        <span class="dashboard-empty__mark" aria-hidden="true">
           <svg width="48" height="48" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
             <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
             <path d="M16 4 L28 26 L4 26 Z" />
@@ -21,8 +21,8 @@ import { RouterLink } from "vue-router";
             <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
           </svg>
         </span>
-        <h2>Connect a GitHub account to get started</h2>
-        <p>
+        <h2 class="dashboard-empty__title">Connect a GitHub account to get started</h2>
+        <p class="dashboard-empty__copy">
           PRism watches the pull requests you care about across every repo and
           org you choose. Your token never leaves your machine.
         </p>
@@ -42,56 +42,62 @@ import { RouterLink } from "vue-router";
   min-height: 0;
 }
 
-.top {
+.dashboard__header {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  padding: 20px 24px 16px;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-6) var(--s-4);
   border-bottom: 1px solid var(--border-1);
 }
-.top h1 {
+
+.dashboard__title {
   margin: 0;
-  font-size: 22px;
+  font-size: var(--fs-20);
   font-weight: 600;
   letter-spacing: -0.5px;
   color: var(--text-strong);
 }
-.top .count {
+
+.dashboard__count {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
-.empty {
+.dashboard__empty {
   flex: 1;
   display: grid;
   place-items: center;
-  padding: 48px 24px;
+  padding: var(--s-8) var(--s-6);
 }
-.empty-card {
+
+.dashboard-empty {
   max-width: 420px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: var(--s-3);
 }
-.empty-mark {
+
+.dashboard-empty__mark {
   color: var(--text-strong);
-  margin-bottom: 4px;
+  margin-bottom: var(--s-1);
 }
-.empty-card h2 {
+
+.dashboard-empty__title {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--fs-16);
   font-weight: 600;
   letter-spacing: -0.3px;
   color: var(--text-strong);
 }
-.empty-card p {
+
+.dashboard-empty__copy {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   color: var(--text-mute);
-  line-height: 1.55;
+  line-height: var(--lh-body);
 }
 </style>

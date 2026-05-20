@@ -174,6 +174,18 @@ Australian English in prose, documentation, comments, and code identifiers.
 - Async/await over raw promises. Optional chaining and nullish coalescing.
 - Never hardcode style values; use the design tokens from Tailwind / Reka UI.
 
+### CSS and styling
+
+- **Prefer Tailwind utilities.** Layout, spacing, colour, typography, sizing — all default to Tailwind classes (`flex`, `gap-3`, `bg-surface`, `text-fg-mute`, `border-border-faint`). The Tailwind theme in [`src/assets/styles/main.css`](src/assets/styles/main.css) already aliases every design token, so utilities like `text-accent`, `bg-surface-raised`, `text-fg-strong` resolve against the OKLCH-backed CSS variables.
+- **Reuse the design-system primitives** in [`src/assets/styles/primitives.css`](src/assets/styles/primitives.css) before writing new CSS. Buttons, badges, dots, avatars, inputs, cards, chips, nav-items, kbd, repo / branch chips are already defined and mirror [`docs/design/app.css`](docs/design/app.css). Use these directly in markup — don't reinvent them with Tailwind chains.
+- **If you still need custom CSS, name it with [BEM](https://getbem.com/naming/).**
+  - **Block** — the standalone component: `account-card`, `sync-banner`.
+  - **Element** — a part of the block, joined with `__`: `account-card__avatar`, `sync-banner__icon`.
+  - **Modifier** — a variation, joined with `--`: `account-card--expired`, `sync-banner--info`.
+- **Don't nest custom selectors deeper than one level.** BEM removes the need; if you reach for `.parent .child`, the child should be its own block or an element of the parent.
+- **`primitives.css` is exempt from BEM** — it mirrors the design source verbatim (`.btn`, `.btn-primary`, `.badge`, `.nav-item.active`) so it stays diff-able against `docs/design/app.css`. Treat it like Tailwind: a utility layer to be consumed, not extended.
+- **Never hardcode colour / size values in custom CSS.** Use Tailwind utilities (resolving to design tokens), or read the CSS variables directly (`var(--accent)`, `var(--s-3)`, `var(--r-2)`). Magic hex codes and pixel values that bypass the token layer don't survive review.
+
 ### Rust
 
 - Use the latest stable Rust features.
