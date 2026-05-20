@@ -16,6 +16,9 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0006](0006-graphql-first-rest-fallback.md) | GitHub API: GraphQL-first with REST fallback | Accepted | [#5](https://github.com/cerinoligutom/PRism/issues/5) |
 | [0007](0007-status-timeline-from-timeline-events-api.md) | Status timeline derived from the timeline events API | Accepted | [#6](https://github.com/cerinoligutom/PRism/issues/6) |
 | [0008](0008-wiki-auto-deploy.md) | Auto-deploy `docs/wiki/` to the GitHub wiki via Actions | Accepted | [#16](https://github.com/cerinoligutom/PRism/issues/16) |
+| [0009](0009-pull-request-discovery-via-search-api.md) | Pull-request discovery via GitHub Search API | Accepted | [#35](https://github.com/cerinoligutom/PRism/issues/35) |
+| [0010](0010-conversation-depth-storage.md) | Conversation-depth storage and hydration | Accepted | [#68](https://github.com/cerinoligutom/PRism/issues/68) |
+| [0011](0011-cancel-inline-pr-detail-surface.md) | Cancel inline expansion as a third PR detail surface | Accepted | [#88](https://github.com/cerinoligutom/PRism/issues/88) |
 
 ## Statuses
 

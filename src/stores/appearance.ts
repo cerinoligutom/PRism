@@ -101,9 +101,9 @@ export const useAppearanceStore = defineStore("appearance", () => {
     mode.value = stored.mode;
     density.value = stored.density;
     accent.value = { ...stored.accent };
-    // Guard against stale persisted values from earlier app versions that
-    // pre-date the surface selector — anything other than the two enabled
-    // options is coerced back to the default.
+    // Guard against stale persisted values — anything other than `"route"`
+    // (including a leftover `"inline"` from M3-F's now-cancelled reserved
+    // value, per ADR 0011) is coerced back to the `"drawer"` default.
     prDetailSurface.value =
       stored.prDetailSurface === "route" ? "route" : "drawer";
     applyToDocument();
@@ -137,10 +137,6 @@ export const useAppearanceStore = defineStore("appearance", () => {
     accent.value = { ...accent.value, h: clampHue(hue) };
   }
   function setPrDetailSurface(next: PrDetailSurface): void {
-    // `'inline'` is reserved for a post-M3 follow-up host; the settings
-    // selector renders it disabled, but the guard here keeps a stale value
-    // from a manual localStorage edit out of the runtime path.
-    if (next === "inline") return;
     prDetailSurface.value = next;
   }
 
