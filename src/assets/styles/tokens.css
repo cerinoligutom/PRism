@@ -1,0 +1,179 @@
+/* PRism — Design Tokens
+ * Dark (default) + light + accent picker.
+ *
+ * WCAG AA contrast targets (measured against --bg-1):
+ *   --text-strong ≥ 12:1   primary
+ *   --text        ≥ 7:1    body
+ *   --text-mute   ≥ 4.5:1  secondary
+ *   --text-faint  reserved for ≥18px / 14px bold only
+ *
+ * Source: docs/design/tokens.css (canonical reference is checked in there).
+ *
+ * Font imports for Geist + JetBrains Mono live at the top of main.css so
+ * they precede Tailwind's generated layer rules (CSS spec: @import must
+ * come before all other rules).
+ */
+
+:root {
+  /* ────── Surface (dark — default) ────── */
+  --bg-0: #07070a;
+  --bg-1: #0c0c10;
+  --bg-2: #111116;
+  --bg-3: #17171d;
+  --bg-4: #1e1e26;
+  --bg-5: #262630;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+
+  /* ────── Borders ────── */
+  --border-1: #1d1d24;
+  --border-2: #2a2a33;
+  --border-3: #3a3a45;
+
+  /* ────── Text (contrast measured vs --bg-1 #0c0c10) ────── */
+  --text-strong: #f4f4f7;   /* 17.5 : 1 */
+  --text:        #d4d4dc;   /* 12.4 : 1 */
+  --text-mute:   #9a9aa6;   /*  6.8 : 1 */
+  --text-faint:  #6c6c78;   /*  3.6 : 1 — large only */
+  --text-disabled: #454552;
+
+  /* ────── Accent (user-pickable; default magenta) ────── */
+  --accent-h: 320;
+  --accent-c: 0.14;
+  --accent:        oklch(0.72 var(--accent-c) var(--accent-h));
+  --accent-strong: oklch(0.78 var(--accent-c) var(--accent-h));
+  --accent-mute:   oklch(0.62 calc(var(--accent-c) * 0.7) var(--accent-h));
+  --accent-bg:     oklch(0.32 calc(var(--accent-c) * 0.4) var(--accent-h) / 0.25);
+  --accent-fg:     oklch(0.18 0.04 var(--accent-h));
+  --focus-ring:    oklch(0.72 var(--accent-c) var(--accent-h) / 0.5);
+
+  /* ────── Semantic / status ────── */
+  --success:    oklch(0.74 0.16 145);
+  --success-bg: oklch(0.74 0.16 145 / 0.14);
+  --danger:     oklch(0.7  0.18 25);
+  --danger-bg:  oklch(0.7  0.18 25  / 0.14);
+  --warning:    oklch(0.78 0.15 80);
+  --warning-bg: oklch(0.78 0.15 80  / 0.14);
+  --info:       oklch(0.72 0.12 240);
+  --info-bg:    oklch(0.72 0.12 240 / 0.14);
+  --merged:     oklch(0.65 0.16 295);
+  --merged-bg:  oklch(0.65 0.16 295 / 0.14);
+  --draft:      var(--text-mute);
+  --draft-bg:   rgba(255, 255, 255, 0.06);
+
+  /* ────── Type ────── */
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --fs-9:  9px;
+  --fs-10: 10px;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-32: 32px;
+  --fs-48: 48px;
+
+  --lh-tight: 1.15;
+  --lh-snug:  1.35;
+  --lh-body:  1.55;
+
+  /* ────── Radii ────── */
+  --r-1: 3px;
+  --r-2: 5px;
+  --r-3: 7px;
+  --r-4: 10px;
+  --r-5: 14px;
+  --r-pill: 999px;
+
+  /* ────── Spacing (4-base) ────── */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 56px;
+  --s-10: 72px;
+
+  /* ────── Shadows ────── */
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-window: 0 24px 64px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+
+  /* ────── Density (rows per dashboard) ────── */
+  --row-h-tight: 36px;
+  --row-h-comfortable: 48px;
+  --row-h-roomy: 64px;
+}
+
+/* ────── Light theme override ────── */
+:root[data-theme="light"] {
+  --bg-0: #d9d9dd;
+  --bg-1: #ffffff;
+  --bg-2: #f7f7f9;
+  --bg-3: #f1f1f4;
+  --bg-4: #e8e8ed;
+  --bg-5: #dedee4;
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+
+  --border-1: #ececf0;
+  --border-2: #dadade;
+  --border-3: #b8b8bf;
+
+  /* contrast vs #ffffff */
+  --text-strong: #0a0a0d;
+  --text:        #1e1e25;
+  --text-mute:   #595963;
+  --text-faint:  #7a7a85;
+  --text-disabled: #b0b0b8;
+
+  --accent:        oklch(0.55 var(--accent-c) var(--accent-h));
+  --accent-strong: oklch(0.48 var(--accent-c) var(--accent-h));
+  --accent-mute:   oklch(0.62 calc(var(--accent-c) * 0.6) var(--accent-h));
+  --accent-bg:     oklch(0.95 calc(var(--accent-c) * 0.3) var(--accent-h));
+  --accent-fg:     #ffffff;
+  --focus-ring:    oklch(0.55 var(--accent-c) var(--accent-h) / 0.4);
+
+  --success:    oklch(0.5  0.16 145);
+  --success-bg: oklch(0.94 0.05 145);
+  --danger:     oklch(0.55 0.2  25);
+  --danger-bg:  oklch(0.95 0.04 25);
+  --warning:    oklch(0.55 0.15 70);
+  --warning-bg: oklch(0.96 0.06 80);
+  --info:       oklch(0.55 0.15 240);
+  --info-bg:    oklch(0.94 0.05 240);
+  --merged:     oklch(0.5  0.18 295);
+  --merged-bg:  oklch(0.95 0.04 295);
+  --draft-bg:   rgba(0, 0, 0, 0.05);
+
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.12);
+  --shadow-window: 0 24px 64px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+html,
+body {
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--bg-1);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 13px;
+  line-height: var(--lh-body);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+}

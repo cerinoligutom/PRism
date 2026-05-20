@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — Expanded PR</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; height: 1000px; background: var(--bg-0); padding: 0; overflow: hidden; }
+  .app {
+    display: grid;
+    grid-template-columns: 232px 1fr;
+    height: calc(100% - 36px);
+    background: var(--bg-1);
+  }
+
+  /* sidebar collapsed-ish — same as dashboard, simpler */
+  .side {
+    background: var(--bg-2);
+    border-right: 1px solid var(--border-1);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+  }
+  .side-brand { display: flex; align-items: center; gap: 9px; padding: 6px; }
+  .side-brand .mark { width: 22px; height: 22px; color: var(--text-strong); }
+  .side-brand .name { font-size: 14px; font-weight: 600; letter-spacing: -0.4px; color: var(--text-strong); }
+  .side-brand .name .ism { font-weight: 400; color: var(--text-mute); }
+  .side h6 {
+    margin: 16px 6px 6px;
+    font-size: 9px; font-weight: 600; letter-spacing: 1.2px;
+    text-transform: uppercase; color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+  .side nav { display: flex; flex-direction: column; gap: 1px; }
+
+  .main {
+    display: flex; flex-direction: column;
+    min-width: 0; background: var(--bg-1);
+  }
+
+  /* breadcrumb / context */
+  .ctx-bar {
+    display: flex; align-items: center;
+    padding: 12px 24px; gap: 8px;
+    border-bottom: 1px solid var(--border-1);
+    background: var(--bg-1);
+  }
+  .ctx-bar .crumb {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-mute); font-size: 12px;
+  }
+  .ctx-bar .crumb .sep { color: var(--text-faint); }
+  .ctx-bar .spacer { flex: 1; }
+
+  /* surrounding rows (collapsed) — keep dense */
+  .pr-row-mini {
+    display: grid;
+    grid-template-columns: 4px 54px 1fr 100px 100px 64px 80px 28px;
+    align-items: center;
+    gap: 14px;
+    padding-right: 24px;
+    height: 44px;
+    border-top: 1px solid var(--border-1);
+    background: var(--bg-1);
+    cursor: pointer;
+  }
+  .pr-row-mini:hover { background: var(--bg-2); }
+  .pr-row-mini .strip { width: 3px; height: 26px; border-radius: 2px; margin-left: 1px; }
+  .pr-row-mini .pr-num { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); padding-left: 8px; }
+  .pr-row-mini .title { font-size: 13px; font-weight: 500; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-row-mini .meta-row { display: flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-top: 1px; }
+  .pr-row-mini .time { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); text-align: right; }
+  .pr-row-mini .kbb { color: var(--text-faint); }
+
+  /* The expanded card */
+  .pr-exp {
+    border-top: 1px solid var(--border-2);
+    border-bottom: 1px solid var(--border-2);
+    background: var(--bg-2);
+    position: relative;
+  }
+  .pr-exp::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--accent);
+  }
+  .pr-exp-head {
+    padding: 16px 24px 14px;
+    display: grid;
+    grid-template-columns: 54px 1fr auto;
+    gap: 14px;
+    align-items: start;
+    border-bottom: 1px solid var(--border-1);
+  }
+  .pr-exp-num {
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+    padding-top: 4px;
+  }
+  .pr-exp-title h2 {
+    margin: 0; font-size: 18px; font-weight: 600;
+    color: var(--text-strong); letter-spacing: -0.3px;
+    line-height: 1.3;
+  }
+  .pr-exp-title .meta-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 8px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-mute);
+    flex-wrap: wrap;
+  }
+  .pr-exp-title .meta-row .dot-sep { color: var(--text-disabled); }
+  .pr-exp-title .meta-row .author { display: inline-flex; align-items: center; gap: 5px; color: var(--text); }
+  .pr-exp-title .meta-row .author .avatar { width: 16px; height: 16px; font-size: 8px; }
+  .pr-exp-title .meta-row .add { color: var(--success); }
+  .pr-exp-title .meta-row .del { color: var(--danger); }
+
+  .pr-exp-actions {
+    display: flex; gap: 6px; align-items: flex-start;
+  }
+  .pr-exp-actions .btn { height: 28px; }
+
+  /* Body — 3-column layout: threads (1fr) | meta cards (300px) */
+  .pr-exp-body {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 0;
+  }
+  .threads-col {
+    padding: 18px 24px 20px;
+    border-right: 1px solid var(--border-1);
+    min-width: 0;
+  }
+  .meta-col {
+    padding: 18px 24px 20px;
+    display: flex; flex-direction: column; gap: 18px;
+    background: var(--bg-2);
+  }
+
+  .col-h {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .col-h .title {
+    font-family: var(--font-mono); font-size: 10px;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .col-h .legend { display: flex; gap: 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text-mute); }
+  .col-h .legend span { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* per-thread row */
+  .thread {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    gap: 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-1);
+  }
+  .thread:last-child { border-bottom: 0; }
+  .thread .state-icn {
+    width: 14px; height: 14px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex: 0 0 14px;
+  }
+  .thread.unresolved .state-icn { background: var(--accent-bg); color: var(--accent); }
+  .thread.resolved .state-icn   { background: var(--success-bg); color: var(--success); }
+  .thread.outdated .state-icn   { background: var(--bg-4); color: var(--text-faint); }
+
+  .thread .body { min-width: 0; }
+  .thread .file {
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-mute);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .thread .file .ln { color: var(--text-faint); }
+  .thread .file .badge-mine {
+    margin-left: 4px;
+    background: var(--accent-bg); color: var(--accent-strong);
+    font-family: var(--font-mono); font-size: 9px;
+    padding: 1px 5px; border-radius: 2px;
+    letter-spacing: 0.5px;
+  }
+  .thread .snippet {
+    margin-top: 4px;
+    display: flex; align-items: flex-start; gap: 6px;
+    font-size: 12px; color: var(--text);
+  }
+  .thread .snippet .av {
+    flex: 0 0 16px;
+    margin-top: 2px;
+  }
+  .thread .snippet p {
+    margin: 0; flex: 1;
+    line-height: 1.45;
+    color: var(--text);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .thread .snippet .author-tag { color: var(--text-mute); font-weight: 500; margin-right: 4px; }
+  .thread .meta-end {
+    text-align: right;
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+  .thread .meta-end .reps { color: var(--text-mute); margin-bottom: 2px; }
+  .thread.unresolved.mine {
+    background: linear-gradient(90deg, oklch(0.22 0.06 320 / 0.18), transparent 60%);
+    border-radius: 4px;
+    padding-left: 8px; padding-right: 8px;
+    margin-left: -8px; margin-right: -8px;
+  }
+
+  /* Meta col cards */
+  .stat-card {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .stat-card h6 {
+    margin: 0; font-family: var(--font-mono); font-size: 10px;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .stat-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  .stat-tile {
+    background: var(--bg-3);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-2);
+    padding: 10px 12px;
+  }
+  .stat-tile .v {
+    font-family: var(--font-mono); font-size: 18px; font-weight: 600;
+    color: var(--text-strong); font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .stat-tile .v .sub { font-size: 11px; color: var(--text-faint); margin-left: 2px; }
+  .stat-tile .k {
+    font-size: 10px; color: var(--text-mute);
+    margin-top: 6px; line-height: 1.3;
+  }
+
+  /* status timeline */
+  .timeline { display: flex; flex-direction: column; gap: 0; }
+  .tl-row {
+    display: grid;
+    grid-template-columns: 16px 1fr 60px;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 0;
+    font-size: 12px;
+  }
+  .tl-row .icn {
+    width: 16px; height: 16px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: var(--bg-3);
+    border: 1.5px solid var(--border-2);
+    color: var(--text-faint);
+    font-size: 10px;
+  }
+  .tl-row.cur .icn { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .tl-row.done .icn { background: var(--bg-4); border-color: var(--border-2); color: var(--text-mute); }
+  .tl-row .lbl { color: var(--text); display: flex; align-items: center; gap: 6px; }
+  .tl-row .lbl .who { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+  .tl-row .when {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-faint); text-align: right;
+  }
+  .tl-row.cur .when { color: var(--accent); }
+  .tl-line {
+    width: 1.5px; height: 12px;
+    background: var(--border-2);
+    margin: 0 0 0 7px;
+  }
+
+  /* per-check CI */
+  .checks { display: flex; flex-direction: column; gap: 4px; }
+  .check-row {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    gap: 8px; align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border-1);
+    font-size: 11px;
+  }
+  .check-row:last-child { border-bottom: 0; }
+  .check-row .nm { color: var(--text); font-family: var(--font-mono); }
+  .check-row .dur { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+  .check-row.ok .icn  { color: var(--success); }
+  .check-row.fail .icn { color: var(--danger); }
+  .check-row.run .icn { color: var(--warning); }
+  .check-row.fail .nm { color: var(--text-strong); }
+
+  /* reviewer detail */
+  .rvw-list { display: flex; flex-direction: column; gap: 6px; }
+  .rvw {
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .rvw .avatar { width: 24px; height: 24px; font-size: 10px; }
+  .rvw .who { font-size: 12px; color: var(--text); }
+  .rvw .who .login { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+  .rvw .state {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 2px 6px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .rvw .state.ok   { background: var(--success-bg); color: var(--success); }
+  .rvw .state.chg  { background: var(--danger-bg); color: var(--danger); }
+  .rvw .state.pen  { background: var(--bg-4); color: var(--text-mute); }
+  .rvw .state.com  { background: var(--info-bg); color: var(--info); }
+
+  /* tabs */
+  .pr-exp-tabs {
+    display: flex; align-items: center; gap: 0;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border-1);
+    background: var(--bg-2);
+  }
+  .pr-exp-tab {
+    padding: 10px 14px 10px;
+    color: var(--text-mute);
+    font-size: 12px; font-weight: 500;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    margin-bottom: -1px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .pr-exp-tab .count {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-faint);
+    padding: 0 5px; border-radius: 9px;
+    background: var(--bg-3);
+  }
+  .pr-exp-tab.active { color: var(--text-strong); border-bottom-color: var(--accent); }
+  .pr-exp-tab.active .count { background: var(--accent-bg); color: var(--accent-strong); }
+</style>
+</head>
+<body>
+<div class="mac-window">
+  <div class="mac-titlebar">
+    <div class="mac-lights">
+      <span class="mac-light red"></span>
+      <span class="mac-light amber"></span>
+      <span class="mac-light green"></span>
+    </div>
+    <div class="mac-title">PRism — Authored by me · #2418</div>
+    <div></div>
+  </div>
+
+  <div class="app">
+    <!-- side (compact) -->
+    <aside class="side">
+      <div class="side-brand">
+        <div class="mark">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+            <path d="M16 4 L28 26 L4 26 Z"/>
+            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="name"><span>PR</span><span class="ism">ism</span></div>
+      </div>
+      <h6>Views</h6>
+      <nav>
+        <div class="nav-item active"><span class="nav-icon">●</span>Authored by me<span class="count has-attention">3</span></div>
+        <div class="nav-item"><span class="nav-icon">●</span>Assigned to me<span class="count">7</span></div>
+        <div class="nav-item"><span class="nav-icon">●</span>Watching<span class="count">48</span></div>
+        <div class="nav-item"><span class="nav-icon">●</span>Team<span class="count">203</span></div>
+      </nav>
+      <h6>Filters</h6>
+      <nav>
+        <div class="nav-item"><span class="nav-icon" style="color:var(--accent)">●</span>Needs my review<span class="count has-attention">4</span></div>
+        <div class="nav-item"><span class="nav-icon" style="color:var(--danger)">●</span>CI failing<span class="count">2</span></div>
+        <div class="nav-item"><span class="nav-icon" style="color:var(--warning)">●</span>Stale<span class="count">11</span></div>
+        <div class="nav-item"><span class="nav-icon" style="color:var(--text-faint)">●</span>Archived<span class="count">86</span></div>
+      </nav>
+    </aside>
+
+    <!-- MAIN -->
+    <section class="main">
+      <div class="ctx-bar">
+        <span class="crumb"><span style="color:var(--text-faint)">←</span> Authored by me</span>
+        <span class="crumb"><span class="sep">/</span> <span style="color:var(--text-mute)">sitemate / web</span></span>
+        <span class="crumb"><span class="sep">/</span> <span style="color:var(--text-strong);font-family:var(--font-mono)">#2418</span></span>
+        <div class="spacer"></div>
+        <span class="chip" style="background:var(--bg-2);border-color:var(--border-1)">⌥ Collapse all <kbd style="margin-left:6px">⎋</kbd></span>
+      </div>
+
+      <!-- a collapsed neighbour above -->
+      <div class="pr-row-mini">
+        <div class="strip row-strip-needs"></div>
+        <div class="pr-num">#2421</div>
+        <div>
+          <div class="title">Cache GraphQL responses by ETag + cursor pair</div>
+          <div class="meta-row">⌥ perf/etag-cache · 4h ago · sitemate / web</div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--accent)">2 unresolved</div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-mute)">1/3 reviewed</div>
+        <div style="color:var(--success);display:flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:11px">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg> 12/12
+        </div>
+        <div class="time">4h<span style="display:block;color:var(--text-faint);font-size:9px;margin-top:1px">ready</span></div>
+        <div class="kbb">⋯</div>
+      </div>
+
+      <!-- EXPANDED -->
+      <div class="pr-exp">
+        <div class="pr-exp-head">
+          <div class="pr-exp-num">#2418</div>
+          <div class="pr-exp-title">
+            <h2>Refactor sync worker to batch GraphQL calls into a single round-trip</h2>
+            <div class="meta-row">
+              <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+              <span class="dot-sep">·</span>
+              <span><span style="color:var(--text-faint)">sitemate</span><span style="color:var(--text-disabled)">/</span><span style="color:var(--text)">web</span></span>
+              <span class="dot-sep">·</span>
+              <span style="display:inline-flex;align-items:center;gap:4px">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="10" r="1.5"/><path d="M4 5.5v5M5.5 4h2a3 3 0 013 3v1.5"/></svg>
+                feat/sync-worker → main
+              </span>
+              <span class="dot-sep">·</span>
+              <span class="add">+847</span>
+              <span class="del">−203</span>
+              <span style="color:var(--text-faint)">12 files</span>
+              <span class="dot-sep">·</span>
+              <span class="badge badge-success" style="height:16px;padding:0 6px;font-size:9px"><span class="dot dot-success"></span>READY</span>
+              <span class="badge badge-info" style="height:16px;padding:0 6px;font-size:9px"><span class="dot dot-info"></span>MERGEABLE</span>
+              <span class="badge" style="height:16px;padding:0 6px;font-size:9px;background:var(--bg-4);color:var(--text-mute)">backend · performance</span>
+            </div>
+          </div>
+          <div class="pr-exp-actions">
+            <button class="btn">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 13h10M3 13V3l10 10"/></svg>
+              Copy link
+            </button>
+            <button class="btn btn-primary">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 3h3v3M7 9l6-6M13 8v5H3V3h5"/></svg>
+              Open in GitHub
+            </button>
+          </div>
+        </div>
+
+        <div class="pr-exp-tabs">
+          <div class="pr-exp-tab active">Threads <span class="count">12</span></div>
+          <div class="pr-exp-tab">Reviews <span class="count">4</span></div>
+          <div class="pr-exp-tab">Checks <span class="count">12</span></div>
+          <div class="pr-exp-tab">Timeline <span class="count">37</span></div>
+          <div class="pr-exp-tab">Files <span class="count">12</span></div>
+        </div>
+
+        <div class="pr-exp-body">
+          <!-- threads -->
+          <div class="threads-col">
+            <div class="col-h">
+              <span class="title">Conversation · 12 threads · 3 unresolved</span>
+              <span class="legend">
+                <span><span class="dot" style="background:var(--accent)"></span> unresolved</span>
+                <span><span class="dot" style="background:var(--info)"></span> you're in</span>
+                <span><span class="dot" style="background:var(--success)"></span> resolved</span>
+              </span>
+            </div>
+
+            <!-- composite bar -->
+            <div style="margin-bottom:14px">
+              <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg-4)">
+                <div style="background:var(--accent);width:25%"></div>
+                <div style="background:var(--info);width:17%"></div>
+                <div style="background:var(--success);width:58%"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-top:6px;font-family:var(--font-mono);font-size:10px;color:var(--text-mute)">
+                <span>3 unresolved · 2 yours</span>
+                <span>2 involved</span>
+                <span>7 resolved · 58%</span>
+              </div>
+            </div>
+
+            <!-- thread #1: unresolved + mine -->
+            <div class="thread unresolved mine">
+              <div class="state-icn">
+                <svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/sync/worker.rs</span>
+                  <span class="ln">:142</span>
+                  <span class="badge-mine">YOU'RE IN</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-4 av">NM</span>
+                  <p><span class="author-tag">nmadigan:</span> Could we keep the cursor in the batch context instead of threading it through every fn? It's getting hard to track which call owns the page state — especially with the new retry logic on 502s.</p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">4 replies</div>
+                <div>opened 2d</div>
+                <div>last 4h</div>
+              </div>
+            </div>
+
+            <!-- thread #2: unresolved + mine -->
+            <div class="thread unresolved mine">
+              <div class="state-icn">
+                <svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/sync/scheduler.rs</span>
+                  <span class="ln">:88</span>
+                  <span class="badge-mine">YOU'RE IN</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-2 av">EH</span>
+                  <p><span class="author-tag">eheinrich:</span> Should we tap the user's "sync interval" preference here, or always default to 60s when the worker is in a backoff state?</p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">2 replies</div>
+                <div>opened 1d</div>
+                <div>last 6h</div>
+              </div>
+            </div>
+
+            <!-- thread #3: unresolved (not mine) -->
+            <div class="thread unresolved">
+              <div class="state-icn">
+                <svg width="7" height="7" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/store/migrations/004_threads.sql</span>
+                  <span class="ln">:12</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-3 av">JK</span>
+                  <p><span class="author-tag">jkim:</span> Nit — let's name this column <code style="font-family:var(--font-mono);background:var(--bg-3);padding:1px 4px;border-radius:2px">thread_resolved_at</code> to match the GraphQL field. Right now we have three different naming conventions across migrations.</p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">1 reply</div>
+                <div>opened 8h</div>
+                <div>last 8h</div>
+              </div>
+            </div>
+
+            <!-- thread #4: resolved -->
+            <div class="thread resolved">
+              <div class="state-icn">
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 4l1.5 1.5L6 2.5"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/sync/worker.rs</span>
+                  <span class="ln">:204</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-2 av">EH</span>
+                  <p><span class="author-tag">eheinrich:</span> Looks good after the refactor. Resolved — picked up locally and confirmed the request count dropped from 14 to 3 on a steady-state sync.</p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">3 replies</div>
+                <div>resolved 1h</div>
+              </div>
+            </div>
+
+            <!-- thread #5: resolved -->
+            <div class="thread resolved">
+              <div class="state-icn">
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 4l1.5 1.5L6 2.5"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/graphql/queries/pulls.graphql</span>
+                  <span class="ln">:34</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-3 av">JK</span>
+                  <p><span class="author-tag">jkim:</span> Maybe inline the fragment? Otherwise our codegen has to walk imports for one tiny piece. → <em style="color:var(--text-mute)">done in 4f9c1ed</em></p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">2 replies</div>
+                <div>resolved 5h</div>
+              </div>
+            </div>
+
+            <!-- thread #6: outdated -->
+            <div class="thread outdated">
+              <div class="state-icn">
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4h4M5 2.5l1.5 1.5L5 5.5"/></svg>
+              </div>
+              <div class="body">
+                <div class="file">
+                  <span>src/sync/worker.rs</span>
+                  <span class="ln">:88</span>
+                  <span class="badge-mine" style="background:var(--bg-4);color:var(--text-mute)">OUTDATED</span>
+                </div>
+                <div class="snippet">
+                  <span class="avatar sm av-2 av" style="opacity:0.5">EH</span>
+                  <p style="color:var(--text-mute)"><span class="author-tag">eheinrich:</span> This block doesn't look right — fn signature has changed since the comment was made.</p>
+                </div>
+              </div>
+              <div class="meta-end">
+                <div class="reps">1 reply</div>
+                <div>outdated</div>
+              </div>
+            </div>
+
+            <button class="btn btn-ghost" style="margin-top:8px;align-self:center;width:100%;justify-content:center;color:var(--text-mute)">
+              Show 6 more resolved threads
+            </button>
+          </div>
+
+          <!-- META COL -->
+          <aside class="meta-col">
+
+            <!-- conversation stats -->
+            <div class="stat-card">
+              <h6>Conversation stats</h6>
+              <div class="stat-grid">
+                <div class="stat-tile">
+                  <div class="v">2d <span class="sub">4h</span></div>
+                  <div class="k">Oldest unresolved</div>
+                </div>
+                <div class="stat-tile">
+                  <div class="v">3h <span class="sub">12m</span></div>
+                  <div class="k">Avg response</div>
+                </div>
+                <div class="stat-tile">
+                  <div class="v">58<span class="sub">%</span></div>
+                  <div class="k">Resolution rate</div>
+                </div>
+                <div class="stat-tile">
+                  <div class="v">12</div>
+                  <div class="k">Comments total<br><span style="color:var(--text-faint)">7 review · 3 issue · 2 summary</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- reviewers -->
+            <div class="stat-card">
+              <h6>Reviewers</h6>
+              <div class="rvw-list">
+                <div class="rvw">
+                  <span class="avatar av-2">EH</span>
+                  <div class="who">Eli Heinrich <div class="login">@eheinrich</div></div>
+                  <span class="state ok">Approved · 5h</span>
+                </div>
+                <div class="rvw">
+                  <span class="avatar av-3">JK</span>
+                  <div class="who">Jane Kim <div class="login">@jkim</div></div>
+                  <span class="state ok">Approved · 12h</span>
+                </div>
+                <div class="rvw">
+                  <span class="avatar av-4">NM</span>
+                  <div class="who">Naomi Madigan <div class="login">@nmadigan</div></div>
+                  <span class="state chg">Changes · 4h</span>
+                </div>
+                <div class="rvw">
+                  <span class="avatar av-5">DT</span>
+                  <div class="who">Dani Tonks <div class="login">@dtonks</div></div>
+                  <span class="state pen">Pending</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- timeline -->
+            <div class="stat-card">
+              <h6>Status timeline</h6>
+              <div class="timeline">
+                <div class="tl-row done">
+                  <div class="icn">○</div>
+                  <div class="lbl">Opened <span class="who">@rpalanca</span></div>
+                  <div class="when">3d ago</div>
+                </div>
+                <div style="margin-left:7px"><div class="tl-line"></div></div>
+                <div class="tl-row done">
+                  <div class="icn">●</div>
+                  <div class="lbl">Marked ready</div>
+                  <div class="when">2d 4h</div>
+                </div>
+                <div style="margin-left:7px"><div class="tl-line"></div></div>
+                <div class="tl-row done">
+                  <div class="icn">✓</div>
+                  <div class="lbl">2 approvals</div>
+                  <div class="when">5h</div>
+                </div>
+                <div style="margin-left:7px"><div class="tl-line"></div></div>
+                <div class="tl-row cur">
+                  <div class="icn">!</div>
+                  <div class="lbl">Changes requested <span class="who">@nmadigan</span></div>
+                  <div class="when">4h</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- checks -->
+            <div class="stat-card">
+              <h6>Checks <span style="margin-left:6px;color:var(--success);font-family:var(--font-mono);font-size:10px">12/12 passing</span></h6>
+              <div class="checks">
+                <div class="check-row ok">
+                  <span class="icn"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                  <span class="nm">build / linux-x86_64</span>
+                  <span class="dur">2m 12s</span>
+                </div>
+                <div class="check-row ok">
+                  <span class="icn"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                  <span class="nm">build / macos-arm64</span>
+                  <span class="dur">3m 04s</span>
+                </div>
+                <div class="check-row ok">
+                  <span class="icn"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                  <span class="nm">test / cargo</span>
+                  <span class="dur">1m 38s</span>
+                </div>
+                <div class="check-row ok">
+                  <span class="icn"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                  <span class="nm">lint / clippy</span>
+                  <span class="dur">22s</span>
+                </div>
+                <div class="check-row ok">
+                  <span class="icn"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                  <span class="nm">e2e / playwright</span>
+                  <span class="dur">5m 41s</span>
+                </div>
+                <div class="check-row" style="color:var(--text-faint)">
+                  <span></span>
+                  <span class="nm" style="color:var(--text-faint)">+ 7 more passing</span>
+                  <span></span>
+                </div>
+              </div>
+            </div>
+
+          </aside>
+        </div>
+      </div>
+
+      <!-- a row below -->
+      <div class="pr-row-mini">
+        <div class="strip row-strip-changes"></div>
+        <div class="pr-num">#2411</div>
+        <div>
+          <div class="title">Surface PAT expiry banner with re-auth deep link</div>
+          <div class="meta-row">⌥ fix/pat-expiry-banner · 1d ago · sitemate / web</div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--accent)">1 unresolved</div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-mute)">1/2 reviewed</div>
+        <div style="color:var(--success);display:flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:11px">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg> 12/12
+        </div>
+        <div class="time">1d 6h<span style="display:block;color:var(--text-faint);font-size:9px;margin-top:1px">changes</span></div>
+        <div class="kbb">⋯</div>
+      </div>
+      <div class="pr-row-mini">
+        <div class="strip row-strip-needs"></div>
+        <div class="pr-num">#2407</div>
+        <div>
+          <div class="title">SQLite migration: per-thread cache schema</div>
+          <div class="meta-row">⌥ db/per-thread-cache · 22m ago · sitemate / web</div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-mute)">0 unresolved</div>
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--text-mute)">1/2 reviewed</div>
+        <div style="color:var(--danger);display:flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:11px">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg> 9/12
+        </div>
+        <div class="time">22m<span style="display:block;color:var(--text-faint);font-size:9px;margin-top:1px">CI failed</span></div>
+        <div class="kbb">⋯</div>
+      </div>
+    </section>
+  </div>
+</div>
+</body>
+</html>

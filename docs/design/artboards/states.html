@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — States</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; min-height: 1200px; padding: 56px 56px 80px; background: var(--bg-0); }
+
+  .page-h {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 32px; gap: 16px;
+  }
+  .page-h h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.6px; color: var(--text-strong); }
+  .page-h .sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); letter-spacing: 0.5px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+
+  .state-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-4);
+    overflow: hidden;
+    box-shadow: var(--shadow-2);
+  }
+  .state-h {
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-1);
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-faint);
+  }
+  .state-h .tag {
+    padding: 2px 6px; border-radius: 3px;
+    font-size: 9px;
+    background: var(--bg-3); color: var(--text-mute);
+  }
+  .state-h .tag.info { background: var(--info-bg); color: var(--info); }
+  .state-h .tag.danger { background: var(--danger-bg); color: var(--danger); }
+  .state-h .tag.warning { background: var(--warning-bg); color: var(--warning); }
+  .state-h .spacer { flex: 1; }
+  .state-body {
+    height: 320px;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+
+  /* shared empty visuals */
+  .empty {
+    text-align: center;
+    max-width: 360px;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  .empty .art {
+    width: 64px; height: 64px;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 4px;
+    color: var(--text-faint);
+  }
+  .empty h3 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-strong); letter-spacing: -0.3px; }
+  .empty p  { margin: 0; font-size: 12px; color: var(--text-mute); line-height: 1.55; }
+  .empty .actions { display: flex; gap: 8px; margin-top: 6px; }
+
+  /* SPECIFIC STATES */
+
+  /* state 1: first-run no accounts */
+  .first-run .art {
+    width: 72px; height: 72px;
+    color: var(--accent);
+    position: relative;
+  }
+  .first-run .art::after {
+    content: ''; position: absolute;
+    inset: -10px;
+    border-radius: 50%;
+    border: 1px dashed var(--border-2);
+    animation: spinDashed 18s linear infinite;
+  }
+  @keyframes spinDashed { to { transform: rotate(360deg); } }
+
+  /* state 2: filtered view empty */
+  .filt-empty {
+    background:
+      repeating-linear-gradient(45deg, transparent 0 8px, var(--bg-2) 8px 9px) ;
+    background-size: 12px 12px;
+  }
+  .filt-empty .empty .art {
+    width: 80px; height: 32px;
+    background: var(--bg-2);
+    border: 1px dashed var(--border-2);
+    border-radius: var(--r-3);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-faint);
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .filt-empty .chips-applied {
+    display: flex; gap: 6px; margin-top: 4px;
+    flex-wrap: wrap; justify-content: center;
+  }
+
+  /* state 3: sync failed */
+  .sync-fail .art {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-radius: 50%;
+  }
+
+  /* state 4: rate limited */
+  .rate-limit .art {
+    color: var(--warning);
+    background: var(--warning-bg);
+    border-radius: 50%;
+  }
+  .rate-limit .bar {
+    width: 280px; height: 6px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .rate-limit .bar .fill {
+    height: 100%; width: 96%;
+    background: var(--warning);
+  }
+  .rate-limit .meta {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--text-mute); display: flex; gap: 14px; margin-top: 4px;
+  }
+
+  /* state 5: offline */
+  .offline .art {
+    color: var(--text-faint);
+    background: var(--bg-3);
+    border-radius: 50%;
+  }
+
+  /* state 6: archived view empty */
+  .archived .art {
+    width: 72px; height: 72px;
+    color: var(--text-faint);
+  }
+
+  /* Full-screen blocker (expired) — wider card, spans full row */
+  .blocker { grid-column: 1 / -1; }
+  .blocker .state-body { height: 280px; }
+  .blocker-layout {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 32px;
+    align-items: center;
+    max-width: 100%;
+    width: 100%;
+  }
+  .blocker-art {
+    width: 96px; height: 96px;
+    border-radius: 50%;
+    background: oklch(0.25 0.1 25 / 0.4);
+    color: var(--danger);
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .blocker-art::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+    border-radius: 50%;
+    border: 1px solid oklch(0.5 0.15 25 / 0.4);
+  }
+  .blocker-body h3 {
+    margin: 0 0 6px;
+    font-size: 22px; font-weight: 600;
+    color: var(--text-strong); letter-spacing: -0.4px;
+  }
+  .blocker-body p {
+    margin: 0; color: var(--text-mute); font-size: 13px;
+    line-height: 1.55; max-width: 540px;
+  }
+  .blocker-body .acct {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 8px;
+    padding: 4px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-2);
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text);
+  }
+  .blocker-body .acct .dot { background: var(--danger); }
+  .blocker-actions {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* tiny mock chrome — to show state in context */
+  .mock-list {
+    margin-bottom: 14px; width: 100%; max-width: 100%;
+  }
+  .mock-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border-1);
+    height: 32px;
+  }
+  .mock-row.faded { opacity: 0.4; }
+  .mock-row .ph { height: 7px; border-radius: 2px; background: var(--bg-4); }
+  .mock-row .ph.title { flex: 1; max-width: 200px; }
+  .mock-row .ph.tag { width: 40px; }
+</style>
+</head>
+<body>
+  <div class="page-h">
+    <h1>States</h1>
+    <span class="sub">EMPTY · ERROR · STALE · OFFLINE</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- 1. First-run empty -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag info">EMPTY</span>
+        First run · no accounts connected
+        <span class="spacer"></span>
+        <span>views / authored</span>
+      </div>
+      <div class="state-body first-run">
+        <div class="empty">
+          <div class="art">
+            <svg width="48" height="48" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+              <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+              <path d="M16 4 L28 26 L4 26 Z"/>
+              <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+              <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+              <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+              <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+            </svg>
+          </div>
+          <h3>Connect GitHub to begin</h3>
+          <p>Add a Personal Access Token and PRism will start watching every PR you've touched — authored, reviewed, mentioned, or assigned.</p>
+          <div class="actions">
+            <button class="btn btn-primary">Connect GitHub →</button>
+            <button class="btn btn-ghost">Learn about PATs</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Filtered view empty -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag">FILTER EMPTY</span>
+        Authored by me · all filters applied
+        <span class="spacer"></span>
+        <span>12 PRs hidden</span>
+      </div>
+      <div class="state-body filt-empty">
+        <div class="empty">
+          <div class="art">no match</div>
+          <h3>No PRs match these filters</h3>
+          <p>12 of your authored PRs are hidden. Try removing a filter to see them.</p>
+          <div class="chips-applied">
+            <span class="chip active" style="height:22px;font-size:10px">Needs my attention <span style="margin-left:4px;color:var(--accent-strong);opacity:.7">✕</span></span>
+            <span class="chip active" style="height:22px;font-size:10px">CI failing <span style="margin-left:4px;color:var(--accent-strong);opacity:.7">✕</span></span>
+            <span class="chip active" style="height:22px;font-size:10px">Drafts <span style="margin-left:4px;color:var(--accent-strong);opacity:.7">✕</span></span>
+          </div>
+          <div class="actions">
+            <button class="btn btn-ghost">Clear filters</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Sync failed -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag danger">SYNC ERROR</span>
+        Last sync failed · 4m ago
+        <span class="spacer"></span>
+        <span>showing cached data</span>
+      </div>
+      <div class="state-body sync-fail" style="background:linear-gradient(180deg, oklch(0.18 0.04 25 / 0.18), transparent 60%)">
+        <div style="width:100%;display:flex;flex-direction:column;gap:14px">
+          <div class="mock-list">
+            <div class="mock-row">
+              <div class="ph" style="width:3px;height:18px;background:var(--accent)"></div>
+              <div class="ph" style="width:32px"></div>
+              <div class="ph title"></div>
+              <div class="ph tag"></div>
+              <div class="ph tag"></div>
+            </div>
+            <div class="mock-row">
+              <div class="ph" style="width:3px;height:18px;background:var(--danger)"></div>
+              <div class="ph" style="width:32px"></div>
+              <div class="ph title" style="max-width:280px"></div>
+              <div class="ph tag"></div>
+              <div class="ph tag"></div>
+            </div>
+            <div class="mock-row faded">
+              <div class="ph" style="width:3px;height:18px"></div>
+              <div class="ph" style="width:32px"></div>
+              <div class="ph title" style="max-width:240px"></div>
+              <div class="ph tag"></div>
+              <div class="ph tag"></div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:14px;align-items:center;padding:14px 16px;border:1px solid oklch(0.5 0.15 25 / 0.4);background:oklch(0.28 0.06 25 / 0.25);border-radius:var(--r-3)">
+            <div class="art" style="width:36px;height:36px;background:var(--danger-bg);border-radius:50%;color:var(--danger);display:flex;align-items:center;justify-content:center;flex:0 0 36px">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4l10 10M13 4l-10 10"/></svg>
+            </div>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:600;color:var(--text-strong)">Couldn't reach api.github.com</div>
+              <div style="font-size:11px;color:var(--text-mute);margin-top:2px;font-family:var(--font-mono)">getaddrinfo ENOTFOUND · network unreachable · last good sync 14m ago</div>
+            </div>
+            <button class="btn btn-sm">Retry now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. Rate limited -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag warning">RATE LIMIT</span>
+        Approaching GitHub API budget
+        <span class="spacer"></span>
+        <span>resets in 24m</span>
+      </div>
+      <div class="state-body rate-limit">
+        <div class="empty">
+          <div class="art">
+            <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 1.5" stroke-linecap="round"/></svg>
+          </div>
+          <h3>Slowing sync to protect your budget</h3>
+          <p>Personal account has used <strong style="color:var(--warning)">4,808 / 5,000 requests</strong> this hour. PRism is pacing requests until the limit resets at <span class="mono" style="color:var(--text)">15:24 UTC</span>.</p>
+          <div class="bar"><div class="fill"></div></div>
+          <div class="meta">
+            <span>● 96% used</span>
+            <span>● 192 left</span>
+            <span>● resets 15:24</span>
+          </div>
+          <div class="actions">
+            <button class="btn btn-ghost">View per-account budget</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. Archived view empty -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag">ARCHIVED</span>
+        Archive · 0 results this week
+        <span class="spacer"></span>
+        <span>v ⌥+a</span>
+      </div>
+      <div class="state-body archived">
+        <div class="empty">
+          <div class="art">
+            <svg width="44" height="44" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+              <rect x="4" y="8" width="24" height="20" rx="2"/>
+              <path d="M4 12h24M14 18h4"/>
+              <path d="M6 8l2-3h16l2 3" opacity="0.55"/>
+            </svg>
+          </div>
+          <h3>Nothing archived this week</h3>
+          <p>Closed and merged PRs land here after 14 days of inactivity. Adjust the auto-archive window in <span style="color:var(--accent)">Settings → Sync</span>.</p>
+          <div class="actions">
+            <button class="btn btn-ghost">Show this month</button>
+            <button class="btn btn-ghost">All time</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. Offline -->
+    <div class="state-card">
+      <div class="state-h">
+        <span class="tag warning">OFFLINE</span>
+        Network unavailable
+        <span class="spacer"></span>
+        <span>cached 14m ago</span>
+      </div>
+      <div class="state-body offline">
+        <div class="empty">
+          <div class="art" style="width:64px;height:64px;display:flex;align-items:center;justify-content:center">
+            <svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M1.5 5C3 3.5 5.4 2.5 8 2.5s5 1 6.5 2.5"/>
+              <path d="M3.5 8c1-1 2.6-1.5 4.5-1.5S11.5 7 12.5 8"/>
+              <path d="M6 11c.5-.5 1.2-.8 2-.8s1.5.3 2 .8"/>
+              <circle cx="8" cy="13.5" r="0.7" fill="currentColor"/>
+              <path d="M2 2l12 12" stroke="var(--danger)" stroke-width="2"/>
+            </svg>
+          </div>
+          <h3>You're offline</h3>
+          <p>PRism is showing data from your last successful sync. We'll pick up where we left off the moment you reconnect.</p>
+          <div class="actions">
+            <button class="btn btn-ghost">Open last cache</button>
+            <button class="btn">Retry connection</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7. Expired blocker (spans full row) -->
+    <div class="state-card blocker">
+      <div class="state-h">
+        <span class="tag danger">BLOCKING</span>
+        Expired PAT · account-wide
+        <span class="spacer"></span>
+        <span>account / personal</span>
+      </div>
+      <div class="state-body">
+        <div class="blocker-layout">
+          <div class="blocker-art">
+            <svg width="36" height="36" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 8V6a3 3 0 016 0v2"/><rect x="3" y="8" width="10" height="6" rx="1.2"/><path d="M8 11v1"/></svg>
+          </div>
+          <div class="blocker-body">
+            <h3>Your <strong style="color:var(--accent)">Personal</strong> account token expired</h3>
+            <p>PRism stopped syncing 14 PRs from this account 2 days ago. Nothing is lost — re-authenticate to resume. Your other account (<span style="color:var(--text)">Work — Sitemate</span>) is still syncing.</p>
+            <div class="acct">
+              <span class="dot dot-danger"></span>
+              github.com / rpalanca@gmail.com
+              <span style="color:var(--text-faint);margin:0 4px">·</span>
+              expired 2d ago
+              <span style="color:var(--text-faint);margin:0 4px">·</span>
+              <span style="color:var(--danger)">401</span>
+            </div>
+          </div>
+          <div class="blocker-actions">
+            <button class="btn btn-primary btn-lg">Re-authenticate</button>
+            <button class="btn btn-ghost btn-sm" style="justify-content:center">Pause this account</button>
+            <button class="btn btn-ghost btn-sm" style="justify-content:center;color:var(--text-faint)">Remove account</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

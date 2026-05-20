@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — Design System</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; min-height: 1600px; padding: 0; background: var(--bg-1); }
+
+  .ds {
+    padding: 56px 64px 80px;
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 56px;
+  }
+
+  /* sidebar */
+  .ds-side { position: sticky; top: 56px; align-self: start; }
+  .ds-side .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+  .ds-side .brand-mark { width: 24px; height: 24px; color: var(--text-strong); }
+  .ds-side .brand-name { font-size: 16px; font-weight: 600; letter-spacing: -0.4px; color: var(--text-strong); }
+  .ds-side .brand-name .ism { font-weight: 400; color: var(--text-mute); }
+  .ds-side .ver { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: 1px; }
+  .ds-toc { margin-top: 24px; display: flex; flex-direction: column; gap: 1px; }
+  .ds-toc a {
+    color: var(--text-mute); text-decoration: none; font-size: 12px;
+    padding: 5px 0; border-left: 2px solid var(--border-1); padding-left: 12px; margin-left: -12px;
+  }
+  .ds-toc a.active { color: var(--text-strong); border-left-color: var(--accent); }
+
+  /* main */
+  .ds-main { display: flex; flex-direction: column; gap: 56px; min-width: 0; }
+  .ds-section { display: flex; flex-direction: column; gap: 18px; }
+  .ds-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border-1); padding-bottom: 12px; }
+  .ds-head h2 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.6px; color: var(--text-strong); }
+  .ds-head .ds-num { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); letter-spacing: 1px; }
+  .ds-head .ds-desc { color: var(--text-mute); font-size: 13px; max-width: 540px; }
+
+  /* type scale */
+  .type-list { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-1); border-radius: var(--r-3); overflow: hidden; }
+  .type-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 200px;
+    align-items: baseline;
+    gap: 24px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-1);
+  }
+  .type-row:last-child { border-bottom: none; }
+  .type-row .name { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+  .type-row .sample { color: var(--text-strong); }
+  .type-row .meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-mute); text-align: right; }
+
+  /* colors */
+  .palette {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+  }
+  .palette.surfaces { grid-template-columns: repeat(6, 1fr); }
+  .palette.text { grid-template-columns: repeat(5, 1fr); }
+  .palette.status { grid-template-columns: repeat(5, 1fr); }
+  .swatch-card {
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .swatch-card .chip-area {
+    height: 88px;
+    position: relative;
+  }
+  .swatch-card .chip-area::after {
+    content: 'Aa';
+    position: absolute; left: 12px; bottom: 8px;
+    font-size: 18px; font-weight: 600;
+    color: var(--text-strong);
+  }
+  .swatch-card.on-light .chip-area::after { color: #0a0a0d; }
+  .swatch-card .info { padding: 10px 12px; background: var(--bg-2); border-top: 1px solid var(--border-1); }
+  .swatch-card .info .nm { font-size: 11px; font-weight: 500; color: var(--text); margin-bottom: 2px; font-family: var(--font-mono); }
+  .swatch-card .info .vl { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+  .swatch-card .info .cr { display: inline-block; padding: 1px 5px; border-radius: 3px; font-family: var(--font-mono); font-size: 9px; background: var(--success-bg); color: var(--success); margin-top: 4px; }
+  .swatch-card .info .cr.warn { background: var(--warning-bg); color: var(--warning); }
+
+  /* accent picker */
+  .accent-row { display: flex; align-items: center; gap: 12px; }
+  .accent-row .a-swatch {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform .12s;
+  }
+  .accent-row .a-swatch:hover { transform: scale(1.08); }
+  .accent-row .a-swatch.active { border-color: var(--text-strong); box-shadow: 0 0 0 2px var(--bg-1) inset; }
+  .accent-row .label { color: var(--text-mute); font-size: 11px; margin-left: 8px; font-family: var(--font-mono); }
+
+  /* spacing/radii scale */
+  .scale-row { display: grid; grid-template-columns: 90px 80px 1fr; gap: 24px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border-1); }
+  .scale-row:last-child { border: none; }
+  .scale-row .nm { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+  .scale-row .vl { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+  .scale-bar { height: 18px; background: var(--accent); border-radius: 2px; }
+  .radii-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; }
+  .radii-card {
+    height: 80px; padding: 12px;
+    border: 1px solid var(--border-2); background: var(--bg-2);
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .radii-card .nm { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+  .radii-card .vl { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+
+  /* components grid */
+  .cmp { border: 1px solid var(--border-1); border-radius: var(--r-3); padding: 24px; background: var(--bg-2); display: flex; flex-direction: column; gap: 16px; }
+  .cmp .cmp-h { display: flex; justify-content: space-between; align-items: baseline; }
+  .cmp .cmp-h h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-strong); }
+  .cmp .cmp-h .tag { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: 1px; text-transform: uppercase; }
+  .cmp .demos { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .cmp.full-row { grid-column: 1 / -1; }
+
+  .components-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  /* PR row preview tokens */
+  .pr-row-sample {
+    display: grid;
+    grid-template-columns: 4px 18px 1fr auto auto auto auto auto;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-1);
+    height: 48px;
+  }
+  .pr-row-sample .strip { width: 3px; height: 28px; border-radius: 2px; }
+  .pr-row-sample .num   { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+  .pr-row-sample .title { color: var(--text-strong); font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-row-sample .meta  { color: var(--text-mute); font-size: 11px; }
+
+  /* status icons */
+  .status-bar { display: flex; gap: 14px; flex-wrap: wrap; }
+  .status-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    background: var(--bg-2);
+    min-width: 180px;
+  }
+  .status-card .ico {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--r-2);
+    flex: 0 0 28px;
+  }
+  .status-card .nm { font-size: 12px; color: var(--text); font-weight: 500; }
+  .status-card .vl { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-top: 1px; }
+
+  /* footer */
+  .ds-foot { color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); margin-top: 32px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="ds">
+  <!-- sidebar -->
+  <aside class="ds-side">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+          <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+          <path d="M16 4 L28 26 L4 26 Z"/>
+          <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+          <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+          <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+          <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-name"><span>PR</span><span class="ism">ism</span></div>
+        <div class="ver">DESIGN SYSTEM · v1.0</div>
+      </div>
+    </div>
+    <nav class="ds-toc">
+      <a href="#type" class="active">01 · Typography</a>
+      <a href="#color">02 · Color</a>
+      <a href="#accent">03 · Accent</a>
+      <a href="#scale">04 · Spacing & Radii</a>
+      <a href="#components">05 · Components</a>
+      <a href="#status">06 · Status icons</a>
+      <a href="#row">07 · PR row anatomy</a>
+    </nav>
+  </aside>
+
+  <!-- main -->
+  <main class="ds-main">
+
+    <!-- TYPE -->
+    <section class="ds-section" id="type">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">01 · TYPOGRAPHY</div>
+          <h2>Type scale</h2>
+        </div>
+        <div class="ds-desc">Geist for UI · JetBrains Mono for numbers, branches, IDs. Optical kerning, tabular figures in numeric contexts.</div>
+      </header>
+
+      <div class="type-list">
+        <div class="type-row">
+          <div class="name">display</div>
+          <div class="sample" style="font-size:48px;font-weight:600;letter-spacing:-1.5px;line-height:1.05">Every PR you touch</div>
+          <div class="meta">Geist 600 · 48 / 1.05 · -1.5px</div>
+        </div>
+        <div class="type-row">
+          <div class="name">h1</div>
+          <div class="sample" style="font-size:32px;font-weight:600;letter-spacing:-0.8px;line-height:1.15">Dashboard</div>
+          <div class="meta">Geist 600 · 32 / 1.15 · -0.8px</div>
+        </div>
+        <div class="type-row">
+          <div class="name">h2</div>
+          <div class="sample" style="font-size:24px;font-weight:600;letter-spacing:-0.6px;line-height:1.2">Conversation depth</div>
+          <div class="meta">Geist 600 · 24 / 1.2 · -0.6px</div>
+        </div>
+        <div class="type-row">
+          <div class="name">h3</div>
+          <div class="sample" style="font-size:20px;font-weight:600;letter-spacing:-0.4px;line-height:1.3">Authored by me</div>
+          <div class="meta">Geist 600 · 20 / 1.3 · -0.4px</div>
+        </div>
+        <div class="type-row">
+          <div class="name">h4 / row-strong</div>
+          <div class="sample" style="font-size:14px;font-weight:600;letter-spacing:-0.1px">Refactor sync worker to batch GraphQL calls</div>
+          <div class="meta">Geist 600 · 14 / 1.4</div>
+        </div>
+        <div class="type-row">
+          <div class="name">body</div>
+          <div class="sample" style="font-size:13px;line-height:1.55;color:var(--text)">PRism observes and surfaces PR state; all write actions happen on GitHub via a one-click jump.</div>
+          <div class="meta">Geist 400 · 13 / 1.55</div>
+        </div>
+        <div class="type-row">
+          <div class="name">small</div>
+          <div class="sample" style="font-size:12px;line-height:1.5;color:var(--text-mute)">3 unresolved threads · oldest opened 2 days ago</div>
+          <div class="meta">Geist 400 · 12 / 1.5</div>
+        </div>
+        <div class="type-row">
+          <div class="name">label</div>
+          <div class="sample" style="font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);font-family:var(--font-mono)">NEEDS MY ATTENTION</div>
+          <div class="meta">JBM 600 · 10 / 1 · +1px</div>
+        </div>
+        <div class="type-row">
+          <div class="name">mono</div>
+          <div class="sample" style="font-family:var(--font-mono);font-size:12px;color:var(--text)">sitemate/web · feat/sync-worker · #2418</div>
+          <div class="meta">JBM 400 · 12 / 1.5</div>
+        </div>
+        <div class="type-row">
+          <div class="name">num · tabular</div>
+          <div class="sample" style="font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:13px;color:var(--text)">+847 / −203 &nbsp;·&nbsp; 12 files &nbsp;·&nbsp; 4h 32m</div>
+          <div class="meta">JBM 500 · tabular</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COLOR -->
+    <section class="ds-section" id="color">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">02 · COLOR</div>
+          <h2>Color tokens — Dark</h2>
+        </div>
+        <div class="ds-desc">All text vs. <code style="font-family:var(--font-mono);color:var(--text)">--bg-1</code> meets WCAG AA. Faint reserved for &ge;18px / icons.</div>
+      </header>
+
+      <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);">SURFACE</div>
+      <div class="palette surfaces">
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-0)"></div><div class="info"><div class="nm">--bg-0</div><div class="vl">#07070a</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-1)"></div><div class="info"><div class="nm">--bg-1 · app</div><div class="vl">#0c0c10</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-2)"></div><div class="info"><div class="nm">--bg-2 · panel</div><div class="vl">#111116</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-3)"></div><div class="info"><div class="nm">--bg-3 · row</div><div class="vl">#17171d</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-4)"></div><div class="info"><div class="nm">--bg-4 · hover</div><div class="vl">#1e1e26</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--bg-5)"></div><div class="info"><div class="nm">--bg-5 · pressed</div><div class="vl">#262630</div></div></div>
+      </div>
+
+      <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);margin-top:8px;">TEXT (vs. --bg-1)</div>
+      <div class="palette text">
+        <div class="swatch-card"><div class="chip-area" style="background:var(--text-strong)"></div><div class="info"><div class="nm">--text-strong</div><div class="vl">#f4f4f7</div><div class="cr">17.5 : 1</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--text)"></div><div class="info"><div class="nm">--text</div><div class="vl">#d4d4dc</div><div class="cr">12.4 : 1</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--text-mute)"></div><div class="info"><div class="nm">--text-mute</div><div class="vl">#9a9aa6</div><div class="cr">6.8 : 1</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--text-faint)"></div><div class="info"><div class="nm">--text-faint</div><div class="vl">#6c6c78</div><div class="cr warn">3.6 : 1 · large</div></div></div>
+        <div class="swatch-card"><div class="chip-area" style="background:var(--text-disabled)"></div><div class="info"><div class="nm">--text-disabled</div><div class="vl">#454552</div><div class="cr warn">disabled</div></div></div>
+      </div>
+
+      <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);margin-top:8px;">STATUS</div>
+      <div class="palette status">
+        <div class="swatch-card on-light"><div class="chip-area" style="background:var(--success)"></div><div class="info"><div class="nm">--success</div><div class="vl">oklch 0.74 0.16 145</div></div></div>
+        <div class="swatch-card on-light"><div class="chip-area" style="background:var(--danger)"></div><div class="info"><div class="nm">--danger</div><div class="vl">oklch 0.70 0.18 25</div></div></div>
+        <div class="swatch-card on-light"><div class="chip-area" style="background:var(--warning)"></div><div class="info"><div class="nm">--warning</div><div class="vl">oklch 0.78 0.15 80</div></div></div>
+        <div class="swatch-card on-light"><div class="chip-area" style="background:var(--info)"></div><div class="info"><div class="nm">--info</div><div class="vl">oklch 0.72 0.12 240</div></div></div>
+        <div class="swatch-card on-light"><div class="chip-area" style="background:var(--merged)"></div><div class="info"><div class="nm">--merged</div><div class="vl">oklch 0.65 0.16 295</div></div></div>
+      </div>
+    </section>
+
+    <!-- ACCENT -->
+    <section class="ds-section" id="accent">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">03 · ACCENT</div>
+          <h2>Accent picker</h2>
+        </div>
+        <div class="ds-desc">Single user-selected accent — used for focus rings, "needs my attention" signals, primary button, active nav.</div>
+      </header>
+
+      <div class="accent-row">
+        <div class="a-swatch" style="background:oklch(0.72 0.14 320)" data-h="320"></div>
+        <div class="a-swatch active" style="background:oklch(0.72 0.14 320);"></div>
+        <div class="a-swatch" style="background:oklch(0.62 0.18 270)" data-h="270"></div>
+        <div class="a-swatch" style="background:oklch(0.72 0.18 145)" data-h="145"></div>
+        <div class="a-swatch" style="background:oklch(0.72 0.18 25)"  data-h="25"></div>
+        <div class="a-swatch" style="background:oklch(0.78 0.15 80)"  data-h="80"></div>
+        <div class="a-swatch" style="background:oklch(0.72 0.12 240)" data-h="240"></div>
+        <span class="label">DEFAULT · oklch(0.72 0.14 320) · refraction</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:8px">
+        <div class="status-card"><div class="ico" style="background:var(--accent);color:var(--accent-fg);font-weight:600">A</div><div><div class="nm">--accent</div><div class="vl">solid · primary action</div></div></div>
+        <div class="status-card"><div class="ico" style="background:var(--accent-bg);color:var(--accent-strong);font-weight:600">A</div><div><div class="nm">--accent-bg</div><div class="vl">soft · pills, callouts</div></div></div>
+        <div class="status-card"><div class="ico" style="background:transparent;color:var(--accent);font-weight:600;border:1px solid var(--accent)">A</div><div><div class="nm">--accent (focus)</div><div class="vl">--focus-ring · 3px halo</div></div></div>
+      </div>
+    </section>
+
+    <!-- SCALE -->
+    <section class="ds-section" id="scale">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">04 · SCALE</div>
+          <h2>Spacing & radii</h2>
+        </div>
+        <div class="ds-desc">4-base spacing. Radii kept conservative — sharp dev-tool feel.</div>
+      </header>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+        <div>
+          <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);margin-bottom:6px;">SPACING</div>
+          <div style="border:1px solid var(--border-1);border-radius:var(--r-3);overflow:hidden">
+            <div class="scale-row"><div class="nm">--s-1</div><div class="vl">4px</div><div class="scale-bar" style="width:4px"></div></div>
+            <div class="scale-row"><div class="nm">--s-2</div><div class="vl">8px</div><div class="scale-bar" style="width:8px"></div></div>
+            <div class="scale-row"><div class="nm">--s-3</div><div class="vl">12px</div><div class="scale-bar" style="width:12px"></div></div>
+            <div class="scale-row"><div class="nm">--s-4</div><div class="vl">16px</div><div class="scale-bar" style="width:16px"></div></div>
+            <div class="scale-row"><div class="nm">--s-5</div><div class="vl">20px</div><div class="scale-bar" style="width:20px"></div></div>
+            <div class="scale-row"><div class="nm">--s-6</div><div class="vl">24px</div><div class="scale-bar" style="width:24px"></div></div>
+            <div class="scale-row"><div class="nm">--s-7</div><div class="vl">32px</div><div class="scale-bar" style="width:32px"></div></div>
+            <div class="scale-row"><div class="nm">--s-8</div><div class="vl">40px</div><div class="scale-bar" style="width:40px"></div></div>
+          </div>
+        </div>
+        <div>
+          <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);margin-bottom:6px;">RADII</div>
+          <div class="radii-grid">
+            <div class="radii-card" style="border-radius:3px"><div class="nm">--r-1</div><div class="vl">3px</div></div>
+            <div class="radii-card" style="border-radius:5px"><div class="nm">--r-2</div><div class="vl">5px</div></div>
+            <div class="radii-card" style="border-radius:7px"><div class="nm">--r-3</div><div class="vl">7px</div></div>
+            <div class="radii-card" style="border-radius:10px"><div class="nm">--r-4</div><div class="vl">10px</div></div>
+            <div class="radii-card" style="border-radius:14px"><div class="nm">--r-5</div><div class="vl">14px</div></div>
+            <div class="radii-card" style="border-radius:999px"><div class="nm">--r-pill</div><div class="vl">pill</div></div>
+          </div>
+
+          <div class="spec-h" style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;color:var(--text-faint);margin:20px 0 6px;">DENSITY</div>
+          <div style="border:1px solid var(--border-1);border-radius:var(--r-3);overflow:hidden;">
+            <div class="pr-row-sample" style="height:36px"><span class="strip row-strip-needs"></span><span class="num">#2418</span><span class="title">tight — 36px row</span><span class="meta">12 PRs / screen</span><span></span><span></span><span></span><span></span></div>
+            <div class="pr-row-sample" style="height:48px"><span class="strip row-strip-needs"></span><span class="num">#2418</span><span class="title">comfortable — 48px (default)</span><span class="meta">8 PRs / screen</span><span></span><span></span><span></span><span></span></div>
+            <div class="pr-row-sample" style="height:64px;border-bottom:0"><span class="strip row-strip-needs"></span><span class="num">#2418</span><span class="title">roomy — 64px row</span><span class="meta">6 PRs / screen</span><span></span><span></span><span></span><span></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPONENTS -->
+    <section class="ds-section" id="components">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">05 · COMPONENTS</div>
+          <h2>Components</h2>
+        </div>
+        <div class="ds-desc">Atomic primitives. Buttons, badges, inputs, chips, sidebar nav, avatars, kbd, repo identity.</div>
+      </header>
+
+      <div class="components-grid">
+        <div class="cmp">
+          <div class="cmp-h"><h4>Buttons</h4><span class="tag">.btn</span></div>
+          <div class="demos">
+            <button class="btn btn-primary">Open in GitHub</button>
+            <button class="btn">Re-sync</button>
+            <button class="btn btn-ghost">Cancel</button>
+            <button class="btn btn-icon" aria-label="more">⋯</button>
+          </div>
+          <div class="demos">
+            <button class="btn btn-sm">Small</button>
+            <button class="btn">Default</button>
+            <button class="btn btn-lg">Large</button>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Status badges</h4><span class="tag">.badge</span></div>
+          <div class="demos">
+            <span class="badge badge-success"><span class="dot dot-success"></span>READY</span>
+            <span class="badge badge-danger"><span class="dot dot-danger"></span>CHANGES</span>
+            <span class="badge badge-warning"><span class="dot dot-warning"></span>STALE 3d</span>
+            <span class="badge badge-info"><span class="dot dot-info"></span>PENDING</span>
+            <span class="badge badge-merged">MERGED</span>
+            <span class="badge badge-draft">DRAFT</span>
+            <span class="badge badge-accent">NEEDS YOU</span>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Inputs</h4><span class="tag">.input</span></div>
+          <div class="demos" style="flex-direction:column;align-items:stretch">
+            <input class="input" placeholder="Search PRs, repos, authors…" value="">
+            <input class="input input-mono" value="ghp_•••••••••••••••••••••••••••••••" style="margin-top:8px">
+            <input class="input" placeholder="Disabled" disabled style="margin-top:8px;opacity:.5">
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Filter chips</h4><span class="tag">.chip</span></div>
+          <div class="demos">
+            <span class="chip active">Needs my review <span class="count">4</span></span>
+            <span class="chip">Unresolved threads <span class="count">12</span></span>
+            <span class="chip">CI failing <span class="count">2</span></span>
+            <span class="chip">Conflicts <span class="count">1</span></span>
+            <span class="chip">Drafts</span>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Sidebar nav</h4><span class="tag">.nav-item</span></div>
+          <div class="demos" style="flex-direction:column;align-items:stretch;gap:1px">
+            <div class="nav-item active">
+              <span class="nav-icon">●</span>
+              Authored by me
+              <span class="count has-attention">3</span>
+            </div>
+            <div class="nav-item">
+              <span class="nav-icon">●</span>
+              Assigned to me
+              <span class="count">12</span>
+            </div>
+            <div class="nav-item">
+              <span class="nav-icon">●</span>
+              Watching
+              <span class="count">48</span>
+            </div>
+            <div class="nav-item">
+              <span class="nav-icon">●</span>
+              Team
+              <span class="count">203</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Avatars / stacks</h4><span class="tag">.avatar</span></div>
+          <div class="demos">
+            <span class="avatar sm av-1">RP</span>
+            <span class="avatar av-2">EH</span>
+            <span class="avatar lg av-3">JK</span>
+            <span class="avatar xl av-5">NM</span>
+          </div>
+          <div class="demos">
+            <div class="avatar-stack">
+              <span class="avatar av-1">RP</span>
+              <span class="avatar av-2">EH</span>
+              <span class="avatar av-3">JK</span>
+              <span class="avatar av-9" style="background:var(--bg-4);color:var(--text-mute);font-size:9px">+4</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Repo identity</h4><span class="tag">.repo-chip · .branch-chip</span></div>
+          <div class="demos">
+            <span class="repo-chip"><span class="org">sitemate</span><span class="slash">/</span><span class="repo">web</span></span>
+            <span class="branch-chip">feat/sync-worker</span>
+            <span class="branch-chip">main</span>
+          </div>
+          <div class="demos">
+            <span class="num" style="color:var(--success)">+847</span>
+            <span class="num" style="color:var(--danger)">−203</span>
+            <span class="num" style="color:var(--text-mute)">12 files</span>
+          </div>
+        </div>
+
+        <div class="cmp">
+          <div class="cmp-h"><h4>Kbd & shortcuts</h4><span class="tag">kbd</span></div>
+          <div class="demos">
+            <span style="color:var(--text-mute);font-size:12px">Search</span> <kbd>⌘</kbd><kbd>K</kbd>
+            <span style="color:var(--text-mute);font-size:12px;margin-left:16px">Refresh</span> <kbd>⌘</kbd><kbd>R</kbd>
+            <span style="color:var(--text-mute);font-size:12px;margin-left:16px">Theme</span> <kbd>⌘</kbd><kbd>⇧</kbd><kbd>L</kbd>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STATUS -->
+    <section class="ds-section" id="status">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">06 · STATUS</div>
+          <h2>Status icons</h2>
+        </div>
+        <div class="ds-desc">Stroke-based, 14×14 inside 28×28 carrier. Always paired with a text label.</div>
+      </header>
+      <div class="status-bar">
+        <div class="status-card">
+          <div class="ico" style="background:var(--success-bg);color:var(--success)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg>
+          </div>
+          <div><div class="nm">CI passing</div><div class="vl">12/12 checks</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--danger-bg);color:var(--danger)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+          </div>
+          <div><div class="nm">CI failing</div><div class="vl">2/12 checks</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--warning-bg);color:var(--warning)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="5"/><path d="M8 5v3l2 1.5"/></svg>
+          </div>
+          <div><div class="nm">CI pending</div><div class="vl">5/12 running</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--success-bg);color:var(--success)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l3 3 7-7"/></svg>
+          </div>
+          <div><div class="nm">Approved</div><div class="vl">2 reviewers</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--danger-bg);color:var(--danger)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v5M8 11v.5"/></svg>
+          </div>
+          <div><div class="nm">Changes requested</div><div class="vl">1 reviewer</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--info-bg);color:var(--info)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="2.5"/></svg>
+          </div>
+          <div><div class="nm">Review pending</div><div class="vl">3 reviewers</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--draft-bg);color:var(--draft)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h10" stroke-dasharray="2 2"/></svg>
+          </div>
+          <div><div class="nm">Draft</div><div class="vl">not for review</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--danger-bg);color:var(--danger)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6l2.5 2.5L3 11M13 6l-2.5 2.5L13 11M8 4v8"/></svg>
+          </div>
+          <div><div class="nm">Merge conflict</div><div class="vl">target diverged</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--merged-bg);color:var(--merged)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><circle cx="12" cy="10" r="1.5"/><path d="M4 5.5v5M5.5 4h2a3 3 0 013 3v1.5"/></svg>
+          </div>
+          <div><div class="nm">Merged</div><div class="vl">to main · 4h ago</div></div>
+        </div>
+        <div class="status-card">
+          <div class="ico" style="background:var(--accent-bg);color:var(--accent-strong)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11V5l5-2 5 2v6l-5 2-5-2z"/></svg>
+          </div>
+          <div><div class="nm">Needs my attention</div><div class="vl">composite signal</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PR ROW ANATOMY -->
+    <section class="ds-section" id="row">
+      <header class="ds-head">
+        <div>
+          <div class="ds-num">07 · ANATOMY</div>
+          <h2>PR row</h2>
+        </div>
+        <div class="ds-desc">Reading-priority: <strong style="color:var(--text)">title + repo</strong> → conversation state → reviewer state → time-in-status.</div>
+      </header>
+
+      <div style="border:1px solid var(--border-1);border-radius:var(--r-3);overflow:hidden;background:var(--bg-2)">
+        <div class="pr-row-sample" style="grid-template-columns:4px 50px 1fr 140px 140px 90px 64px 28px">
+          <div class="strip row-strip-needs"></div>
+          <div class="num">#2418</div>
+          <div>
+            <div class="title">Refactor sync worker to batch GraphQL calls</div>
+            <div class="repo-chip" style="font-size:10px;margin-top:2px"><span class="org">sitemate</span><span class="slash">/</span><span class="repo">web</span> <span class="branch-chip" style="margin-left:6px">feat/sync-worker</span></div>
+          </div>
+          <!-- conversation -->
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="badge badge-accent">3 unresolved</span>
+            <span class="num" style="color:var(--text-faint)">12</span>
+          </div>
+          <!-- reviewers -->
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="dot dot-success" style="width:8px;height:8px"></span>
+            <span class="dot dot-success" style="width:8px;height:8px"></span>
+            <span class="dot dot-danger"  style="width:8px;height:8px"></span>
+            <span class="dot dot-info"    style="width:8px;height:8px"></span>
+            <span class="num" style="color:var(--text-faint);margin-left:auto">2/4</span>
+          </div>
+          <!-- time -->
+          <div class="num" style="color:var(--text-mute);text-align:right">4h 32m</div>
+          <!-- CI -->
+          <div class="icon" style="color:var(--success)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></div>
+          <div class="icon" style="color:var(--text-faint)">⋯</div>
+        </div>
+
+        <!-- annotations row -->
+        <div style="display:grid;grid-template-columns:4px 50px 1fr 140px 140px 90px 64px 28px;gap:14px;padding:8px 16px 18px;font-family:var(--font-mono);font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:1px;border-top:1px dashed var(--border-1)">
+          <div>strip</div>
+          <div>pr #</div>
+          <div>title + repo</div>
+          <div>threads</div>
+          <div>reviewers</div>
+          <div>last status</div>
+          <div>ci</div>
+          <div>⋯</div>
+        </div>
+      </div>
+
+      <div class="status-bar" style="margin-top:8px">
+        <div class="status-card"><div class="ico" style="background:var(--accent);width:4px;height:28px;border-radius:2px;flex-basis:4px"></div><div><div class="nm">Needs me</div><div class="vl">--accent strip</div></div></div>
+        <div class="status-card"><div class="ico" style="background:var(--success);width:4px;height:28px;border-radius:2px;flex-basis:4px"></div><div><div class="nm">Approved</div><div class="vl">--success strip</div></div></div>
+        <div class="status-card"><div class="ico" style="background:var(--danger);width:4px;height:28px;border-radius:2px;flex-basis:4px"></div><div><div class="nm">Changes</div><div class="vl">--danger strip</div></div></div>
+        <div class="status-card"><div class="ico" style="background:var(--warning);width:4px;height:28px;border-radius:2px;flex-basis:4px"></div><div><div class="nm">Stale</div><div class="vl">--warning strip</div></div></div>
+        <div class="status-card"><div class="ico" style="background:var(--draft);width:4px;height:28px;border-radius:2px;flex-basis:4px"></div><div><div class="nm">Draft</div><div class="vl">--draft strip</div></div></div>
+      </div>
+    </section>
+
+    <div class="ds-foot">PRism design system · v1.0 · 2026 · all tokens AA on app surface</div>
+  </main>
+</div>
+</body>
+</html>

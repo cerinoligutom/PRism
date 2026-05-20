@@ -6,7 +6,7 @@ PRism gives developers, reviewers, and engineering leads a single focused dashbo
 
 ## Status
 
-Pre-alpha. Standards and scaffolding are landing first; application code begins after M1 issues are addressed.
+Pre-alpha. M1 (foundations) is in progress — application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
 
 ## Stack
 
@@ -21,7 +21,15 @@ See [docs/adr/0002-stack-tauri-vue-typescript.md](docs/adr/0002-stack-tauri-vue-
 
 ## Getting started
 
-Prerequisites and dev setup live in the wiki: [Getting Started](https://github.com/cerinoligutom/PRism/wiki/Getting-Started).
+Prerequisites and dev setup live in the wiki: [Getting Started](https://github.com/cerinoligutom/PRism/wiki/Getting-Started). The short version:
+
+```bash
+pnpm install
+pnpm tauri:dev      # native window, hot reload
+pnpm tauri:build    # release binary under src-tauri/target/release/bundle/
+```
+
+You need Node 24+ LTS, pnpm 11+, and Rust stable. Tauri's [Prerequisites guide](https://tauri.app/start/prerequisites/) covers the OS-specific bits.
 
 ## Project layout
 
@@ -31,9 +39,16 @@ Prerequisites and dev setup live in the wiki: [Getting Started](https://github.c
 ├── .github/            # Issue + PR templates, CODEOWNERS
 ├── docs/
 │   ├── adr/            # Architectural Decision Records
+│   ├── contracts/      # Cross-module interface specs (e.g. github-client)
+│   ├── design/         # Source design tokens, prototype artboards, brand
 │   └── wiki/           # Source for the GitHub wiki (mirrored)
-├── src/                # Vue 3 frontend (added in #8)
-├── src-tauri/          # Rust backend + Tauri config (added in #8)
+├── src/                # Vue 3 frontend (Tauri webview)
+│   ├── assets/styles/  # tokens.css, primitives.css, Tailwind entry
+│   ├── components/     # AppShell, SidebarNav, StatusBar
+│   ├── views/          # Dashboard, Settings, Onboarding
+│   ├── stores/         # Pinia stores
+│   └── router/         # Vue Router
+├── src-tauri/          # Rust backend + Tauri config
 ├── AGENTS.md           # Instructions for non-Claude agents
 ├── CLAUDE.md           # Instructions for Claude Code
 ├── CONTRIBUTING.md     # Commit style, PR flow, ADR process

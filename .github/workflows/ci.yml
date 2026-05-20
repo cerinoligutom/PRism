@@ -1,0 +1,189 @@
+name: CI
+
+# Runs on every PR targeting main and on every push to main. The wiki-sync
+# workflow handles docs/wiki/ → wiki repo mirroring separately.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-flight runs of the same workflow on the same ref when a new push
+# lands. Saves CI minutes on rapid force-pushes during PR iteration.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  pr-title:
+    name: PR title — Conventional Commit
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title shape
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Mirrors CONTRIBUTING.md → "Conventional Commits → Types".
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          # Mirrors CONTRIBUTING.md → "Scopes". Optional — PRs that don't
+          # cleanly map to a scope can omit it.
+          scopes: |
+            ui
+            sync
+            db
+            auth
+            tauri
+            github
+            notif
+            settings
+            docs
+            ci
+            adr
+            repo
+          requireScope: false
+          # Subject should start lowercase to match the rest of the catalogue.
+          subjectPattern: ^[a-z].+$
+          subjectPatternError: |
+            The subject of the PR title (after the `<type>(<scope>):` prefix) must
+            start with a lowercase letter. See CONTRIBUTING.md → Conventional Commits.
+
+  frontend:
+    name: Frontend — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        # `standalone: true` downloads pnpm's prebuilt binary directly rather
+        # than going through npm's self-installer, which would otherwise run
+        # on the runner's default Node (currently 20) and hit
+        # ERR_PNPM_UNSUPPORTED_ENGINE — pnpm 11 needs Node >= 22.13. Version
+        # is still read from package.json's `packageManager` field.
+        uses: pnpm/action-setup@v4
+        with:
+          standalone: true
+          run_install: false
+
+      - name: Install Node
+        # Tracks engines.node — Node 24 is the current LTS line (since 2025-10).
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build frontend bundle
+        run: pnpm build
+
+  rust-lint:
+    name: Rust — fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tauri Linux build deps
+        # Only the bits that aren't on the ubuntu-latest runner image already.
+        # libssl-dev / pkg-config / build-essential are preinstalled.
+        # libsoup-3.0 and libgtk-3 come in transitively via libwebkit2gtk-4.1-dev.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: ci-rust-lint
+
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  rust-check:
+    name: Rust — check + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tauri Linux build deps
+        # Only the bits that aren't on the ubuntu-latest runner image already.
+        # libssl-dev / pkg-config / build-essential are preinstalled.
+        # libsoup-3.0 and libgtk-3 come in transitively via libwebkit2gtk-4.1-dev.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: ci-rust-check
+
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --no-fail-fast
+
+  secrets-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Gitleaks needs the full history on push events to scan new commits.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin to the canonical config in the repo root so the action picks up
+          # the allowlist entries for docs placeholders.
+          GITLEAKS_CONFIG: .gitleaks.toml

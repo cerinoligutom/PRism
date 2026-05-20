@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>PRism — Dashboard</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; height: 900px; background: var(--bg-0); padding: 0; overflow: hidden; }
+
+  .app {
+    display: grid;
+    grid-template-columns: 232px 1fr;
+    height: calc(100% - 36px);
+    background: var(--bg-1);
+  }
+
+  /* ────── SIDEBAR ────── */
+  .side {
+    background: var(--bg-2);
+    border-right: 1px solid var(--border-1);
+    display: flex;
+    flex-direction: column;
+    padding: 12px 12px 0;
+  }
+  .side-brand {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 6px 14px;
+  }
+  .side-brand .mark { width: 22px; height: 22px; color: var(--text-strong); flex: 0 0 22px; }
+  .side-brand .name { font-size: 14px; font-weight: 600; letter-spacing: -0.4px; color: var(--text-strong); }
+  .side-brand .name .ism { font-weight: 400; color: var(--text-mute); }
+  .side-brand .sync-dot {
+    margin-left: auto;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 3px var(--success-bg);
+  }
+
+  .side h6 {
+    margin: 16px 6px 6px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+  }
+  .side nav { display: flex; flex-direction: column; gap: 1px; }
+
+  .side-foot {
+    margin-top: auto;
+    border-top: 1px solid var(--border-1);
+    padding: 10px 4px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .acct-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 6px;
+    border-radius: var(--r-2);
+    cursor: pointer;
+  }
+  .acct-row:hover { background: var(--bg-3); }
+  .acct-row .avatar { width: 18px; height: 18px; font-size: 8px; }
+  .acct-row .lbl { font-size: 11px; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct-row .tag { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.6px; }
+  .sync-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 6px;
+    font-size: 11px;
+    color: var(--text-mute);
+  }
+  .sync-bar .sync-icon { color: var(--text-faint); }
+  .sync-bar .ago { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+
+  /* ────── MAIN ────── */
+  .main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: var(--bg-1);
+  }
+
+  .top {
+    padding: 16px 24px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 0 0 auto;
+  }
+  .top-h1 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .top-h1 h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    color: var(--text-strong);
+  }
+  .top-h1 .count {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .top-h1 .spacer { flex: 1; }
+
+  .top-tools {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .search {
+    position: relative;
+    flex: 1;
+    max-width: 360px;
+  }
+  .search input {
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    height: 30px;
+    padding-left: 32px;
+    padding-right: 80px;
+    border-radius: var(--r-2);
+    font-size: 12px;
+    color: var(--text);
+    width: 100%;
+    outline: none;
+  }
+  .search input::placeholder { color: var(--text-faint); }
+  .search input:focus { border-color: var(--border-3); }
+  .search .icn { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-faint); display: flex; }
+  .search .kbds { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+
+  .seg {
+    display: inline-flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-2);
+    overflow: hidden;
+  }
+  .seg button {
+    background: transparent;
+    border: 0;
+    color: var(--text-mute);
+    padding: 0 10px;
+    height: 28px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    border-right: 1px solid var(--border-1);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.active { color: var(--text-strong); background: var(--bg-4); }
+  .seg .ico { color: var(--text-faint); display: flex; }
+  .seg button.active .ico { color: var(--text); }
+
+  .top-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border-1); }
+  .top-chips .sep { width: 1px; height: 16px; background: var(--border-1); margin: 0 4px; }
+  .top-chips .label { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); letter-spacing: 1px; text-transform: uppercase; margin-right: 4px; }
+
+  /* ────── LIST ────── */
+  .list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 0 24px;
+  }
+
+  .group {
+    margin-top: 8px;
+  }
+  .group-h {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 24px 8px;
+    position: sticky; top: 0;
+    background: var(--bg-1);
+    z-index: 2;
+  }
+  .group-h .chev { color: var(--text-faint); display: flex; }
+  .group-h .name { font-size: 12px; color: var(--text); font-weight: 600; }
+  .group-h .name .org { color: var(--text-mute); font-weight: 400; }
+  .group-h .meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-left: 6px; }
+  .group-h .summary { margin-left: auto; display: flex; gap: 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+  .group-h .summary span { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* PR row */
+  .pr {
+    position: relative;
+    display: grid;
+    grid-template-columns: 4px 54px 1fr 180px 180px 64px 80px 28px;
+    align-items: center;
+    gap: 14px;
+    padding: 0 24px 0 0;
+    height: 56px;
+    border-top: 1px solid var(--border-1);
+    background: var(--bg-1);
+    cursor: pointer;
+    transition: background .12s;
+  }
+  .pr:hover { background: var(--bg-2); }
+  .pr.attention { background: oklch(0.97 0.03 320 / 0.7); }
+  .pr.attention:hover { background: oklch(0.95 0.04 320 / 0.85); }
+
+  .pr .strip {
+    width: 3px;
+    height: 30px;
+    border-radius: 2px;
+    margin-left: 1px;
+    align-self: center;
+  }
+
+  .pr .pr-num {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    padding-left: 8px;
+  }
+
+  .pr .title-col { min-width: 0; }
+  .pr .title-col .row1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .pr .title-col .title {
+    font-size: 13px; font-weight: 500; color: var(--text-strong);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0; flex: 0 1 auto;
+  }
+  .pr.attention .title { color: var(--text-strong); }
+  .pr.unread .title::after {
+    content: '';
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent);
+    margin-left: 6px; vertical-align: middle;
+  }
+  .pr .title-col .row2 {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .pr .title-col .row2 .branch {
+    color: var(--text-mute);
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .pr .title-col .row2 .dot-sep { color: var(--text-disabled); }
+  .pr .title-col .row2 .author {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-mute);
+  }
+  .pr .title-col .row2 .author .avatar { width: 14px; height: 14px; font-size: 7px; }
+  .pr .title-col .row2 .lines .add { color: var(--success); }
+  .pr .title-col .row2 .lines .del { color: var(--danger); }
+
+  /* threads col */
+  .pr .threads {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--text-mute); font-size: 11px;
+  }
+  .pr .threads .thread-stack { display: flex; align-items: center; gap: 2px; }
+  .pr .threads .seg-bar {
+    position: relative;
+    display: flex; height: 6px; width: 90px; border-radius: 3px;
+    overflow: hidden;
+    background: var(--bg-4);
+  }
+  .pr .threads .seg-bar .resolved { background: var(--success); height: 100%; }
+  .pr .threads .seg-bar .unresolved { background: var(--accent); height: 100%; }
+  .pr .threads .seg-bar .involved { background: var(--info); height: 100%; }
+  .pr .threads .nums {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text); font-variant-numeric: tabular-nums;
+    display: inline-flex; gap: 1px;
+  }
+  .pr .threads .nums .denom { color: var(--text-faint); }
+  .pr .threads.muted .nums { color: var(--text-mute); }
+
+  /* reviewers col */
+  .pr .reviewers {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .pr .reviewers .rev {
+    position: relative;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    border: 1.5px solid var(--bg-1);
+  }
+  .pr.attention .reviewers .rev { border-color: var(--bg-1); }
+  .pr .reviewers .rev::after {
+    content: ''; position: absolute;
+    width: 8px; height: 8px;
+    bottom: -2px; right: -2px;
+    border-radius: 50%; border: 1.5px solid var(--bg-1);
+    background: var(--bg-4);
+  }
+  .pr .reviewers .rev.approved::after  { background: var(--success); }
+  .pr .reviewers .rev.changes::after   { background: var(--danger); }
+  .pr .reviewers .rev.pending::after   { background: var(--text-faint); }
+  .pr .reviewers .rev.commented::after { background: var(--info); }
+  .pr .reviewers .rev.you {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .pr .reviewers .summary { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+  .pr .reviewers .summary .ok { color: var(--success); }
+
+  /* CI col */
+  .pr .ci {
+    display: flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .pr .ci .ico { width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+  .pr .ci.passing .ico { background: var(--success-bg); color: var(--success); }
+  .pr .ci.failing .ico { background: var(--danger-bg); color: var(--danger); }
+  .pr .ci.pending .ico { background: var(--warning-bg); color: var(--warning); }
+  .pr .ci.passing .nums  { color: var(--success); }
+  .pr .ci.failing .nums  { color: var(--danger); }
+  .pr .ci.pending .nums  { color: var(--warning); }
+
+  /* time col */
+  .pr .time {
+    text-align: right;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-mute); font-variant-numeric: tabular-nums;
+  }
+  .pr .time .since {
+    color: var(--text-faint); font-size: 9px;
+    letter-spacing: 0.3px; display: block; margin-top: 1px;
+  }
+  .pr .time.stale { color: var(--warning); }
+
+  /* kebab */
+  .pr .kbb {
+    color: var(--text-faint);
+    display: flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px;
+    border-radius: var(--r-2);
+    cursor: pointer;
+  }
+  .pr:hover .kbb { color: var(--text-mute); }
+  .pr .kbb:hover { background: var(--bg-3); color: var(--text); }
+
+  /* footer status bar */
+  .status-bar-app {
+    height: 28px;
+    border-top: 1px solid var(--border-1);
+    background: var(--bg-2);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 16px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 0.3px;
+  }
+  .status-bar-app .ok { color: var(--success); }
+  .status-bar-app .spacer { flex: 1; }
+  .status-bar-app .item { display: inline-flex; align-items: center; gap: 5px; }
+  .status-bar-app kbd { font-size: 9px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="mac-window">
+  <!-- Title bar -->
+  <div class="mac-titlebar">
+    <div class="mac-lights">
+      <span class="mac-light red"></span>
+      <span class="mac-light amber"></span>
+      <span class="mac-light green"></span>
+    </div>
+    <div class="mac-title">PRism — Authored by me</div>
+    <div class="mac-titlebar-actions">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 13l4-4 4 4M4 3l4 4 4-4"/></svg>
+    </div>
+  </div>
+
+  <!-- App body -->
+  <div class="app">
+    <!-- ─── SIDE ─── -->
+    <aside class="side">
+      <div class="side-brand">
+        <div class="mark">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+            <path d="M16 4 L28 26 L4 26 Z"/>
+            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="name"><span>PR</span><span class="ism">ism</span></div>
+        <div class="sync-dot" title="Synced"></div>
+      </div>
+
+      <h6>Views</h6>
+      <nav>
+        <div class="nav-item active">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7l6-4 6 4-6 4z"/><path d="M2 11l6 4 6-4"/></svg>
+          </span>
+          Authored by me
+          <span class="count has-attention">3</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="6" r="2.5"/><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4"/></svg>
+          </span>
+          Assigned to me
+          <span class="count">7</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M1.5 8C3 4.5 5.5 3 8 3s5 1.5 6.5 5C13 11.5 10.5 13 8 13s-5-1.5-6.5-5z"/></svg>
+          </span>
+          Watching
+          <span class="count">48</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="6" r="2"/><circle cx="11" cy="6" r="2"/><path d="M1 14c.5-2 2-3 4-3s3.5 1 4 3M7 14c.5-2 2-3 4-3s3.5 1 4 3"/></svg>
+          </span>
+          Team
+          <span class="count">203</span>
+        </div>
+      </nav>
+
+      <h6>Filters</h6>
+      <nav>
+        <div class="nav-item">
+          <span class="nav-icon" style="color:var(--accent)">●</span>
+          Needs my review
+          <span class="count has-attention">4</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon" style="color:var(--danger)">●</span>
+          CI failing
+          <span class="count">2</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon" style="color:var(--warning)">●</span>
+          Stale &gt; 7d
+          <span class="count">11</span>
+        </div>
+        <div class="nav-item">
+          <span class="nav-icon" style="color:var(--text-faint)">●</span>
+          Archived
+          <span class="count">86</span>
+        </div>
+      </nav>
+
+      <div class="side-foot">
+        <h6 style="margin:0 6px 4px">Accounts</h6>
+        <div class="acct-row">
+          <span class="avatar av-1">RP</span>
+          <span class="lbl">Work — Sitemate</span>
+          <span class="tag">Active</span>
+        </div>
+        <div class="acct-row">
+          <span class="avatar av-5">RP</span>
+          <span class="lbl">Personal</span>
+        </div>
+
+        <div class="sync-bar">
+          <span class="item">
+            <svg class="sync-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4"/></svg>
+            Synced
+          </span>
+          <span class="ago">42s ago</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ─── MAIN ─── -->
+    <section class="main">
+      <header class="top">
+        <div class="top-h1">
+          <h1>Authored by me</h1>
+          <span class="count">12 open · 3 need you</span>
+          <div class="spacer"></div>
+
+          <div class="search">
+            <span class="icn">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M11 11l3 3" stroke-linecap="round"/></svg>
+            </span>
+            <input placeholder="Search PRs, repos, authors…">
+            <span class="kbds"><kbd>⌘</kbd><kbd>K</kbd></span>
+          </div>
+
+          <div class="seg">
+            <button class="active" title="Comfortable"><span class="ico">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 5h12M2 9h12M2 13h12"/></svg>
+            </span></button>
+            <button title="Tight"><span class="ico">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 7h12M2 10h12M2 13h12"/></svg>
+            </span></button>
+            <button title="Roomy"><span class="ico">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 12h12"/></svg>
+            </span></button>
+          </div>
+
+          <button class="btn btn-icon" title="Refresh">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4"/></svg>
+          </button>
+        </div>
+
+        <div class="top-chips">
+          <span class="label">FILTER</span>
+          <span class="chip active">Needs my attention <span class="count">3</span></span>
+          <span class="chip">Unresolved threads <span class="count">7</span></span>
+          <span class="chip">CI failing <span class="count">2</span></span>
+          <span class="chip">Stale</span>
+          <span class="chip">Drafts</span>
+          <span class="sep"></span>
+          <span class="label">GROUP</span>
+          <div class="seg">
+            <button class="active">Repo</button>
+            <button>Org</button>
+            <button>None</button>
+          </div>
+          <span class="label" style="margin-left:8px">SORT</span>
+          <div class="seg">
+            <button class="active">Needs me</button>
+            <button>Updated</button>
+            <button>Stale</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="list scroll">
+
+        <!-- Group 1 -->
+        <div class="group">
+          <div class="group-h">
+            <span class="chev">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4l5 4-5 4"/></svg>
+            </span>
+            <span class="name"><span class="org">sitemate</span> / web</span>
+            <span class="meta">5 open · 1 draft</span>
+            <span class="summary">
+              <span style="color:var(--accent)">● 2 need you</span>
+              <span style="color:var(--danger)">● 1 failing</span>
+              <span>↑ 4h ago</span>
+            </span>
+          </div>
+
+          <!-- PR 1 — needs attention -->
+          <div class="pr attention unread">
+            <div class="strip row-strip-needs"></div>
+            <div class="pr-num">#2418</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">Refactor sync worker to batch GraphQL calls into a single round-trip</div></div>
+              <div class="row2">
+                <span class="branch">⌥ feat/sync-worker</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+847</span> <span class="del">−203</span> <span style="color:var(--text-faint)">·12 files</span></span>
+                <span class="dot-sep">·</span>
+                <span style="color:var(--text-mute)">2 labels</span>
+              </div>
+            </div>
+            <div class="threads">
+              <div class="seg-bar">
+                <div class="unresolved" style="width:33%"></div>
+                <div class="involved"   style="width:25%"></div>
+                <div class="resolved"   style="width:42%"></div>
+              </div>
+              <div class="nums">3<span class="denom">/12</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev approved"   title="EH approved">EH</span>
+              <span class="avatar sm av-3 rev approved"   title="JK approved">JK</span>
+              <span class="avatar sm av-4 rev changes"    title="NM changes requested">NM</span>
+              <span class="avatar sm av-5 rev pending"    title="DT pending">DT</span>
+              <span class="summary"><span class="ok">2</span>/4</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">12/12</span>
+            </div>
+            <div class="time">4h 32m<span class="since">ready</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 2 — changes requested -->
+          <div class="pr">
+            <div class="strip row-strip-changes"></div>
+            <div class="pr-num">#2411</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">Surface PAT expiry banner with re-auth deep link</div></div>
+              <div class="row2">
+                <span class="branch">⌥ fix/pat-expiry-banner</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+162</span> <span class="del">−48</span> <span style="color:var(--text-faint)">·5 files</span></span>
+              </div>
+            </div>
+            <div class="threads">
+              <div class="seg-bar">
+                <div class="unresolved" style="width:20%"></div>
+                <div class="resolved" style="width:80%"></div>
+              </div>
+              <div class="nums">1<span class="denom">/8</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev changes" title="EH">EH</span>
+              <span class="avatar sm av-3 rev approved" title="JK">JK</span>
+              <span class="summary"><span style="color:var(--danger)">1</span>/2</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">12/12</span>
+            </div>
+            <div class="time">1d 6h<span class="since">changes</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 3 — CI failing -->
+          <div class="pr attention">
+            <div class="strip row-strip-needs"></div>
+            <div class="pr-num">#2407</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">SQLite migration: per-thread cache schema (timeline events + comment-type breakdown)</div></div>
+              <div class="row2">
+                <span class="branch">⌥ db/per-thread-cache</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+1,214</span> <span class="del">−86</span> <span style="color:var(--text-faint)">·24 files</span></span>
+              </div>
+            </div>
+            <div class="threads muted">
+              <div class="seg-bar">
+                <div class="resolved" style="width:100%"></div>
+              </div>
+              <div class="nums">0<span class="denom">/6</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev approved">EH</span>
+              <span class="avatar sm av-5 rev pending">DT</span>
+              <span class="summary"><span class="ok">1</span>/2</span>
+            </div>
+            <div class="ci failing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+              <span class="nums">9/12</span>
+            </div>
+            <div class="time">22m<span class="since">CI failed</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 4 — pending -->
+          <div class="pr">
+            <div class="strip row-strip-none"></div>
+            <div class="pr-num">#2403</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">Add macOS keychain wrapper for PAT storage</div></div>
+              <div class="row2">
+                <span class="branch">⌥ feat/keychain-mac</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+312</span> <span class="del">−12</span> <span style="color:var(--text-faint)">·7 files</span></span>
+              </div>
+            </div>
+            <div class="threads muted">
+              <div class="seg-bar">
+                <div class="resolved" style="width:60%"></div>
+              </div>
+              <div class="nums">0<span class="denom">/3</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-3 rev pending">JK</span>
+              <span class="avatar sm av-5 rev pending">DT</span>
+              <span class="avatar sm av-6 rev pending">SK</span>
+              <span class="summary">0/3</span>
+            </div>
+            <div class="ci pending">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="5"/><path d="M8 5v3l2 1.5" stroke-linecap="round"/></svg></span>
+              <span class="nums">3/12</span>
+            </div>
+            <div class="time">3h 12m<span class="since">ready</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 5 — draft -->
+          <div class="pr">
+            <div class="strip row-strip-draft"></div>
+            <div class="pr-num">#2401</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">[Draft] Background sync worker scaffolding</div></div>
+              <div class="row2">
+                <span class="branch">⌥ feat/bg-sync</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+86</span> <span class="del">−4</span> <span style="color:var(--text-faint)">·3 files</span></span>
+                <span class="dot-sep">·</span>
+                <span class="badge badge-draft" style="font-size:9px;height:14px;padding:0 5px">DRAFT</span>
+              </div>
+            </div>
+            <div class="threads muted">
+              <span style="color:var(--text-faint);font-family:var(--font-mono);font-size:11px">—</span>
+            </div>
+            <div class="reviewers">
+              <span style="color:var(--text-faint);font-family:var(--font-mono);font-size:11px">no reviewers</span>
+            </div>
+            <div class="ci">
+              <span style="color:var(--text-faint);font-family:var(--font-mono);font-size:11px">—</span>
+            </div>
+            <div class="time">2d<span class="since">opened</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+        </div>
+
+        <!-- Group 2 -->
+        <div class="group">
+          <div class="group-h">
+            <span class="chev">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4l5 4-5 4"/></svg>
+            </span>
+            <span class="name"><span class="org">sitemate</span> / api</span>
+            <span class="meta">3 open</span>
+            <span class="summary">
+              <span style="color:var(--accent)">● 1 need you</span>
+              <span>↑ 8h ago</span>
+            </span>
+          </div>
+
+          <!-- PR 6 — stale, needs attention -->
+          <div class="pr attention unread">
+            <div class="strip row-strip-stale"></div>
+            <div class="pr-num">#1872</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">ETag-aware GraphQL pagination cursor wrapper</div></div>
+              <div class="row2">
+                <span class="branch">⌥ perf/etag-graphql</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+428</span> <span class="del">−98</span> <span style="color:var(--text-faint)">·9 files</span></span>
+                <span class="dot-sep">·</span>
+                <span style="color:var(--warning)">no activity 8d</span>
+              </div>
+            </div>
+            <div class="threads">
+              <div class="seg-bar">
+                <div class="unresolved" style="width:50%"></div>
+                <div class="resolved" style="width:50%"></div>
+              </div>
+              <div class="nums">2<span class="denom">/4</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev pending">EH</span>
+              <span class="avatar sm av-3 rev commented">JK</span>
+              <span class="summary">0/2</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">8/8</span>
+            </div>
+            <div class="time stale">8d 4h<span class="since">stale</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 7 — approved, mergeable -->
+          <div class="pr">
+            <div class="strip row-strip-approved"></div>
+            <div class="pr-num">#1865</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">Add fine-grained PAT scope documentation to onboarding</div></div>
+              <div class="row2">
+                <span class="branch">⌥ docs/pat-scopes</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+204</span> <span class="del">−12</span> <span style="color:var(--text-faint)">·4 files</span></span>
+                <span class="dot-sep">·</span>
+                <span class="badge badge-success" style="height:14px;font-size:9px;padding:0 5px">MERGEABLE</span>
+              </div>
+            </div>
+            <div class="threads muted">
+              <div class="seg-bar">
+                <div class="resolved" style="width:100%"></div>
+              </div>
+              <div class="nums">0<span class="denom">/5</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev approved">EH</span>
+              <span class="avatar sm av-3 rev approved">JK</span>
+              <span class="summary"><span class="ok">2</span>/2</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">12/12</span>
+            </div>
+            <div class="time">12h<span class="since">approved</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+
+          <!-- PR 8 — conflicts -->
+          <div class="pr">
+            <div class="strip row-strip-changes"></div>
+            <div class="pr-num">#1854</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">Drop legacy REST issue-timeline fallback now that GraphQL covers it</div></div>
+              <div class="row2">
+                <span class="branch">⌥ chore/drop-rest-timeline</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+24</span> <span class="del">−612</span> <span style="color:var(--text-faint)">·11 files</span></span>
+                <span class="dot-sep">·</span>
+                <span class="badge badge-danger" style="height:14px;font-size:9px;padding:0 5px">CONFLICTS</span>
+              </div>
+            </div>
+            <div class="threads">
+              <div class="seg-bar">
+                <div class="resolved" style="width:100%"></div>
+              </div>
+              <div class="nums">0<span class="denom">/2</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-2 rev approved">EH</span>
+              <span class="summary"><span class="ok">1</span>/1</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">12/12</span>
+            </div>
+            <div class="time">3d<span class="since">conflicts</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+        </div>
+
+        <!-- Group 3 -->
+        <div class="group">
+          <div class="group-h">
+            <span class="chev">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4l5 4-5 4"/></svg>
+            </span>
+            <span class="name"><span class="org">vercel</span> / next.js</span>
+            <span class="meta">2 open · personal account</span>
+            <span class="summary">
+              <span style="color:var(--success)">● both approved</span>
+              <span>↑ 2d ago</span>
+            </span>
+          </div>
+
+          <div class="pr">
+            <div class="strip row-strip-approved"></div>
+            <div class="pr-num">#62418</div>
+            <div class="title-col">
+              <div class="row1"><div class="title">app/router: fix dynamic-segment cache invalidation on streaming responses</div></div>
+              <div class="row2">
+                <span class="branch">⌥ fix/streaming-cache</span>
+                <span class="dot-sep">·</span>
+                <span class="author"><span class="avatar av-1">RP</span> rpalanca</span>
+                <span class="dot-sep">·</span>
+                <span class="lines"><span class="add">+96</span> <span class="del">−14</span> <span style="color:var(--text-faint)">·3 files</span></span>
+              </div>
+            </div>
+            <div class="threads muted">
+              <div class="seg-bar"><div class="resolved" style="width:100%"></div></div>
+              <div class="nums">0<span class="denom">/14</span></div>
+            </div>
+            <div class="reviewers">
+              <span class="avatar sm av-7 rev approved">TL</span>
+              <span class="avatar sm av-8 rev approved">SC</span>
+              <span class="summary"><span class="ok">2</span>/2</span>
+            </div>
+            <div class="ci passing">
+              <span class="ico"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></span>
+              <span class="nums">42/42</span>
+            </div>
+            <div class="time">2d<span class="since">approved</span></div>
+            <div class="kbb">⋯</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- footer status bar -->
+      <footer class="status-bar-app">
+        <span class="item">
+          <span class="dot dot-success"></span>
+          <span class="ok">Live</span> · 2 accounts · 23 repos
+        </span>
+        <span class="item">Synced 42s ago · next in 18s</span>
+        <span class="item">API budget · 14% / 5000/hr</span>
+        <span class="spacer"></span>
+        <span class="item"><kbd>⌘</kbd><kbd>K</kbd> Search</span>
+        <span class="item"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
+        <span class="item"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
+      </footer>
+    </section>
+  </div>
+</div>
+</body>
+</html>

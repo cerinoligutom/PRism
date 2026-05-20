@@ -1,0 +1,85 @@
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@import "tailwindcss";
+
+@import "./tokens.css";
+@import "./primitives.css";
+
+/* Map design tokens to Tailwind v4 `@theme` so utilities like `bg-surface`,
+ * `text-fg-mute`, `text-accent` resolve against the OKLCH-backed CSS vars
+ * defined in tokens.css. Both light and dark themes update transparently
+ * because the underlying CSS custom properties switch via `[data-theme]`.
+ */
+@theme {
+  --color-surface-edge: var(--bg-0);
+  --color-surface: var(--bg-1);
+  --color-surface-panel: var(--bg-2);
+  --color-surface-raised: var(--bg-3);
+  --color-surface-hover: var(--bg-4);
+  --color-surface-active: var(--bg-5);
+
+  --color-border: var(--border-2);
+  --color-border-faint: var(--border-1);
+  --color-border-strong: var(--border-3);
+
+  --color-fg-strong: var(--text-strong);
+  --color-fg: var(--text);
+  --color-fg-mute: var(--text-mute);
+  --color-fg-faint: var(--text-faint);
+  --color-fg-disabled: var(--text-disabled);
+
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-mute: var(--accent-mute);
+  --color-accent-bg: var(--accent-bg);
+  --color-accent-fg: var(--accent-fg);
+
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+  --color-merged: var(--merged);
+  --color-merged-bg: var(--merged-bg);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-1: var(--r-1);
+  --radius-2: var(--r-2);
+  --radius-3: var(--r-3);
+  --radius-4: var(--r-4);
+  --radius-5: var(--r-5);
+  --radius-pill: var(--r-pill);
+}
+
+/* Row density data-attribute → CSS var consumed by .pr-row in primitives.css.
+ * Components that want to respect density can use `height: var(--row-h)`. */
+:root[data-density="tight"]       { --row-h: var(--row-h-tight); }
+:root[data-density="comfortable"] { --row-h: var(--row-h-comfortable); }
+:root[data-density="roomy"]       { --row-h: var(--row-h-roomy); }
+:root:not([data-density])         { --row-h: var(--row-h-comfortable); }
+
+/* App-level page rules. The window itself is provided by Tauri's native
+ * chrome — no fake macOS title bar lives in the markup. */
+html, body, #app {
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-1);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Tauri's webview shows a default browser focus outline that clashes with
+ * our focus-ring tokens. Reset and let component primitives opt back in. */
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

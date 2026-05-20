@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — Branding</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; height: 900px; overflow: hidden; background: var(--bg-0); }
+
+  .brand-stage {
+    width: 100%; height: 100%;
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    grid-template-rows: 1fr;
+    gap: 0;
+  }
+
+  /* ────── Hero panel ────── */
+  .hero {
+    position: relative;
+    padding: 72px 64px;
+    background:
+      radial-gradient(80% 60% at 22% 28%, oklch(0.32 0.08 320 / 0.55), transparent 65%),
+      radial-gradient(60% 50% at 88% 90%, oklch(0.28 0.12 25 / 0.35), transparent 65%),
+      var(--bg-0);
+    overflow: hidden;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  /* faint grid */
+  .hero::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 48px 48px;
+    pointer-events: none;
+    mask-image: radial-gradient(80% 80% at 50% 50%, #000 30%, transparent 100%);
+  }
+  .hero > * { position: relative; z-index: 1; }
+  .hero-eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 1.5px;
+    color: var(--text-faint); text-transform: uppercase;
+  }
+  .hero-eyebrow .dot { background: var(--accent); }
+  .hero-mark-wrap {
+    display: flex; align-items: center; gap: 28px;
+    margin-top: 32px;
+  }
+  /* Big logomark */
+  .mark-xl {
+    width: 168px; height: 168px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-strong);
+  }
+  .mark-xl svg { width: 100%; height: 100%; }
+  .wordmark {
+    font-size: 92px;
+    font-weight: 600;
+    letter-spacing: -3px;
+    color: var(--text-strong);
+    line-height: 1;
+  }
+  .wordmark .pr { font-weight: 700; }
+  .wordmark .ism { font-weight: 400; color: var(--text-mute); }
+
+  .tagline {
+    margin-top: 36px;
+    max-width: 460px;
+    font-size: 22px;
+    line-height: 1.4;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+  .tagline em {
+    font-style: normal;
+    color: var(--text-strong);
+    background: linear-gradient(120deg,
+      oklch(0.72 0.18 25) 0%,
+      oklch(0.78 0.15 80) 22%,
+      oklch(0.74 0.16 145) 44%,
+      oklch(0.72 0.12 240) 66%,
+      oklch(0.72 0.14 320) 88%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .hero-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    border-top: 1px solid var(--border-1);
+    padding-top: 24px;
+  }
+  .hero-meta .label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px;
+    color: var(--text-faint); text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .hero-meta .value { color: var(--text); font-size: 14px; }
+
+  /* ────── Specimens panel ────── */
+  .specs {
+    background: var(--bg-1);
+    padding: 56px 56px 48px;
+    border-left: 1px solid var(--border-1);
+    display: grid;
+    grid-template-rows: auto auto auto auto auto;
+    gap: 28px;
+    overflow: hidden;
+  }
+  .spec-h {
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    margin-bottom: 12px;
+  }
+
+  /* lockups */
+  .lockups {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .lockup-card {
+    padding: 24px 20px;
+    border-radius: var(--r-3);
+    border: 1px solid var(--border-1);
+    display: flex; align-items: center; gap: 14px;
+    min-height: 80px;
+  }
+  .lockup-card.dark  { background: #0a0a0e; color: #f4f4f7; }
+  .lockup-card.light { background: #ffffff; color: #0a0a0d; }
+  .lockup-mark { width: 32px; height: 32px; flex: 0 0 32px; }
+  .lockup-word {
+    font-size: 22px; font-weight: 600; letter-spacing: -0.6px;
+  }
+  .lockup-word .ism { font-weight: 400; opacity: 0.55; }
+  .lockup-tag {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 10px;
+    color: currentColor; opacity: 0.5;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  /* construction grid */
+  .construction {
+    display: flex; gap: 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    padding: 20px;
+  }
+  .grid-box {
+    width: 120px; height: 120px;
+    position: relative;
+    flex: 0 0 120px;
+    background:
+      linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0/15px 15px,
+      linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0/15px 15px,
+      var(--bg-1);
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .grid-box svg { width: 80px; height: 80px; color: var(--text-strong); }
+  .construction-notes {
+    flex: 1;
+    display: flex; flex-direction: column; gap: 8px;
+    font-size: 12px; color: var(--text-mute);
+  }
+  .construction-notes .row {
+    display: flex; justify-content: space-between;
+    border-bottom: 1px dashed var(--border-1);
+    padding-bottom: 6px;
+  }
+  .construction-notes .row .k { color: var(--text-faint); }
+  .construction-notes .row .v { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
+
+  /* spectrum bar */
+  .spectrum {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    border-radius: var(--r-2);
+    overflow: hidden;
+    height: 56px;
+    border: 1px solid var(--border-1);
+  }
+  .swatch {
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 8px 10px;
+    color: #07070a;
+    font-family: var(--font-mono); font-size: 10px;
+    letter-spacing: 0.5px;
+  }
+  .swatch.s1 { background: oklch(0.72 0.18 25); }
+  .swatch.s2 { background: oklch(0.78 0.15 80); }
+  .swatch.s3 { background: oklch(0.74 0.16 145); }
+  .swatch.s4 { background: oklch(0.72 0.12 240); }
+  .swatch.s5 { background: oklch(0.72 0.14 320); color: #190016; }
+
+  /* voice */
+  .voice {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .voice-card {
+    padding: 16px;
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    background: var(--bg-2);
+  }
+  .voice-card .v-h { font-size: 11px; color: var(--text-faint); margin-bottom: 6px; font-weight: 500; }
+  .voice-card .v-b { font-size: 13px; color: var(--text); line-height: 1.5; }
+  .voice-card.do .v-h::before { content: '✓ '; color: var(--success); }
+  .voice-card.dont .v-h::before { content: '✕ '; color: var(--danger); }
+  .voice-card.dont .v-b { color: var(--text-mute); text-decoration: line-through; text-decoration-color: var(--text-faint); }
+</style>
+</head>
+<body>
+<div class="brand-stage">
+  <!-- Hero -->
+  <section class="hero">
+    <div>
+      <div class="hero-eyebrow">
+        <span class="dot"></span>
+        Brand · v1.0 · 2026
+      </div>
+      <div class="hero-mark-wrap">
+        <div class="mark-xl">
+          <!-- Larger redraw of the prism mark -->
+          <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="6" y1="60" x2="38" y2="60" opacity="0.55"/>
+            <path d="M60 14 L106 100 L14 100 Z"/>
+            <line x1="78"  y1="66" x2="114" y2="40" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="80"  y1="72" x2="114" y2="60" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="82"  y1="78" x2="114" y2="80" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="84"  y1="84" x2="110" y2="100" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="wordmark"><span class="pr">PR</span><span class="ism">ism</span></div>
+      </div>
+      <p class="tagline">
+        Every PR you touch, in one quiet place. <em>See the state</em>, not just the noise.
+      </p>
+    </div>
+
+    <div class="hero-meta">
+      <div>
+        <div class="label">Category</div>
+        <div class="value">Developer tooling</div>
+      </div>
+      <div>
+        <div class="label">Platforms</div>
+        <div class="value">macOS · Windows · Linux</div>
+      </div>
+      <div>
+        <div class="label">Mark</div>
+        <div class="value">Refraction · 60° prism</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Specimens -->
+  <section class="specs">
+    <div>
+      <div class="spec-h">Lockups</div>
+      <div class="lockups">
+        <div class="lockup-card dark">
+          <div class="lockup-mark">
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+              <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+              <path d="M16 4 L28 26 L4 26 Z"/>
+              <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+              <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+              <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+              <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+            </svg>
+          </div>
+          <div class="lockup-word"><span>PR</span><span class="ism">ism</span></div>
+          <span class="lockup-tag">Dark</span>
+        </div>
+        <div class="lockup-card light">
+          <div class="lockup-mark">
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+              <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+              <path d="M16 4 L28 26 L4 26 Z"/>
+              <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.55 0.2 25)"/>
+              <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.6 0.16 70)"/>
+              <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.5 0.16 145)"/>
+              <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.55 0.18 320)"/>
+            </svg>
+          </div>
+          <div class="lockup-word"><span>PR</span><span class="ism">ism</span></div>
+          <span class="lockup-tag">Light</span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="spec-h">Construction</div>
+      <div class="construction">
+        <div class="grid-box">
+          <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="6" y1="60" x2="38" y2="60" opacity="0.55"/>
+            <path d="M60 14 L106 100 L14 100 Z"/>
+            <line x1="78"  y1="66" x2="114" y2="40" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="80"  y1="72" x2="114" y2="60" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="82"  y1="78" x2="114" y2="80" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="84"  y1="84" x2="110" y2="100" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="construction-notes">
+          <div class="row"><span class="k">Triangle</span><span class="v">60° equilateral</span></div>
+          <div class="row"><span class="k">Stroke</span><span class="v">1.6px @ 32, scales</span></div>
+          <div class="row"><span class="k">Beam in</span><span class="v">55% opacity</span></div>
+          <div class="row"><span class="k">Refracted</span><span class="v">4 rays · spectrum</span></div>
+          <div class="row"><span class="k">Clear-space</span><span class="v">≥ 25% of mark</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="spec-h">Spectrum — refracted from the mark</div>
+      <div class="spectrum">
+        <div class="swatch s1">25°</div>
+        <div class="swatch s2">80°</div>
+        <div class="swatch s3">145°</div>
+        <div class="swatch s4">240°</div>
+        <div class="swatch s5">320°</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="spec-h">Voice</div>
+      <div class="voice">
+        <div class="voice-card do">
+          <div class="v-h">DO</div>
+          <div class="v-b">"PR #2418 has 3 unresolved threads, oldest 2 days old. CI failing on macOS."</div>
+        </div>
+        <div class="voice-card dont">
+          <div class="v-h">DON'T</div>
+          <div class="v-b">"Oops! Looks like there's some 🔥 stuff going on with your PR ✨ Let's dive in!"</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

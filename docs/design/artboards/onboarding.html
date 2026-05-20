@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>PRism — Onboarding</title>
+<link rel="stylesheet" href="../assets/tokens.css">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+  body { width: 1440px; height: 920px; background: var(--bg-0); padding: 0; overflow: hidden; }
+
+  .onb {
+    height: calc(100% - 36px);
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1px;
+    background: var(--border-1);
+  }
+  .step {
+    background: var(--bg-1);
+    padding: 56px 48px 32px;
+    display: flex; flex-direction: column;
+    gap: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .step .step-h {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+  .step .step-h .num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--bg-3);
+    color: var(--text-mute);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px;
+    border: 1px solid var(--border-2);
+  }
+  .step.active .step-h .num { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
+  .step.done .step-h .num   { background: var(--success); color: #001a08; border-color: transparent; }
+
+  .step h2 {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.6px;
+    color: var(--text-strong);
+    line-height: 1.15;
+  }
+  .step .lede {
+    color: var(--text-mute);
+    font-size: 13px;
+    line-height: 1.55;
+    margin: -12px 0 0;
+    max-width: 380px;
+  }
+
+  /* ────── STEP 1 ────── */
+  .step-1 {
+    position: relative;
+  }
+  .step-1::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(50% 40% at 30% 20%, oklch(0.32 0.08 320 / 0.4), transparent 70%),
+      radial-gradient(40% 35% at 90% 95%, oklch(0.28 0.12 25 / 0.3), transparent 70%);
+    pointer-events: none;
+  }
+  .step-1 > * { position: relative; z-index: 1; }
+  .brand-line { display: flex; align-items: center; gap: 12px; margin-bottom: -8px; }
+  .brand-line .mark { width: 28px; height: 28px; color: var(--text-strong); }
+  .brand-line .name { font-size: 18px; font-weight: 600; letter-spacing: -0.4px; color: var(--text-strong); }
+  .brand-line .name .ism { font-weight: 400; color: var(--text-mute); }
+  .brand-line .ver { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); letter-spacing: 1px; }
+
+  .bullet-list {
+    display: flex; flex-direction: column;
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .bullet {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .bullet .ico {
+    width: 28px; height: 28px;
+    border-radius: var(--r-2);
+    background: var(--bg-3);
+    border: 1px solid var(--border-1);
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    flex: 0 0 28px;
+  }
+  .bullet h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--text-strong); }
+  .bullet p  { margin: 0; font-size: 12px; color: var(--text-mute); line-height: 1.5; }
+
+  .step-foot {
+    margin-top: auto;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .step-foot .help {
+    font-size: 11px;
+    color: var(--text-faint);
+    display: flex; align-items: center; gap: 6px;
+    margin-left: auto;
+  }
+
+  /* ────── STEP 2 ────── */
+  .field-block {
+    display: flex; flex-direction: column;
+    gap: 6px;
+  }
+  .field-block label {
+    font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-faint);
+  }
+  .field-block .hint {
+    color: var(--text-faint); font-size: 11px;
+    margin-top: 2px;
+  }
+  .field-block .hint a { color: var(--accent); text-decoration: none; }
+
+  .seg-tabs {
+    display: inline-flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-2);
+    overflow: hidden;
+    align-self: flex-start;
+  }
+  .seg-tabs button {
+    background: transparent;
+    border: 0;
+    border-right: 1px solid var(--border-1);
+    color: var(--text-mute);
+    padding: 0 12px;
+    height: 28px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .seg-tabs button:last-child { border-right: 0; }
+  .seg-tabs button.active { color: var(--text-strong); background: var(--bg-4); }
+
+  .scopes {
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    overflow: hidden;
+  }
+  .scopes header {
+    padding: 10px 14px;
+    background: var(--bg-3);
+    border-bottom: 1px solid var(--border-1);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px;
+    color: var(--text);
+  }
+  .scopes header .badge { background: var(--success-bg); color: var(--success); }
+  .scope-row {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-1);
+  }
+  .scope-row:last-child { border-bottom: 0; }
+  .scope-row .icn {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--success-bg);
+    color: var(--success);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .scope-row .nm { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+  .scope-row .desc { color: var(--text-mute); font-size: 11px; }
+  .scope-row .tag { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.6px; padding: 1px 6px; background: var(--bg-4); border-radius: 3px; }
+
+  .callout {
+    display: flex; gap: 10px;
+    padding: 12px 14px;
+    background: var(--accent-bg);
+    border-radius: var(--r-3);
+    border: 1px solid oklch(0.4 0.12 320 / 0.4);
+  }
+  .callout .icn {
+    color: var(--accent); flex: 0 0 16px;
+    margin-top: 1px;
+  }
+  .callout .body {
+    color: var(--accent-strong); font-size: 12px;
+    line-height: 1.5;
+  }
+  .callout .body strong { color: var(--text-strong); }
+
+  /* ────── STEP 3 ────── */
+  .org-list {
+    display: flex; flex-direction: column;
+    gap: 1px;
+    background: var(--border-1);
+    border-radius: var(--r-3);
+    overflow: hidden;
+    border: 1px solid var(--border-1);
+  }
+  .org-row {
+    display: grid;
+    grid-template-columns: 28px 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--bg-2);
+    cursor: pointer;
+  }
+  .org-row:hover { background: var(--bg-3); }
+  .org-row.checked { background: oklch(0.2 0.04 320 / 0.2); }
+  .org-row .avatar {
+    width: 28px; height: 28px;
+    border-radius: var(--r-2);
+    font-size: 11px;
+  }
+  .org-row .name { font-size: 13px; color: var(--text-strong); font-weight: 500; }
+  .org-row .name .sub { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); font-weight: 400; margin-top: 2px; letter-spacing: 0.2px; }
+  .org-row .stat { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+  .org-row .cb {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    border: 1.5px solid var(--border-3);
+    background: var(--bg-1);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .org-row.checked .cb {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+  }
+
+  .first-sync {
+    margin-top: auto;
+    background: var(--bg-2);
+    border: 1px solid var(--border-1);
+    border-radius: var(--r-3);
+    padding: 12px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .first-sync .ring {
+    width: 22px; height: 22px;
+    border: 2px solid var(--border-2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1.4s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .first-sync .txt { flex: 1; font-size: 12px; color: var(--text); }
+  .first-sync .ago { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+</style>
+</head>
+<body>
+<div class="mac-window">
+  <div class="mac-titlebar">
+    <div class="mac-lights">
+      <span class="mac-light red"></span>
+      <span class="mac-light amber"></span>
+      <span class="mac-light green"></span>
+    </div>
+    <div class="mac-title">PRism — Welcome</div>
+    <div></div>
+  </div>
+
+  <div class="onb">
+
+    <!-- STEP 1 -->
+    <section class="step step-1 done">
+      <div class="brand-line">
+        <div class="mark">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55"/>
+            <path d="M16 4 L28 26 L4 26 Z"/>
+            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)"/>
+            <line x1="21"   y1="19"   x2="30" y2="16" stroke="oklch(0.78 0.15 80)"/>
+            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)"/>
+            <line x1="22"   y1="22"   x2="29" y2="26" stroke="oklch(0.72 0.14 320)"/>
+          </svg>
+        </div>
+        <div class="name"><span>PR</span><span class="ism">ism</span></div>
+        <span class="ver">v1.0.0</span>
+      </div>
+
+      <div class="step-h"><span class="num">1</span> Welcome</div>
+      <h2>Every PR you touch, in one quiet place.</h2>
+      <p class="lede">PRism is a local desktop app that watches every pull request you care about and shows you their <em style="color:var(--text);font-style:normal">real state</em> at a glance — conversation depth, reviewer status, time-in-status. Nothing leaves your machine.</p>
+
+      <div class="bullet-list">
+        <div class="bullet">
+          <div class="ico" style="color:var(--success)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 1.5l5 2.5v3.5c0 3-2.2 5.4-5 6-2.8-.6-5-3-5-6V4l5-2.5z"/></svg>
+          </div>
+          <div><h4>Local-first, read-only</h4><p>Your PAT lives in the OS keychain. PRism never writes to GitHub — every action opens GitHub in your browser.</p></div>
+        </div>
+        <div class="bullet">
+          <div class="ico" style="color:var(--info)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8h3l2-5 2 10 2-5h3"/></svg>
+          </div>
+          <div><h4>Auto-tracking</h4><p>The moment you comment, get a review request, or are @mentioned, PRism picks it up.</p></div>
+        </div>
+        <div class="bullet">
+          <div class="ico" style="color:var(--accent)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          </div>
+          <div><h4>Conversation depth</h4><p>See unresolved threads, oldest open age, and avg response time — not just "5 comments".</p></div>
+        </div>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn btn-primary btn-lg">Connect GitHub →</button>
+        <span class="help">Already have a PAT? <a href="#" style="color:var(--accent);text-decoration:none;margin-left:4px">Skip to step 2</a></span>
+      </div>
+    </section>
+
+    <!-- STEP 2 -->
+    <section class="step step-2 active">
+      <div class="step-h"><span class="num">2</span> Connect an account</div>
+      <h2>Add a Personal Access Token.</h2>
+      <p class="lede">PRism authenticates with a <strong style="color:var(--text)">classic</strong> or <strong style="color:var(--text)">fine-grained</strong> PAT. Fine-grained is recommended — narrower scope.</p>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:-4px">
+        <div class="seg-tabs">
+          <button class="active">Fine-grained · recommended</button>
+          <button>Classic</button>
+        </div>
+
+        <div class="field-block">
+          <label>Account label</label>
+          <input class="input input-lg" value="Work — Sitemate" placeholder="e.g. Work, Personal">
+        </div>
+
+        <div class="field-block">
+          <label>Host</label>
+          <input class="input input-lg input-mono" value="github.com">
+          <div class="hint">For GitHub Enterprise use <code style="color:var(--text)">github.your-company.com</code></div>
+        </div>
+
+        <div class="field-block">
+          <label>Personal Access Token</label>
+          <input class="input input-lg input-mono" value="github_pat_••••••••••••••••••••••••••••••••" type="text">
+          <div class="hint">
+            <a href="#">Create a new fine-grained PAT →</a> · scopes pre-filled
+          </div>
+        </div>
+      </div>
+
+      <div class="scopes">
+        <header>
+          Required permissions
+          <span class="badge badge-success" style="margin-left:auto;height:16px;font-size:9px">FINE-GRAINED</span>
+        </header>
+        <div class="scope-row">
+          <div class="icn"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></div>
+          <div><div class="nm">Contents</div><div class="desc">Read pull request commits and refs.</div></div>
+          <span class="tag">READ</span>
+        </div>
+        <div class="scope-row">
+          <div class="icn"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></div>
+          <div><div class="nm">Pull requests</div><div class="desc">Read PRs, reviews, threads, timelines.</div></div>
+          <span class="tag">READ</span>
+        </div>
+        <div class="scope-row">
+          <div class="icn"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></div>
+          <div><div class="nm">Metadata</div><div class="desc">Read repo info — owner, name, visibility.</div></div>
+          <span class="tag">READ</span>
+        </div>
+        <div class="scope-row">
+          <div class="icn"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg></div>
+          <div><div class="nm">Members (org)</div><div class="desc">Resolve org members for team views.</div></div>
+          <span class="tag">READ</span>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="icn">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 1.5l5 2.5v3.5c0 3-2.2 5.4-5 6-2.8-.6-5-3-5-6V4l5-2.5z"/></svg>
+        </div>
+        <div class="body">
+          <strong>PRism never writes to GitHub.</strong> All approve / comment / merge actions happen on GitHub itself. Your PAT goes straight into the macOS Keychain — never to disk, never to a log.
+        </div>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn">Back</button>
+        <button class="btn btn-primary btn-lg">Connect →</button>
+        <span class="help">
+          <span class="dot dot-success"></span> Token validated · 4 repos accessible
+        </span>
+      </div>
+    </section>
+
+    <!-- STEP 3 -->
+    <section class="step step-3">
+      <div class="step-h"><span class="num">3</span> Pick what to watch</div>
+      <h2>Choose orgs &amp; repos for the team view.</h2>
+      <p class="lede">PRs you author, review, or get @mentioned in are auto-tracked. The <strong style="color:var(--text)">Team</strong> view shows everything else from the orgs you pick here.</p>
+
+      <div class="seg-tabs">
+        <button class="active">By org</button>
+        <button>By repo</button>
+      </div>
+
+      <div class="org-list">
+        <div class="org-row checked">
+          <span class="avatar av-3" style="border-radius:5px;width:28px;height:28px">SM</span>
+          <div class="name">sitemate
+            <span class="sub">12 repos · 184 active PRs · you're in 23</span>
+          </div>
+          <span class="stat">184 PRs</span>
+          <div class="cb">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg>
+          </div>
+        </div>
+        <div class="org-row">
+          <span class="avatar av-5" style="border-radius:5px;width:28px;height:28px">VC</span>
+          <div class="name">vercel
+            <span class="sub">42 repos · OSS · you contribute to 2</span>
+          </div>
+          <span class="stat">2.4k PRs</span>
+          <div class="cb"></div>
+        </div>
+        <div class="org-row checked">
+          <span class="avatar av-7" style="border-radius:5px;width:28px;height:28px">RP</span>
+          <div class="name">rpalanca
+            <span class="sub">Personal account · 8 repos</span>
+          </div>
+          <span class="stat">14 PRs</span>
+          <div class="cb">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3 3 7-7"/></svg>
+          </div>
+        </div>
+        <div class="org-row">
+          <span class="avatar av-2" style="border-radius:5px;width:28px;height:28px">TS</span>
+          <div class="name">tauri-apps
+            <span class="sub">28 repos · OSS</span>
+          </div>
+          <span class="stat">312 PRs</span>
+          <div class="cb"></div>
+        </div>
+      </div>
+
+      <div class="callout" style="background:var(--info-bg);border-color:oklch(0.32 0.1 240 / 0.3)">
+        <div class="icn" style="color:var(--info)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 5v.5"/></svg>
+        </div>
+        <div class="body" style="color:var(--info)">
+          Watching an org pulls <strong>open PRs from all its repos</strong>. Big orgs may hit your API budget — start small, add more later in Settings.
+        </div>
+      </div>
+
+      <div class="first-sync">
+        <div class="ring"></div>
+        <div class="txt">First sync · fetching 198 PRs from 2 orgs…</div>
+        <div class="ago">~12s</div>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn">Back</button>
+        <button class="btn btn-primary btn-lg">Finish — Open PRism →</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>
