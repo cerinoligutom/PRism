@@ -11,7 +11,10 @@
   },
   "packageManager": "pnpm@11.1.2",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "vue-demi"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "vue-demi"
+    ]
   },
   "scripts": {
     "dev": "vite",
@@ -33,6 +36,8 @@
     "vue-router": "5.0.7"
   },
   "devDependencies": {
+    "@fontsource/geist": "5.2.9",
+    "@fontsource/jetbrains-mono": "5.2.8",
     "@tailwindcss/vite": "4.3.0",
     "@tauri-apps/cli": "2.11.2",
     "@types/node": "24.12.4",

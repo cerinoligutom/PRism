@@ -1,4 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+/* Geist + JetBrains Mono are self-hosted via @fontsource — see the imports
+ * at the top of src/main.ts. The @font-face declarations they inject are
+ * picked up by the font-family stack defined in tokens.css. */
 
 @import "tailwindcss";
 
