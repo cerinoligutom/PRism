@@ -8,20 +8,19 @@
 //! [`crate::sync::status_timeline::latest_status_change`]) only ever sees a
 //! `created_at`-shaped [`TimelineEvent`].
 //!
-//! Pagination is intentionally single-page in v1. GitHub's REST list endpoints
-//! advertise further pages via the RFC 5988 `Link` header, which the shared
-//! [`GitHubClient::get_conditional`] helper doesn't yet expose. We ask for
-//! `per_page=100` to fit the qualifying events of the overwhelming majority of
-//! PRs into one round trip; truly long-lived PRs (>100 timeline events) are
-//! tracked under follow-up work to surface `Link` from the conditional helper.
-//! The `max_pages` knob is kept on the public signature so callers don't have
-//! to change once that follow-up lands.
+//! Pagination follows the RFC 5988 `Link` header: each response advertises the
+//! next page under `rel="next"`. We walk until either no `next` link is present
+//! or the `max_pages` cap is reached. A 304 on the first page short-circuits
+//! to [`ListTimeline::NotModified`]; a 304 on a later page just stops the walk
+//! (rare in practice given GitHub's per-page ETag behaviour). Each page is
+//! cached independently in the ETag store keyed by its path+query.
 
 use bytes::Bytes;
 use serde::Deserialize;
 use time::OffsetDateTime;
+use url::Url;
 
-use crate::github::client::{Conditional, GitHubClient};
+use crate::github::client::{parse_next_link, Conditional, GitHubClient};
 use crate::github::error::GitHubError;
 use crate::sync::status_timeline::TimelineEvent;
 
@@ -47,30 +46,58 @@ impl ListTimeline {
     }
 }
 
-/// Fetch the qualifying timeline events for a PR.
+/// Fetch the qualifying timeline events for a PR, walking `Link rel="next"`
+/// until exhausted or `max_pages` is hit.
 ///
-/// `_max_pages` is reserved for the multi-page walk once the conditional
-/// helper exposes the `Link` header; v1 fetches a single page of up to 100
-/// events and ignores it. A 304 short-circuits to [`ListTimeline::NotModified`]
-/// so the caller can skip recomputation.
+/// A 304 on page 1 short-circuits to [`ListTimeline::NotModified`] so the
+/// caller can skip recomputation entirely. On later pages a 304 just stops the
+/// walk — pages already fetched stay in the returned vector. `per_page=100`
+/// keeps the round-trip count low for the typical PR while still letting
+/// long-lived PRs (>100 timeline events) reconstruct fully.
 pub async fn list_pr_timeline(
     client: &GitHubClient,
     repo: RepoCoord<'_>,
     pr_number: u32,
-    _max_pages: usize,
+    max_pages: usize,
 ) -> Result<ListTimeline, GitHubError> {
-    let path = format!(
+    let mut path = format!(
         "/repos/{}/{}/issues/{}/timeline?per_page=100",
         repo.owner, repo.repo, pr_number
     );
+    let mut all_events: Vec<TimelineEvent> = Vec::new();
 
-    match client.get_conditional(&path).await? {
-        Conditional::NotModified => Ok(ListTimeline::NotModified),
-        Conditional::Modified { body, .. } => {
-            let events = parse_timeline_page(&body)?;
-            Ok(ListTimeline::Events(events))
+    for page_index in 0..max_pages.max(1) {
+        match client.get_conditional(&path).await? {
+            Conditional::NotModified => {
+                if page_index == 0 {
+                    return Ok(ListTimeline::NotModified);
+                }
+                break;
+            }
+            Conditional::Modified { body, headers, .. } => {
+                all_events.extend(parse_timeline_page(&body)?);
+                match parse_next_link(&headers).and_then(|s| relative_path(&s)) {
+                    Some(next) => path = next,
+                    None => break,
+                }
+            }
         }
     }
+
+    Ok(ListTimeline::Events(all_events))
+}
+
+/// Strip scheme + host from an absolute URL emitted by GitHub's `Link` header,
+/// leaving `/path?query` so it can be fed back to `client.get_conditional`
+/// (which is path-relative and keys the ETag store by path).
+fn relative_path(absolute: &str) -> Option<String> {
+    let url = Url::parse(absolute).ok()?;
+    let mut out = url.path().to_string();
+    if let Some(q) = url.query() {
+        out.push('?');
+        out.push_str(q);
+    }
+    Some(out)
 }
 
 fn parse_timeline_page(bytes: &Bytes) -> Result<Vec<TimelineEvent>, GitHubError> {

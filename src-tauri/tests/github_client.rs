@@ -270,7 +270,7 @@ async fn get_conditional_stores_new_etag_on_200() {
         .await
         .unwrap();
     match result {
-        Conditional::Modified { etag, body } => {
+        Conditional::Modified { etag, body, .. } => {
             assert_eq!(etag.as_deref(), Some("W/\"freshfresh\""));
             assert_eq!(&body[..], b"{\"number\":42}");
         }
@@ -497,4 +497,115 @@ async fn rest_timeline_404_maps_to_not_found() {
     .await
     .unwrap_err();
     assert!(matches!(err, GitHubError::NotFound));
+}
+
+#[tokio::test]
+async fn rest_timeline_walks_link_header_to_next_page() {
+    // Page 1 advertises a `next` link pointing at page 2; page 2 has none.
+    // We should see events from both pages, in order.
+    let server = MockServer::start().await;
+    let next_link = format!(
+        "<{}/repos/owner/repo/issues/42/timeline?per_page=100&page=2>; rel=\"next\", \
+         <{}/repos/owner/repo/issues/42/timeline?per_page=100&page=2>; rel=\"last\"",
+        server.uri(),
+        server.uri(),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(query_param("per_page", "100"))
+        .and(wiremock::matchers::query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("link", next_link.as_str())
+                .set_body_raw(
+                    br#"[{"event":"ready_for_review","created_at":"2026-05-01T01:00:00Z"}]"#
+                        .to_vec(),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            br#"[{"event":"merged","created_at":"2026-05-02T01:00:00Z"}]"#.to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let client = client_against(&server).await;
+    let result = list_pr_timeline(
+        &client,
+        RepoCoord {
+            owner: "owner",
+            repo: "repo",
+        },
+        42,
+        5,
+    )
+    .await
+    .unwrap();
+
+    let events = match result {
+        ListTimeline::Events(e) => e,
+        ListTimeline::NotModified => panic!("expected Events, got NotModified"),
+    };
+    let names: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(names, vec!["ready_for_review", "merged"]);
+}
+
+#[tokio::test]
+async fn rest_timeline_pagination_respects_max_pages_cap() {
+    // Page 1 → page 2 → page 3 (infinite cycle if max_pages were unbounded).
+    // With max_pages = 2, we must stop after page 2 and not request page 3.
+    let server = MockServer::start().await;
+    let link_to_2 = format!(
+        "<{}/repos/owner/repo/issues/42/timeline?per_page=100&page=2>; rel=\"next\"",
+        server.uri(),
+    );
+    let link_to_3 = format!(
+        "<{}/repos/owner/repo/issues/42/timeline?per_page=100&page=3>; rel=\"next\"",
+        server.uri(),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(wiremock::matchers::query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("link", link_to_2.as_str())
+                .set_body_raw(b"[]".to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(query_param("page", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("link", link_to_3.as_str())
+                .set_body_raw(b"[]".to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    // No mock for page=3: if the loop walks past the cap, the request 404s
+    // (no matching mock) and the test would surface that as a failure.
+
+    let client = client_against(&server).await;
+    let result = list_pr_timeline(
+        &client,
+        RepoCoord {
+            owner: "owner",
+            repo: "repo",
+        },
+        42,
+        2,
+    )
+    .await
+    .unwrap();
+    assert!(result.is_modified());
 }

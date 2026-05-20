@@ -43,3 +43,6 @@
 # Plan files (Claude Code workspace artefacts that occasionally land here)
 .plan
 .plans
+
+# Claude Code agent worktrees (transient — created by Agent tool isolation:worktree)
+.claude/worktrees/
