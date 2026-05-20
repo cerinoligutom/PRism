@@ -1,14 +1,17 @@
 //! Account metadata store.
 //!
 //! Persists the non-secret half of an account (label, host, login, scopes,
-//! expiry) to a JSON file under the app data directory. When PR #9 lands
-//! its SQLite schema, this whole file is swapped for a sqlx-backed
-//! `AccountRepository` against the `accounts` table — the public surface
-//! (the `AccountStore` trait) is what the rest of the crate depends on.
+//! expiry) to the `accounts` table in the SQLite cache. The PAT itself is
+//! never stored here — it lives in the OS keychain under `(SERVICE,
+//! account_id)`.
+//!
+//! The trait exists so tests can substitute an in-memory backing store
+//! without touching SQLite.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -31,8 +34,6 @@ pub struct Account {
 
 impl Account {
     /// Build the per-account handle the GitHub HTTP layer expects.
-    /// Replaces the `impl From<&Account> for AccountHandle` we used while the
-    /// canonical type lived locally — orphan rules forbid that direction now.
     pub fn handle(&self) -> AccountHandle {
         AccountHandle {
             id: self.id,
@@ -46,8 +47,6 @@ impl Account {
 pub enum StoreError {
     #[error("account store I/O: {0}")]
     Io(String),
-    #[error("account store serialise: {0}")]
-    Serialise(String),
     #[error("no account with id {0}")]
     NotFound(AccountId),
 }
@@ -59,142 +58,255 @@ pub trait AccountStore: Send + Sync {
     fn next_id(&self) -> Result<AccountId, StoreError>;
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct Persisted {
-    next_id: AccountId,
-    accounts: Vec<Account>,
+/// SQLite-backed `AccountStore`. The connection is wrapped in a `Mutex`
+/// because `rusqlite::Connection` is `!Sync`; the lock window is one
+/// parameterised query per call.
+pub struct SqlAccountStore {
+    conn: Arc<Mutex<Connection>>,
 }
 
-/// JSON-backed file store. The whole file is rewritten on every mutation —
-/// fine for the cardinality expected (single-digit accounts). The internal
-/// `Mutex` makes concurrent commands safe.
-pub struct JsonAccountStore {
-    path: PathBuf,
-    inner: Mutex<Persisted>,
-}
-
-impl JsonAccountStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
-        let state = if path.exists() {
-            let raw = std::fs::read_to_string(&path).map_err(|e| StoreError::Io(e.to_string()))?;
-            if raw.trim().is_empty() {
-                Persisted::default()
-            } else {
-                serde_json::from_str(&raw).map_err(|e| StoreError::Serialise(e.to_string()))?
-            }
-        } else {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| StoreError::Io(e.to_string()))?;
-            }
-            Persisted::default()
-        };
-        Ok(Self {
-            path,
-            inner: Mutex::new(state),
-        })
+impl SqlAccountStore {
+    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+        Self { conn }
     }
 
-    fn flush(&self, state: &Persisted) -> Result<(), StoreError> {
-        let raw = serde_json::to_string_pretty(state)
-            .map_err(|e| StoreError::Serialise(e.to_string()))?;
-        std::fs::write(&self.path, raw).map_err(|e| StoreError::Io(e.to_string()))
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, StoreError> {
+        self.conn
+            .lock()
+            .map_err(|e| StoreError::Io(format!("account store poisoned: {e}")))
     }
 }
 
-impl AccountStore for JsonAccountStore {
+impl AccountStore for SqlAccountStore {
     fn list(&self) -> Result<Vec<Account>, StoreError> {
-        let guard = self.inner.lock().expect("account store poisoned");
-        Ok(guard.accounts.clone())
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, label, host, login, scopes, expires_at
+                     FROM accounts
+                     ORDER BY id",
+            )
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_account)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StoreError::Io(e.to_string()))
     }
 
     fn upsert(&self, account: Account) -> Result<(), StoreError> {
-        let mut guard = self.inner.lock().expect("account store poisoned");
-        if let Some(existing) = guard.accounts.iter_mut().find(|a| a.id == account.id) {
-            *existing = account;
-        } else {
-            if account.id >= guard.next_id {
-                guard.next_id = account.id + 1;
-            }
-            guard.accounts.push(account);
-        }
-        self.flush(&guard)
+        let conn = self.lock()?;
+        let scopes = encode_scopes(&account.scopes);
+        conn.execute(
+            "INSERT INTO accounts (id, label, host, login, scopes, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 label      = excluded.label,
+                 host       = excluded.host,
+                 login      = excluded.login,
+                 scopes     = excluded.scopes,
+                 expires_at = excluded.expires_at",
+            params![
+                account.id as i64,
+                account.label,
+                account.host,
+                account.login,
+                scopes,
+                account.expires_at,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| StoreError::Io(e.to_string()))
     }
 
     fn remove(&self, id: AccountId) -> Result<(), StoreError> {
-        let mut guard = self.inner.lock().expect("account store poisoned");
-        let before = guard.accounts.len();
-        guard.accounts.retain(|a| a.id != id);
-        if guard.accounts.len() == before {
-            return Err(StoreError::NotFound(id));
+        let conn = self.lock()?;
+        let affected = conn
+            .execute("DELETE FROM accounts WHERE id = ?1", params![id as i64])
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        if affected == 0 {
+            Err(StoreError::NotFound(id))
+        } else {
+            Ok(())
         }
-        self.flush(&guard)
     }
 
     fn next_id(&self) -> Result<AccountId, StoreError> {
-        let mut guard = self.inner.lock().expect("account store poisoned");
-        let id = guard.next_id.max(1);
-        guard.next_id = id + 1;
-        self.flush(&guard)?;
-        Ok(id)
+        let conn = self.lock()?;
+        let max_id: i64 = conn
+            .query_row("SELECT IFNULL(MAX(id), 0) FROM accounts", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        Ok((max_id as AccountId) + 1)
     }
+}
+
+fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
+    let id: i64 = row.get(0)?;
+    let scopes: String = row.get(4)?;
+    Ok(Account {
+        id: id as AccountId,
+        label: row.get(1)?,
+        host: row.get(2)?,
+        login: row.get(3)?,
+        scopes: decode_scopes(&scopes),
+        expires_at: row.get(5)?,
+    })
+}
+
+/// Scopes are stored as a comma-joined string. GitHub scope names contain
+/// colons (`read:org`) and word characters only — no commas — so CSV is a
+/// safe, trivially round-trippable encoding for the `TEXT` column.
+fn encode_scopes(scopes: &[String]) -> String {
+    scopes.join(",")
+}
+
+fn decode_scopes(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        Vec::new()
+    } else {
+        raw.split(',').map(|s| s.to_string()).collect()
+    }
+}
+
+/// One-shot import of the legacy `accounts.json` (the pre-#62 store) into the
+/// SQL `accounts` table. If the file is absent, or the SQL table already has
+/// rows, this is a no-op. On success the file is renamed to `accounts.json.bak`
+/// so the import doesn't run again on subsequent startups.
+///
+/// Best-effort: anything that goes wrong is logged and swallowed so a corrupt
+/// legacy file can't block startup.
+pub fn import_legacy_json_if_present(
+    store: &SqlAccountStore,
+    data_dir: &Path,
+) -> Result<(), StoreError> {
+    let path = data_dir.join("accounts.json");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if !store.list()?.is_empty() {
+        // Table is already populated — assume the swap has already happened.
+        // Leave the legacy file alone so we can inspect it manually if needed.
+        return Ok(());
+    }
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("legacy accounts.json: read failed ({e}); skipping import");
+            return Ok(());
+        }
+    };
+    if raw.trim().is_empty() {
+        let _ = std::fs::rename(&path, path.with_extension("json.bak"));
+        return Ok(());
+    }
+    let parsed: LegacyPersisted = match serde_json::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("legacy accounts.json: parse failed ({e}); skipping import");
+            return Ok(());
+        }
+    };
+
+    for account in &parsed.accounts {
+        if let Err(e) = store.upsert(account.clone()) {
+            eprintln!(
+                "legacy accounts.json: upsert id={} failed: {e}; continuing",
+                account.id
+            );
+        }
+    }
+
+    if let Err(e) = std::fs::rename(&path, path.with_extension("json.bak")) {
+        eprintln!("legacy accounts.json: rename to .bak failed: {e}");
+    }
+    Ok(())
+}
+
+/// Shape of the legacy JSON file. Matches the schema written by the
+/// pre-#62 `JsonAccountStore`.
+#[derive(Default, Deserialize)]
+struct LegacyPersisted {
+    #[serde(default)]
+    accounts: Vec<Account>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::migrate;
     use tempfile::TempDir;
 
-    fn account(id: AccountId, label: &str) -> Account {
+    fn fresh_store() -> SqlAccountStore {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        migrate::run(&mut conn).expect("run migrations");
+        SqlAccountStore::new(Arc::new(Mutex::new(conn)))
+    }
+
+    fn sample(id: AccountId, label: &str) -> Account {
         Account {
             id,
             label: label.into(),
             host: "github.com".into(),
             login: "ada".into(),
-            scopes: vec!["repo".into()],
-            expires_at: None,
+            scopes: vec!["repo".into(), "read:org".into()],
+            expires_at: Some("2026-09-01T00:00:00Z".into()),
         }
     }
 
     #[test]
-    fn open_creates_empty_store_when_file_missing() {
-        let dir = TempDir::new().unwrap();
-        let store = JsonAccountStore::open(dir.path().join("accounts.json")).unwrap();
+    fn list_is_empty_on_fresh_db() {
+        let store = fresh_store();
         assert!(store.list().unwrap().is_empty());
     }
 
     #[test]
-    fn upsert_persists_account_across_reopen() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("accounts.json");
-        {
-            let store = JsonAccountStore::open(&path).unwrap();
-            store.upsert(account(1, "Work")).unwrap();
-        }
-        let reopened = JsonAccountStore::open(&path).unwrap();
-        let listed = reopened.list().unwrap();
+    fn upsert_inserts_then_round_trips() {
+        let store = fresh_store();
+        store.upsert(sample(1, "Work")).unwrap();
+
+        let listed = store.list().unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].label, "Work");
+        assert_eq!(listed[0], sample(1, "Work"));
     }
 
     #[test]
     fn upsert_updates_existing_account_in_place() {
-        let dir = TempDir::new().unwrap();
-        let store = JsonAccountStore::open(dir.path().join("a.json")).unwrap();
-        store.upsert(account(1, "Work")).unwrap();
-        store.upsert(account(1, "Renamed")).unwrap();
+        let store = fresh_store();
+        store.upsert(sample(1, "Work")).unwrap();
+
+        let mut renamed = sample(1, "Renamed");
+        renamed.scopes = vec!["repo".into()];
+        renamed.expires_at = None;
+        store.upsert(renamed.clone()).unwrap();
 
         let listed = store.list().unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].label, "Renamed");
+        assert_eq!(listed[0], renamed);
+    }
+
+    #[test]
+    fn list_returns_accounts_ordered_by_id() {
+        let store = fresh_store();
+        let mut second = sample(2, "B");
+        second.login = "grace".into();
+        store.upsert(second).unwrap();
+        store.upsert(sample(1, "A")).unwrap();
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed.iter().map(|a| a.id).collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]
     fn remove_deletes_only_the_matching_account() {
-        let dir = TempDir::new().unwrap();
-        let store = JsonAccountStore::open(dir.path().join("a.json")).unwrap();
-        store.upsert(account(1, "A")).unwrap();
-        store.upsert(account(2, "B")).unwrap();
+        let store = fresh_store();
+        let mut second = sample(2, "B");
+        second.login = "grace".into();
+        store.upsert(sample(1, "A")).unwrap();
+        store.upsert(second).unwrap();
         store.remove(1).unwrap();
 
         let listed = store.list().unwrap();
@@ -204,25 +316,94 @@ mod tests {
 
     #[test]
     fn remove_returns_not_found_for_unknown_id() {
-        let dir = TempDir::new().unwrap();
-        let store = JsonAccountStore::open(dir.path().join("a.json")).unwrap();
+        let store = fresh_store();
         let err = store.remove(99).expect_err("expected NotFound");
         assert!(matches!(err, StoreError::NotFound(99)));
     }
 
     #[test]
-    fn next_id_increments_and_persists() {
+    fn next_id_increments_with_each_upsert() {
+        let store = fresh_store();
+        assert_eq!(store.next_id().unwrap(), 1);
+
+        store.upsert(sample(1, "Work")).unwrap();
+        assert_eq!(store.next_id().unwrap(), 2);
+    }
+
+    #[test]
+    fn scopes_round_trip_when_empty() {
+        let store = fresh_store();
+        let mut acc = sample(1, "Work");
+        acc.scopes = Vec::new();
+        store.upsert(acc.clone()).unwrap();
+
+        assert_eq!(store.list().unwrap()[0].scopes, Vec::<String>::new());
+    }
+
+    #[test]
+    fn legacy_import_populates_empty_db() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("a.json");
-        let first = {
-            let store = JsonAccountStore::open(&path).unwrap();
-            store.next_id().unwrap()
-        };
-        let second = {
-            let store = JsonAccountStore::open(&path).unwrap();
-            store.next_id().unwrap()
-        };
-        assert_eq!(first, 1);
-        assert_eq!(second, 2);
+        let path = dir.path().join("accounts.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "next_id": 3,
+                "accounts": [
+                    {"id": 1, "label": "Work", "host": "github.com",
+                     "login": "ada", "scopes": ["repo"], "expires_at": null},
+                    {"id": 2, "label": "OSS", "host": "github.com",
+                     "login": "grace", "scopes": ["repo", "read:org"],
+                     "expires_at": "2026-09-01T00:00:00Z"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let store = fresh_store();
+        import_legacy_json_if_present(&store, dir.path()).unwrap();
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].label, "Work");
+        assert_eq!(
+            listed[1].scopes,
+            vec!["repo".to_string(), "read:org".into()]
+        );
+
+        // File should have been renamed.
+        assert!(!path.exists());
+        assert!(dir.path().join("accounts.json.bak").exists());
+    }
+
+    #[test]
+    fn legacy_import_is_noop_when_db_already_has_rows() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.json");
+        std::fs::write(
+            &path,
+            r#"{"next_id":1,"accounts":[
+                {"id":1,"label":"Stale","host":"github.com",
+                 "login":"x","scopes":[],"expires_at":null}
+            ]}"#,
+        )
+        .unwrap();
+
+        let store = fresh_store();
+        store.upsert(sample(7, "Live")).unwrap();
+        import_legacy_json_if_present(&store, dir.path()).unwrap();
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, 7);
+        // Legacy file is left in place so we can inspect it.
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn legacy_import_is_noop_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let store = fresh_store();
+        import_legacy_json_if_present(&store, dir.path()).unwrap();
+        assert!(store.list().unwrap().is_empty());
     }
 }

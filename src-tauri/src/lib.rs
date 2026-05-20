@@ -26,7 +26,7 @@ pub fn run() {
         .setup(|app| {
             let db_handle = db::init(app.handle())?;
             app.manage(db_handle.clone());
-            auth::commands::install(&app.handle().clone())
+            auth::commands::install(&app.handle().clone(), db_handle.clone())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
             // Build the worker context against the live keychain + DB. Reading
