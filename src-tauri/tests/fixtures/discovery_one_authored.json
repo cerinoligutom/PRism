@@ -1,0 +1,33 @@
+{
+  "data": {
+    "search": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+      },
+      "nodes": [
+        {
+          "__typename": "PullRequest",
+          "id": "PR_kwDOABCDEF",
+          "databaseId": 999,
+          "number": 42,
+          "title": "Add discovery",
+          "url": "https://github.com/owner/repo/pull/42",
+          "state": "OPEN",
+          "isDraft": false,
+          "createdAt": "2026-05-18T10:00:00Z",
+          "updatedAt": "2026-05-19T10:00:00Z",
+          "author": { "login": "alice" },
+          "baseRefName": "main",
+          "headRefName": "feat/discovery",
+          "repository": {
+            "databaseId": 100,
+            "owner": { "login": "owner" },
+            "name": "repo",
+            "isPrivate": false
+          }
+        }
+      ]
+    }
+  }
+}

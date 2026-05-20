@@ -1,11 +1,14 @@
 //! GraphQL query strings and response types.
 //!
-//! Two queries ship in v1:
+//! Three queries ship in v1:
 //!
-//! 1. `PR_DETAIL_QUERY` — full PR shape with `reviewThreads.isResolved`, which is
+//! 1. `PR_DETAIL_QUERY` - full PR shape with `reviewThreads.isResolved`, which is
 //!    the only place GitHub exposes thread resolution state (ADR 0006).
-//! 2. `PR_TIMELINE_QUERY` — the timeline event types listed in ADR 0007, plus
+//! 2. `PR_TIMELINE_QUERY` - the timeline event types listed in ADR 0007, plus
 //!    cursors for pagination.
+//! 3. `DISCOVERY_QUERY` - the search-API call the discovery phase fans out three
+//!    times per account per cycle to enumerate Authored / Assigned / Watching
+//!    PRs (ADR 0009).
 //!
 //! The query strings are deliberately verbose rather than fragment-heavy to keep
 //! the request body diffable in tests and easy to inspect in fixture files.
@@ -87,6 +90,42 @@ query PrTimeline($owner: String!, $name: String!, $number: Int!, $after: String)
           ... on MergedEvent { createdAt actor { login } }
           ... on ClosedEvent { createdAt actor { login } }
           ... on ReopenedEvent { createdAt actor { login } }
+        }
+      }
+    }
+  }
+}
+"#;
+
+/// PR discovery via the GraphQL Search API. ADR 0009.
+///
+/// Called three times per account per cycle with different `q` strings - one
+/// each for Authored, Review-requested, and Involves. `@me` resolves on the
+/// server side, so the viewer's login never leaves the device.
+pub const DISCOVERY_QUERY: &str = r#"
+query DiscoverPrs($q: String!, $after: String) {
+  search(type: ISSUE, query: $q, first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      __typename
+      ... on PullRequest {
+        id
+        databaseId
+        number
+        title
+        url
+        state
+        isDraft
+        createdAt
+        updatedAt
+        author { login }
+        baseRefName
+        headRefName
+        repository {
+          databaseId
+          owner { login }
+          name
+          isPrivate
         }
       }
     }
@@ -270,6 +309,75 @@ impl TimelineEvent {
     }
 }
 
+// ===== Discovery (Search API) =====
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryData {
+    pub search: DiscoverySearch,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverySearch {
+    pub page_info: PageInfo,
+    pub nodes: Vec<DiscoveryNode>,
+}
+
+/// Search-result node. Type ISSUE returns issues and PRs; non-PR nodes
+/// deserialise as `Other` and the worker skips them. The query string adds
+/// `is:pr` belt-and-braces, so `Other` is rare in practice.
+///
+/// The `PullRequest` variant is boxed because the inner payload is hundreds
+/// of bytes and the `Other` variant is empty; without the indirection clippy
+/// (rightly) flags the size disparity.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "__typename")]
+pub enum DiscoveryNode {
+    PullRequest(Box<DiscoveryPullRequest>),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryPullRequest {
+    /// GraphQL global node id - kept for parity with other types; not persisted.
+    pub id: String,
+    /// Integer id stable across hosts; written to `pull_requests.id`.
+    pub database_id: i64,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub author: Option<Actor>,
+    pub base_ref_name: String,
+    pub head_ref_name: String,
+    pub repository: DiscoveryRepository,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRepository {
+    pub database_id: i64,
+    pub owner: Actor,
+    pub name: String,
+    pub is_private: bool,
+}
+
+impl DiscoveryRepository {
+    pub fn visibility(&self) -> &'static str {
+        if self.is_private {
+            "private"
+        } else {
+            "public"
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +423,69 @@ mod tests {
         });
         let evt: TimelineEvent = serde_json::from_value(json).unwrap();
         assert_eq!(evt.created_at(), Some("2026-05-19T10:00:00Z"));
+    }
+
+    #[test]
+    fn discovery_query_uses_search_with_pull_request_inline_fragment() {
+        assert!(DISCOVERY_QUERY.contains("search(type: ISSUE"));
+        assert!(DISCOVERY_QUERY.contains("... on PullRequest"));
+        assert!(DISCOVERY_QUERY.contains("databaseId"));
+        assert!(DISCOVERY_QUERY.contains("repository"));
+    }
+
+    #[test]
+    fn discovery_node_deserialises_pull_request() {
+        let json = serde_json::json!({
+            "__typename": "PullRequest",
+            "id": "PR_kwDOABC",
+            "databaseId": 12345,
+            "number": 7,
+            "title": "Add discovery",
+            "url": "https://github.com/owner/repo/pull/7",
+            "state": "OPEN",
+            "isDraft": false,
+            "createdAt": "2026-05-18T10:00:00Z",
+            "updatedAt": "2026-05-19T10:00:00Z",
+            "author": { "login": "alice" },
+            "baseRefName": "main",
+            "headRefName": "feat/discovery",
+            "repository": {
+                "databaseId": 999,
+                "owner": { "login": "owner" },
+                "name": "repo",
+                "isPrivate": false
+            }
+        });
+        let node: DiscoveryNode = serde_json::from_value(json).unwrap();
+        match node {
+            DiscoveryNode::PullRequest(pr) => {
+                assert_eq!(pr.database_id, 12345);
+                assert_eq!(pr.number, 7);
+                assert_eq!(pr.repository.database_id, 999);
+                assert_eq!(pr.repository.owner.login, "owner");
+                assert_eq!(pr.repository.visibility(), "public");
+            }
+            other => panic!("expected PullRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discovery_node_deserialises_non_pull_request_as_other() {
+        let json = serde_json::json!({ "__typename": "Issue", "id": "I_1" });
+        let node: DiscoveryNode = serde_json::from_value(json).unwrap();
+        assert_eq!(node, DiscoveryNode::Other);
+    }
+
+    #[test]
+    fn discovery_repository_visibility_reports_private() {
+        let repo = DiscoveryRepository {
+            database_id: 1,
+            owner: Actor {
+                login: "owner".into(),
+            },
+            name: "repo".into(),
+            is_private: true,
+        };
+        assert_eq!(repo.visibility(), "private");
     }
 }

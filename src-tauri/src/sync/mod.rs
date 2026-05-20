@@ -7,9 +7,12 @@
 //!   commands read.
 //! - [`events`] declares the Tauri event names + payload shapes.
 //! - [`worker`] is the per-account polling loop (issue #13).
+//! - [`discovery`] runs the Search-API discovery phase that seeds the four
+//!   sidebar views (ADR 0009, issue #37).
 //! - [`commands`] are the Tauri commands the frontend invokes.
 
 pub mod commands;
+pub mod discovery;
 pub mod events;
 pub mod scheduler;
 pub mod state;
@@ -19,6 +22,10 @@ pub mod worker;
 pub use commands::{
     get_sync_status, refresh_now, set_sync_interval, RefreshNowInput, RefreshNowResult,
     SetIntervalInput, SetIntervalResult, SyncStatusSnapshot,
+};
+pub use discovery::{
+    discover_account, prune_stale_relations_for_account, DiscoveredPr, DiscoveryError,
+    DiscoveryRelation, DiscoveryReport,
 };
 pub use events::{
     SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ERROR_EVENT,

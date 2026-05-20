@@ -27,11 +27,13 @@ use prism_lib::sync::{
 use rusqlite::params;
 use tempfile::TempDir;
 use url::Url;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const PR_DETAIL_FIXTURE: &str = include_str!("fixtures/pr_detail.json");
 const REST_TIMELINE_FIXTURE: &str = include_str!("fixtures/timeline_full_lifecycle.json");
+const DISCOVERY_EMPTY_FIXTURE: &str = include_str!("fixtures/discovery_empty.json");
+const DISCOVERY_ONE_AUTHORED_FIXTURE: &str = include_str!("fixtures/discovery_one_authored.json");
 
 #[derive(Default)]
 struct CapturingEmitter {
@@ -213,6 +215,21 @@ fn rate_headers(remaining: u64, limit: u64) -> ResponseTemplate {
         .insert_header("x-ratelimit-reset", "9999999999")
 }
 
+/// Mount an empty `DiscoverPrs` mock that catches every discovery search query.
+/// Use this in tests that aren't asserting on discovery behaviour - the cycle's
+/// discovery phase still runs three queries, all of which now return zero PRs.
+async fn mount_empty_discovery(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .respond_with(rate_headers(5000, 5000).set_body_raw(
+            DISCOVERY_EMPTY_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn one_cycle_persists_pr_detail_and_latest_status_change() {
     let server = MockServer::start().await;
@@ -220,8 +237,10 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
     let account = seed_account(&harness, 1, "alice");
     seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
 
+    mount_empty_discovery(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
         .respond_with(
             rate_headers(4999, 5000)
                 .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
@@ -341,8 +360,10 @@ async fn fifty_repo_cycle_stays_under_twenty_percent_of_budget() {
     // decrements `remaining` so the assertion below operates on a real delta.
     // wiremock can't decrement automatically, so we set the final headers to
     // 4900 remaining (100 requests consumed, exactly 2%).
+    mount_empty_discovery(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
         .respond_with(
             rate_headers(4900, 5000)
                 .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
@@ -413,9 +434,14 @@ async fn one_account_failing_does_not_stop_another() {
     seed_repo_with_pr(&harness, 100, 1, "owner-a", "repo", 1000, 1);
     seed_repo_with_pr(&harness, 200, 2, "owner-b", "repo", 2000, 1);
 
-    // Account A: 500 on GraphQL → fails as Server { 500 }.
+    // Both accounts run a discovery phase first; mount an empty response so
+    // the cycle proceeds into the per-repo enrichment loop where the
+    // differentiation below kicks in.
+    mount_empty_discovery(&server).await;
+    // Account A: 500 on PR detail → fails as Server { 500 }.
     Mock::given(method("POST"))
         .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
         .and(wiremock::matchers::body_partial_json(serde_json::json!({
             "variables": { "owner": "owner-a" }
         })))
@@ -425,6 +451,7 @@ async fn one_account_failing_does_not_stop_another() {
     // Account B: PR detail OK + timeline OK.
     Mock::given(method("POST"))
         .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
         .and(wiremock::matchers::body_partial_json(serde_json::json!({
             "variables": { "owner": "owner-b" }
         })))
@@ -468,14 +495,16 @@ async fn one_account_failing_does_not_stop_another() {
 }
 
 #[tokio::test]
-async fn no_repos_completes_cycle_without_calling_upstream() {
-    // A freshly added account with no repos in the DB should fall through
-    // to a no-op `Skipped { NoReposConfigured }` outcome and still emit a
-    // `Synced` status so the UI clears any prior error state.
+async fn empty_discovery_with_no_repos_skips_as_no_repos_configured() {
+    // A freshly added account whose discovery phase returns zero PRs - and
+    // therefore inserts zero repos - should fall through to the
+    // `Skipped { NoReposConfigured }` outcome and still emit a `Synced` status
+    // so the UI clears any prior error state.
     let server = MockServer::start().await;
     let harness = setup_harness(&server);
     let account = seed_account(&harness, 1, "alice");
-    // Intentionally no repos seeded.
+    // Intentionally no repos seeded; discovery returns empty.
+    mount_empty_discovery(&server).await;
 
     let ctx = harness.ctx();
     let client = harness.factory.build(&account).unwrap();
@@ -542,4 +571,196 @@ async fn remove_account_cancels_task_and_clears_state() {
     assert!(harness.state.snapshot(9).is_none());
 
     worker.shutdown();
+}
+
+#[tokio::test]
+async fn discovery_upserts_repo_pr_and_relation_then_runs_enrichment() {
+    // End-to-end Wave 2-A flow: an Authored discovery hit auto-seeds the repo,
+    // upserts the PR row, writes a relation with is_authored=1, and the
+    // enrichment phase then picks the PR up via the seeded repo.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    // No repos seeded - discovery will create the repo row from the search result.
+
+    // Authored returns one PR; the other two queries return empty.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .and(body_string_contains("author:@me"))
+        .respond_with(rate_headers(4999, 5000).set_body_raw(
+            DISCOVERY_ONE_AUTHORED_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            DISCOVERY_EMPTY_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4997, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4996, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+    assert_eq!(
+        report.repos_visited, 1,
+        "discovery should have auto-seeded one repo"
+    );
+
+    let conn = harness.db.lock().unwrap();
+    let (owner, name): (String, String) = conn
+        .query_row("SELECT owner, name FROM repos WHERE id = 100", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(owner, "owner");
+    assert_eq!(name, "repo");
+
+    let (is_auth, is_req, is_inv): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT is_authored, is_review_requested, is_involved
+               FROM pull_request_viewer_relations
+              WHERE account_id = 1 AND pull_request_id = 999",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(is_auth, 1);
+    assert_eq!(is_req, 0);
+    assert_eq!(is_inv, 0);
+}
+
+#[tokio::test]
+async fn end_of_cycle_pruning_drops_stale_relations() {
+    // Seed a stale relation row (last_seen_at far in the past). The next
+    // cycle must prune it once enrichment finishes, since discovery didn't
+    // re-stamp it.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    // Pre-seed a relation with an ancient timestamp.
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at)
+                VALUES (1, 999, 1, 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    let survivors: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pull_request_viewer_relations",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        survivors, 0,
+        "stale relation row must be pruned post-enrichment"
+    );
+}
+
+#[tokio::test]
+async fn discovery_failure_returns_failed_and_skips_pruning() {
+    // A 500 from the very first discovery query halts the cycle as `Failed`
+    // and leaves any pre-existing relations alone (no pruning on failure).
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at)
+                VALUES (1, 999, 1, 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+
+    assert!(matches!(report.outcome, CycleOutcome::Failed { .. }));
+
+    let survivors: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pull_request_viewer_relations",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(survivors, 1, "discovery hiccup must not drop relations");
 }
