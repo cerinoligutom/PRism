@@ -8,13 +8,7 @@ import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PRismInput from "@/components/ui/PRismInput.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
-import {
-  useAccountsStore,
-  type Account,
-  type PermissionChecks,
-  type PermissionState,
-  type ValidateTokenResult,
-} from "@/stores/accounts";
+import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
 import { useSyncStore, type AccountSyncState } from "@/stores/sync";
 
 type StepIndex = 1 | 2 | 3;
@@ -48,23 +42,13 @@ const connectError = ref<string | null>(null);
 // changes, only the latest id is allowed to commit a result.
 let validationToken = 0;
 
-// Members is intentionally not gated: classic users without read:org and
-// fine-grained users whose PAT isn't org-scoped both report it as
-// Missing/Unknown without that meaning Connect should be blocked.
-const requiredFineGrainedChecks: readonly (keyof PermissionChecks)[] = [
-  "contents",
-  "pull_requests",
-  "metadata",
-];
-
 const permissionsSatisfied = computed(() => {
   if (validation.value.kind !== "valid") return false;
   if (form.flavour === "fine-grained") {
-    const checks = validation.value.result.permissions;
-    // Unknown counts as "could not verify" — we accept it for Connect so
-    // users with empty repo lists aren't blocked. Missing is the only
-    // hard fail.
-    return requiredFineGrainedChecks.every((k) => checks[k] !== "missing");
+    // GitHub doesn't expose granted permissions for fine-grained PATs
+    // through any documented endpoint, so we don't gate Connect on
+    // per-permission verification. Token validity is the only gate.
+    return true;
   }
   return classicScopes
     .filter((s) => s.required === true)
@@ -158,6 +142,7 @@ watch(
     if (validation.value.kind !== "idle") {
       validation.value = { kind: "idle" };
     }
+    connectError.value = null;
   },
 );
 
@@ -207,8 +192,6 @@ interface PermissionRow {
   desc: string;
   access: string;
   required?: boolean;
-  /** Key into PermissionChecks — drives the row's verified state. */
-  check: keyof PermissionChecks;
 }
 
 interface PermissionGroup {
@@ -225,20 +208,17 @@ const fineGrainedGroups: readonly PermissionGroup[] = [
         name: "Contents",
         desc: "Repository contents, commits, branches, downloads, releases, and merges.",
         access: "Read-only",
-        check: "contents",
       },
       {
         name: "Pull requests",
         desc: "Pull requests and related comments, assignees, labels, milestones, and merges.",
         access: "Read-only",
-        check: "pull_requests",
       },
       {
         name: "Metadata",
         desc: "Search repositories, list collaborators, and access repository metadata.",
         access: "Read-only",
         required: true,
-        check: "metadata",
       },
     ],
   },
@@ -250,7 +230,6 @@ const fineGrainedGroups: readonly PermissionGroup[] = [
         name: "Members",
         desc: "Organization members and teams.",
         access: "Read-only",
-        check: "members",
       },
     ],
   },
@@ -274,12 +253,6 @@ const classicScopes: readonly ClassicScope[] = [
 ];
 
 type RowState = "pending" | "granted" | "missing" | "unknown";
-
-function rowStateForPermission(key: keyof PermissionChecks): RowState {
-  if (validation.value.kind !== "valid") return "pending";
-  const state: PermissionState = validation.value.result.permissions[key];
-  return state;
-}
 
 function rowStateForScope(scopeName: string): RowState {
   if (validation.value.kind !== "valid") return "pending";
@@ -531,6 +504,15 @@ onUnmounted(() => {
             </span>
           </header>
 
+          <p
+            v-if="form.flavour === 'fine-grained'"
+            class="onboarding-scopes__note"
+          >
+            GitHub doesn't expose granted permissions for fine-grained PATs, so PRism can't
+            verify them. Tick the permissions listed below on the PAT page before pasting the
+            token.
+          </p>
+
           <template v-if="form.flavour === 'fine-grained'">
             <div
               v-for="group in fineGrainedGroups"
@@ -554,9 +536,8 @@ onUnmounted(() => {
                 v-for="row in group.rows"
                 :key="row.name"
                 class="onboarding-scope"
-                :class="`onboarding-scope--${rowStateForPermission(row.check)}`"
               >
-                <ScopeStateIcon :state="rowStateForPermission(row.check)" />
+                <ScopeStateIcon state="info" />
                 <div>
                   <div class="onboarding-scope__name">
                     {{ row.name }}
@@ -564,10 +545,7 @@ onUnmounted(() => {
                   </div>
                   <div class="onboarding-scope__desc">{{ row.desc }}</div>
                 </div>
-                <ScopeStateTag
-                  :state="rowStateForPermission(row.check)"
-                  :default-label="row.access"
-                />
+                <span class="onboarding-scope__access">{{ row.access }}</span>
               </div>
             </div>
           </template>
@@ -1055,6 +1033,26 @@ onUnmounted(() => {
 
 .onboarding-scope__name--scope {
   color: var(--accent-strong);
+}
+
+.onboarding-scope__access {
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 1px 6px;
+  background: var(--bg-4);
+  border-radius: var(--r-1);
+}
+
+.onboarding-scopes__note {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  background: var(--info-bg);
+  border-bottom: 1px solid var(--border-1);
 }
 
 .onboarding-scope__required {

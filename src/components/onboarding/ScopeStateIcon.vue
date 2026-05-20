@@ -1,5 +1,5 @@
 <script setup lang="ts">
-type ScopeRowState = "pending" | "granted" | "missing" | "unknown";
+type ScopeRowState = "pending" | "granted" | "missing" | "unknown" | "info";
 
 interface Props {
   state: ScopeRowState;
@@ -46,7 +46,7 @@ defineProps<Props>();
       <path d="M12 4l-8 8" />
     </svg>
     <svg
-      v-else
+      v-else-if="state === 'unknown'"
       width="9"
       height="9"
       viewBox="0 0 16 16"
@@ -57,6 +57,19 @@ defineProps<Props>();
     >
       <path d="M6 6a2 2 0 0 1 4 0c0 1.4-2 1.6-2 3" />
       <circle cx="8" cy="11.5" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+    <svg
+      v-else
+      width="9"
+      height="9"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+    >
+      <path d="M8 7.5v4" />
+      <circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none" />
     </svg>
   </span>
 </template>
@@ -89,5 +102,10 @@ defineProps<Props>();
 .scope-state--unknown {
   background: var(--warning-bg);
   color: var(--warning);
+}
+
+.scope-state--info {
+  background: var(--info-bg);
+  color: var(--info);
 }
 </style>

@@ -5,13 +5,18 @@
 //! token expiry — everything the metadata store needs.
 //!
 //! `check_permissions` runs only from the onboarding "Validate" flow and
-//! verifies each required PRism permission against GitHub. Classic PATs
-//! are derived from the `x-oauth-scopes` header (cheap). Fine-grained PATs
-//! are probed via a small set of representative endpoints — see the
-//! `fine_grained_probes` doc comment for the rationale.
+//! verifies each required PRism permission against GitHub. Only classic
+//! PATs can be verified — the `x-oauth-scopes` header lists granted
+//! scopes verbatim. Fine-grained PATs deliberately return Unknown across
+//! the board because GitHub doesn't expose granted permissions through
+//! any documented API and resource-endpoint probing is unreliable (the
+//! permission check is bypassed for public-repo data). The UI treats
+//! Unknown rows as informational so Connect for fine-grained PATs gates
+//! only on token validity, not on permission verification.
 
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use thiserror::Error;
 
 /// Resolved identity for a PAT, written to the account store on success.
@@ -160,20 +165,17 @@ pub struct PermissionChecks {
 
 /// Returns the per-permission grant state for a validated token.
 ///
-/// Branches on whether `x-oauth-scopes` was populated: classic PATs always
-/// set it, fine-grained PATs never do. Classic tokens are derived from the
-/// scope set (no extra network calls). Fine-grained tokens are probed
-/// against representative endpoints, so this is up to 3 extra requests.
-pub async fn check_permissions(
-    host: &str,
-    token: &SecretString,
-    scopes: &[String],
-) -> Result<PermissionChecks, ValidationError> {
-    if !scopes.is_empty() {
-        return Ok(classic_checks(scopes));
+/// Classic PATs (which always populate `x-oauth-scopes`) are derived from
+/// the scope set — no extra network calls. Fine-grained PATs return all
+/// Unknown: GitHub publishes no introspection endpoint for them, and
+/// probing resource endpoints is unreliable (public-repo data bypasses
+/// the per-permission check). The frontend treats Unknown rows as
+/// informational and doesn't gate Connect on them for fine-grained.
+pub fn check_permissions(scopes: &[String]) -> PermissionChecks {
+    if scopes.is_empty() {
+        return fine_grained_unknown();
     }
-    let base = api_base(host);
-    fine_grained_probes(&base, token).await
+    classic_checks(scopes)
 }
 
 fn classic_checks(scopes: &[String]) -> PermissionChecks {
@@ -202,150 +204,13 @@ fn classic_checks(scopes: &[String]) -> PermissionChecks {
     }
 }
 
-/// Fine-grained PATs don't expose granted permissions in a single header,
-/// so we infer them from the response codes of representative endpoints.
-///
-/// 1. `/user/repos?per_page=1` — confirms Metadata. The response also gives
-///    us a sample repository full_name we can target for the next two
-///    probes; without one, Contents and Pull requests stay Unknown.
-/// 2. `/repos/{full_name}/contents` — confirms Contents.
-/// 3. `/repos/{full_name}/pulls?per_page=1&state=all` — confirms Pull requests.
-///
-/// Members is left Unknown for fine-grained: probing it requires picking an
-/// org the PAT might be scoped to, which we can't know without the user
-/// telling us. The UI marks Unknown rows as "verify manually" rather than
-/// blocking Connect.
-async fn fine_grained_probes(
-    base: &str,
-    token: &SecretString,
-) -> Result<PermissionChecks, ValidationError> {
-    let client = build_probe_client()?;
-
-    let (metadata, sample_repo) = probe_user_repos(&client, base, token).await?;
-    if matches!(metadata, PermissionState::Missing) {
-        // Metadata is the umbrella prerequisite for the other two reads;
-        // if it's denied, none of the rest can succeed either.
-        return Ok(PermissionChecks {
-            contents: PermissionState::Missing,
-            pull_requests: PermissionState::Missing,
-            metadata,
-            members: PermissionState::Unknown,
-        });
-    }
-
-    let (contents, pull_requests) = match sample_repo {
-        Some(repo) => {
-            let c = probe_repo_endpoint(&client, base, token, &repo, "contents").await;
-            let p = probe_repo_endpoint(&client, base, token, &repo, "pulls?per_page=1&state=all")
-                .await;
-            (c, p)
-        }
-        None => (PermissionState::Unknown, PermissionState::Unknown),
-    };
-
-    Ok(PermissionChecks {
-        contents,
-        pull_requests,
-        metadata,
+fn fine_grained_unknown() -> PermissionChecks {
+    PermissionChecks {
+        contents: PermissionState::Unknown,
+        pull_requests: PermissionState::Unknown,
+        metadata: PermissionState::Unknown,
         members: PermissionState::Unknown,
-    })
-}
-
-fn build_probe_client() -> Result<reqwest::Client, ValidationError> {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| ValidationError::Network {
-            host: String::new(),
-            message: e.to_string(),
-        })
-}
-
-fn api_base(host: &str) -> String {
-    if host.eq_ignore_ascii_case("github.com") {
-        "https://api.github.com".into()
-    } else {
-        let trimmed = host.trim_end_matches('/');
-        format!("https://{trimmed}/api/v3")
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct RepoListItem {
-    full_name: String,
-}
-
-async fn probe_user_repos(
-    client: &reqwest::Client,
-    base: &str,
-    token: &SecretString,
-) -> Result<(PermissionState, Option<String>), ValidationError> {
-    let url = format!("{base}/user/repos?per_page=1");
-    // Treat transient network errors during probing as Unknown rather than
-    // propagating — by this point we already know the token authenticates,
-    // so failing the whole validation on a flaky probe would mis-blame the
-    // token.
-    let response = match send_probe(client, &url, token).await {
-        Ok(r) => r,
-        Err(_) => return Ok((PermissionState::Unknown, None)),
-    };
-    let status = response.status().as_u16();
-    match status {
-        200 => match response.json::<Vec<RepoListItem>>().await {
-            Ok(repos) => {
-                let sample = repos.into_iter().next().map(|r| r.full_name);
-                Ok((PermissionState::Granted, sample))
-            }
-            // 200 with an unparseable body means the endpoint did respond
-            // (so metadata is granted) — we just can't fish out a sample.
-            Err(_) => Ok((PermissionState::Granted, None)),
-        },
-        403 | 404 => Ok((PermissionState::Missing, None)),
-        _ => Ok((PermissionState::Unknown, None)),
-    }
-}
-
-async fn probe_repo_endpoint(
-    client: &reqwest::Client,
-    base: &str,
-    token: &SecretString,
-    repo_full_name: &str,
-    suffix: &str,
-) -> PermissionState {
-    let url = format!("{base}/repos/{repo_full_name}/{suffix}");
-    match send_probe(client, &url, token).await {
-        Ok(response) => match response.status().as_u16() {
-            // Both 200 (full payload) and 301 (repo moved) imply the
-            // permission was honoured. 404 on a repo we just listed
-            // shouldn't happen, but treat it as Unknown rather than
-            // claiming missing.
-            200 | 301 => PermissionState::Granted,
-            403 => PermissionState::Missing,
-            _ => PermissionState::Unknown,
-        },
-        Err(_) => PermissionState::Unknown,
-    }
-}
-
-async fn send_probe(
-    client: &reqwest::Client,
-    url: &str,
-    token: &SecretString,
-) -> Result<reqwest::Response, ValidationError> {
-    client
-        .get(url)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", token.expose_secret()),
-        )
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .await
-        .map_err(|e| ValidationError::Network {
-            host: url.into(),
-            message: e.to_string(),
-        })
 }
 
 #[cfg(test)]
@@ -496,133 +361,43 @@ mod tests {
         v.split_whitespace().map(|t| t.to_string()).collect()
     }
 
-    #[tokio::test]
-    async fn classic_with_repo_and_read_org_grants_everything() {
-        let token = SecretString::from("ignored-for-classic");
-        let checks = check_permissions("github.com", &token, &s("repo read:org read:user"))
-            .await
-            .unwrap();
+    #[test]
+    fn classic_with_repo_and_read_org_grants_everything() {
+        let checks = check_permissions(&s("repo read:org read:user"));
         assert_eq!(checks.contents, PermissionState::Granted);
         assert_eq!(checks.pull_requests, PermissionState::Granted);
         assert_eq!(checks.metadata, PermissionState::Granted);
         assert_eq!(checks.members, PermissionState::Granted);
     }
 
-    #[tokio::test]
-    async fn classic_with_only_public_repo_still_grants_contents() {
-        let token = SecretString::from("ignored");
-        let checks = check_permissions("github.com", &token, &s("public_repo"))
-            .await
-            .unwrap();
+    #[test]
+    fn classic_with_only_public_repo_still_grants_contents() {
+        let checks = check_permissions(&s("public_repo"));
         assert_eq!(checks.contents, PermissionState::Granted);
         assert_eq!(checks.pull_requests, PermissionState::Granted);
         // read:org missing means members not granted.
         assert_eq!(checks.members, PermissionState::Missing);
     }
 
-    #[tokio::test]
-    async fn classic_without_repo_marks_contents_missing() {
-        let token = SecretString::from("ignored");
-        let checks = check_permissions("github.com", &token, &s("read:user"))
-            .await
-            .unwrap();
+    #[test]
+    fn classic_without_repo_marks_contents_missing() {
+        let checks = check_permissions(&s("read:user read:org"));
         assert_eq!(checks.contents, PermissionState::Missing);
         assert_eq!(checks.pull_requests, PermissionState::Missing);
         assert_eq!(checks.metadata, PermissionState::Missing);
+        assert_eq!(checks.members, PermissionState::Granted);
     }
 
-    #[tokio::test]
-    async fn fine_grained_all_granted_with_sample_repo() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/user/repos"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([{ "full_name": "ada/diffs" }])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/repos/ada/diffs/contents"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/repos/ada/diffs/pulls"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-
-        let token = SecretString::from("fg-token");
-        let base = format!("{}/api/v3", server.uri());
-        let checks = fine_grained_probes(&base, &token).await.unwrap();
-        assert_eq!(checks.contents, PermissionState::Granted);
-        assert_eq!(checks.pull_requests, PermissionState::Granted);
-        assert_eq!(checks.metadata, PermissionState::Granted);
-        assert_eq!(checks.members, PermissionState::Unknown);
-    }
-
-    #[tokio::test]
-    async fn fine_grained_metadata_denied_short_circuits_everything() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/user/repos"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&server)
-            .await;
-
-        let token = SecretString::from("fg-token");
-        let base = format!("{}/api/v3", server.uri());
-        let checks = fine_grained_probes(&base, &token).await.unwrap();
-        assert_eq!(checks.metadata, PermissionState::Missing);
-        assert_eq!(checks.contents, PermissionState::Missing);
-        assert_eq!(checks.pull_requests, PermissionState::Missing);
-    }
-
-    #[tokio::test]
-    async fn fine_grained_empty_repo_list_leaves_contents_and_pr_unknown() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/user/repos"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-
-        let token = SecretString::from("fg-token");
-        let base = format!("{}/api/v3", server.uri());
-        let checks = fine_grained_probes(&base, &token).await.unwrap();
-        assert_eq!(checks.metadata, PermissionState::Granted);
+    #[test]
+    fn fine_grained_reports_all_unknown() {
+        // Empty scopes ≡ fine-grained PAT. GitHub doesn't expose granted
+        // permissions for these, so we deliberately return Unknown across
+        // the board — the UI renders the rows as informational and
+        // doesn't gate Connect on them.
+        let checks = check_permissions(&[]);
         assert_eq!(checks.contents, PermissionState::Unknown);
         assert_eq!(checks.pull_requests, PermissionState::Unknown);
-    }
-
-    #[tokio::test]
-    async fn fine_grained_partial_grant_marks_pr_missing() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/user/repos"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([{ "full_name": "ada/diffs" }])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/repos/ada/diffs/contents"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/repos/ada/diffs/pulls"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&server)
-            .await;
-
-        let token = SecretString::from("fg-token");
-        let base = format!("{}/api/v3", server.uri());
-        let checks = fine_grained_probes(&base, &token).await.unwrap();
-        assert_eq!(checks.contents, PermissionState::Granted);
-        assert_eq!(checks.pull_requests, PermissionState::Missing);
-        assert_eq!(checks.metadata, PermissionState::Granted);
+        assert_eq!(checks.metadata, PermissionState::Unknown);
+        assert_eq!(checks.members, PermissionState::Unknown);
     }
 }

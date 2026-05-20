@@ -233,7 +233,7 @@ pub async fn validate_token_cmd(
     let host = normalise_host(&input.host);
     let secret = SecretString::from(input.token);
     let validated = validate_token(&host, &secret).await?;
-    let permissions = check_permissions(&host, &secret, &validated.scopes).await?;
+    let permissions = check_permissions(&validated.scopes);
     Ok(ValidateTokenResult {
         login: validated.login,
         scopes: validated.scopes,
