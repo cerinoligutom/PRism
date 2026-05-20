@@ -19,7 +19,6 @@ The artboards were mocked up in [Claude Design](https://claude.ai/design) from t
 | `artboards/onboarding.html` | 3-step welcome → PAT entry → org/repo select (drives #10) |
 | `artboards/settings.html` | Accounts, sync, appearance, notifications (Accounts panel drives #10) |
 | `artboards/states.html` | Empty / sync error / rate limit / offline / expired PAT |
-| `chat-2026-05-19-design-system.md` | Original Claude Design transcript — design intent and choices |
 
 ## Departures from the prototype in the real app
 
