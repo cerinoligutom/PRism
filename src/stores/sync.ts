@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
+import { useTimestamp } from "@vueuse/core";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -71,10 +72,22 @@ export const useSyncStore = defineStore("sync", () => {
   const intervalSeconds = ref<number>(60);
   const minIntervalSeconds = ref<number>(30);
   const maxIntervalSeconds = ref<number>(600);
-  const tickSeconds = ref<number>(0);
+
+  /**
+   * Shared 1s ticker. Drives `secondsSinceLastSync` and `secondsUntilNextSync`
+   * so every consumer of the store updates from the same timer instead of
+   * each subscribing its own interval.
+   */
+  const nowMs = useTimestamp({ interval: 1000 });
+
+  /**
+   * Wall-clock time (ms since epoch) when each account's `next_sync_in_seconds`
+   * was last received. Lets the UI tick the countdown down live without
+   * waiting for the next status event.
+   */
+  const appliedAtMs = ref<Map<number, number>>(new Map());
 
   let listeners: UnlistenFn[] = [];
-  let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
   const aggregate = computed<SyncPhase>(() => aggregatePhase(accounts.value));
 
@@ -92,9 +105,7 @@ export const useSyncStore = defineStore("sync", () => {
     if (latestSyncedAt.value === null) return null;
     const synced = Date.parse(latestSyncedAt.value);
     if (Number.isNaN(synced)) return null;
-    // tickSeconds is referenced to keep this reactive against the ticker.
-    void tickSeconds.value;
-    return Math.max(0, Math.floor((Date.now() - synced) / 1000));
+    return Math.max(0, Math.floor((nowMs.value - synced) / 1000));
   });
 
   const nextSyncInSeconds = computed<number | null>(() => {
@@ -104,6 +115,26 @@ export const useSyncStore = defineStore("sync", () => {
       if (soonest === null || a.next_sync_in_seconds < soonest) {
         soonest = a.next_sync_in_seconds;
       }
+    }
+    return soonest;
+  });
+
+  /**
+   * Live countdown to the next sync across all accounts. Anchored to the
+   * wall-clock time each account's last status event arrived, so the value
+   * ticks down between events instead of holding the stale snapshot number.
+   */
+  const secondsUntilNextSync = computed<number | null>(() => {
+    const now = nowMs.value;
+    let soonest: number | null = null;
+    for (const a of accounts.value) {
+      if (a.next_sync_in_seconds === null) continue;
+      const anchor = appliedAtMs.value.get(a.account_id);
+      const remaining =
+        anchor === undefined
+          ? a.next_sync_in_seconds
+          : Math.max(0, Math.floor((anchor + a.next_sync_in_seconds * 1000 - now) / 1000));
+      if (soonest === null || remaining < soonest) soonest = remaining;
     }
     return soonest;
   });
@@ -139,6 +170,12 @@ export const useSyncStore = defineStore("sync", () => {
     }
   }
 
+  function recordAppliedAt(accountId: number): void {
+    const next = new Map(appliedAtMs.value);
+    next.set(accountId, Date.now());
+    appliedAtMs.value = next;
+  }
+
   function applyStatus(event: SyncStatusEvent): void {
     upsertAccount({
       account_id: event.account_id,
@@ -149,11 +186,16 @@ export const useSyncStore = defineStore("sync", () => {
       rate_remaining_pct: event.rate_remaining_pct,
       rate_limit: event.rate_limit,
     });
+    recordAppliedAt(event.account_id);
   }
 
   async function refreshSnapshot(): Promise<void> {
     const snap = await invoke<SyncStatusSnapshot>("get_sync_status");
+    const now = Date.now();
     accounts.value = [...snap.accounts];
+    const next = new Map<number, number>();
+    for (const a of snap.accounts) next.set(a.account_id, now);
+    appliedAtMs.value = next;
     intervalSeconds.value = snap.interval_seconds;
     minIntervalSeconds.value = snap.min_interval_seconds;
     maxIntervalSeconds.value = snap.max_interval_seconds;
@@ -176,21 +218,12 @@ export const useSyncStore = defineStore("sync", () => {
         });
       }),
     ]);
-    if (countdownTimer === null) {
-      countdownTimer = setInterval(() => {
-        tickSeconds.value = (tickSeconds.value + 1) % 3600;
-      }, 1000);
-    }
     await refreshSnapshot();
   }
 
   function unbind(): void {
     for (const off of listeners) off();
     listeners = [];
-    if (countdownTimer !== null) {
-      clearInterval(countdownTimer);
-      countdownTimer = null;
-    }
   }
 
   async function refreshNow(accountId: number | null = null): Promise<number> {
@@ -217,6 +250,7 @@ export const useSyncStore = defineStore("sync", () => {
     latestSyncedAt,
     secondsSinceLastSync,
     nextSyncInSeconds,
+    secondsUntilNextSync,
     rateRemainingPct,
     rateLimit,
     bind,
