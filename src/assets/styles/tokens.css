@@ -15,19 +15,24 @@
  */
 
 :root {
-  /* ────── Surface (dark — default) ────── */
-  --bg-0: #07070a;
+  /* ────── Surface (dark — default) ────── *
+   * Each raised tier sits ~5 L* above the previous so panels, inputs and
+   * cards stay perceptually distinct from the page on glossy / low-gamma
+   * displays. bg-1 is fixed; only the raised tiers move. */
+  --bg-0: #050507;
   --bg-1: #0c0c10;
-  --bg-2: #111116;
-  --bg-3: #17171d;
-  --bg-4: #1e1e26;
-  --bg-5: #262630;
+  --bg-2: #18181f;
+  --bg-3: #23232c;
+  --bg-4: #2e2e38;
+  --bg-5: #3a3a45;
   --bg-overlay: rgba(0, 0, 0, 0.6);
 
-  /* ────── Borders ────── */
-  --border-1: #1d1d24;
-  --border-2: #2a2a33;
-  --border-3: #3a3a45;
+  /* ────── Borders ────── *
+   * Sit above bg-3 so input / card outlines read against the page; border-3
+   * doubles as the focus colour against bg-5 active states. */
+  --border-1: #2a2a34;
+  --border-2: #3d3d49;
+  --border-3: #50505d;
 
   /* ────── Text (contrast measured vs --bg-1 #0c0c10) ────── */
   --text-strong: #f4f4f7;   /* 17.5 : 1 */

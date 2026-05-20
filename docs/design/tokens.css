@@ -7,19 +7,22 @@
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  /* ────── Surface (dark — default) ────── */
-  --bg-0: #07070a;            /* deepest — window edge */
+  /* ────── Surface (dark — default) ────── *
+   * Each raised tier sits ~5 L* above the previous so panels, inputs and
+   * cards stay perceptually distinct from the page on glossy / low-gamma
+   * displays. bg-1 is fixed; only the raised tiers move. */
+  --bg-0: #050507;            /* deepest — window edge */
   --bg-1: #0c0c10;            /* app body */
-  --bg-2: #111116;            /* sidebar / panels */
-  --bg-3: #17171d;            /* raised — rows, cards */
-  --bg-4: #1e1e26;            /* hover row */
-  --bg-5: #262630;            /* active / pressed */
+  --bg-2: #18181f;            /* sidebar / panels */
+  --bg-3: #23232c;            /* raised — rows, cards */
+  --bg-4: #2e2e38;            /* hover row */
+  --bg-5: #3a3a45;            /* active / pressed */
   --bg-overlay: rgba(0,0,0,.6);
 
   /* ────── Borders ────── */
-  --border-1: #1d1d24;        /* hairline divider */
-  --border-2: #2a2a33;        /* default border */
-  --border-3: #3a3a45;        /* strong border / input focus */
+  --border-1: #2a2a34;        /* hairline divider */
+  --border-2: #3d3d49;        /* default border / input outline */
+  --border-3: #50505d;        /* strong border / input focus */
 
   /* ────── Text (contrast measured vs --bg-1 #0c0c10) ────── */
   --text-strong: #f4f4f7;     /* 17.5 : 1   — primary */
