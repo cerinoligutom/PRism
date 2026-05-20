@@ -1,13 +1,14 @@
 //! PRism backend entry point.
 //!
-//! Module wiring lands as each M1 issue merges:
-//! - `db` (issue #9): SQLite schema + migration runner
-//! - `auth` (issue #10): PAT + OS keychain
-//! - `github` (issues #11/#12): GraphQL + REST clients
-//! - `sync` (issue #13): background worker
-//! - `sync::status_timeline` (issue #14): timeline-event-derived status
+//! Module wiring landed across M1 (issues #8-#14) and M2 (issue #35+):
+//! - `db`: SQLite schema + migration runner
+//! - `auth`: PAT + OS keychain
+//! - `github`: GraphQL + REST clients
+//! - `sync`: background worker
+//! - `dashboard`: dashboard query surface (M2)
 
 pub mod auth;
+pub mod dashboard;
 pub mod db;
 pub mod github;
 pub mod sync;
@@ -59,6 +60,7 @@ pub fn run() {
             auth::commands::list_accounts,
             auth::commands::remove_account,
             auth::commands::validate_token_cmd,
+            dashboard::commands::list_dashboard_pull_requests,
             sync::commands::get_sync_status,
             sync::commands::refresh_now,
             sync::commands::set_sync_interval,
