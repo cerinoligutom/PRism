@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 /// Cached conditional-request metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EtagEntry {
     pub etag: String,
     pub last_seen_at: SystemTime,
