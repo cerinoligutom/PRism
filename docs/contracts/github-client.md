@@ -63,8 +63,18 @@ impl GitHubClient {
 
 pub enum Conditional<T> {
     NotModified,
-    Modified { body: T, etag: Option<String> },
+    Modified {
+        body: T,
+        etag: Option<String>,
+        /// Response headers — exposed for `Link rel="next"` pagination on REST
+        /// list endpoints (RFC 5988). Callers use `parse_next_link(&headers)`
+        /// to walk further pages.
+        headers: http::HeaderMap,
+    },
 }
+
+/// RFC 5988 `Link rel="next"` extractor.
+pub fn parse_next_link(headers: &http::HeaderMap) -> Option<String>;
 ```
 
 Both clients construct one `GitHubClient` per account. The HTTP layer (reqwest), auth header construction, base URL routing (`github.com` vs Enterprise hosts), and rate-limit accounting all flow through this single struct.

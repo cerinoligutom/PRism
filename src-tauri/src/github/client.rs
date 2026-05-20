@@ -30,15 +30,41 @@ const DEFAULT_USER_AGENT: &str = concat!("PRism/", env!("CARGO_PKG_VERSION"));
 pub enum Conditional<T> {
     /// Upstream returned 304 — the cached copy is still valid.
     NotModified,
-    /// Upstream returned 200 (or another success) — fresh body, with the new
-    /// ETag if the server provided one.
-    Modified { body: T, etag: Option<String> },
+    /// Upstream returned 200 (or another success) — fresh body, the new ETag
+    /// if the server provided one, and the response headers (needed for
+    /// `Link`-driven pagination on REST list endpoints, per RFC 5988).
+    Modified {
+        body: T,
+        etag: Option<String>,
+        headers: HeaderMap,
+    },
 }
 
 impl<T> Conditional<T> {
     pub fn is_modified(&self) -> bool {
         matches!(self, Conditional::Modified { .. })
     }
+}
+
+/// Extract the URL targeted by `rel="next"` from an RFC 5988 `Link` header,
+/// if present. Returns `None` when the header is missing or has no `next` rel.
+pub fn parse_next_link(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(http::header::LINK)?.to_str().ok()?;
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        let is_next = entry
+            .split(';')
+            .skip(1)
+            .map(str::trim)
+            .any(|p| p == "rel=\"next\"" || p == "rel=next");
+        if !is_next {
+            continue;
+        }
+        let start = entry.find('<')?;
+        let end = entry[start + 1..].find('>')?;
+        return Some(entry[start + 1..start + 1 + end].to_string());
+    }
+    None
 }
 
 /// Per-account HTTP entrypoint. Cheap to clone (everything inside is `Arc`).
@@ -106,12 +132,17 @@ impl GitHubClient {
             StatusCode::NOT_MODIFIED => Ok(Conditional::NotModified),
             s if s.is_success() => {
                 let etag = extract_etag(response.headers());
+                let headers = response.headers().clone();
                 let body = response.bytes().await?;
                 if let Some(etag) = etag.clone() {
                     let entry = EtagEntry::new(etag).with_body_sha256(sha256(&body));
                     self.etags.put(&key, entry);
                 }
-                Ok(Conditional::Modified { body, etag })
+                Ok(Conditional::Modified {
+                    body,
+                    etag,
+                    headers,
+                })
             }
             s => Err(map_error_status(s, response).await),
         }
@@ -439,6 +470,41 @@ mod tests {
             .unwrap();
         assert_eq!(client.account().id, 1);
         assert!(!client.rate().snapshot().is_observed());
+    }
+
+    #[test]
+    fn parse_next_link_pulls_url_from_rel_next() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::LINK,
+            HeaderValue::from_static(
+                "<https://api.github.com/repos/x/y/issues/1/timeline?page=2>; rel=\"next\", \
+                 <https://api.github.com/repos/x/y/issues/1/timeline?page=5>; rel=\"last\"",
+            ),
+        );
+        assert_eq!(
+            parse_next_link(&h).as_deref(),
+            Some("https://api.github.com/repos/x/y/issues/1/timeline?page=2"),
+        );
+    }
+
+    #[test]
+    fn parse_next_link_returns_none_when_only_prev_and_first() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::LINK,
+            HeaderValue::from_static(
+                "<https://api.github.com/x?page=4>; rel=\"prev\", \
+                 <https://api.github.com/x?page=1>; rel=\"first\"",
+            ),
+        );
+        assert!(parse_next_link(&h).is_none());
+    }
+
+    #[test]
+    fn parse_next_link_returns_none_when_header_absent() {
+        let h = HeaderMap::new();
+        assert!(parse_next_link(&h).is_none());
     }
 
     #[test]

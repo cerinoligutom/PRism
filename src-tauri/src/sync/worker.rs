@@ -650,7 +650,7 @@ async fn sync_repo(
                     repo: &repo.name,
                 },
                 pr.number as u32,
-                1,
+                5,
             ),
         )
         .await
