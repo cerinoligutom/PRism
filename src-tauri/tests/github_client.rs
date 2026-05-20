@@ -8,18 +8,21 @@ use std::sync::Arc;
 
 use prism_lib::github::graphql::PrCoord;
 use prism_lib::github::{
-    AccountHandle, Conditional, EtagStore, GitHubClient, GitHubError, InMemoryEtagStore,
-    StaticTokenSource,
+    list_pr_timeline, AccountHandle, Conditional, EtagStore, GitHubClient, GitHubError,
+    InMemoryEtagStore, ListTimeline, RepoCoord, StaticTokenSource,
 };
+use prism_lib::sync::{latest_status_change, QualifyingEvent};
 use serde_json::json;
+use time::macros::datetime;
 use url::Url;
-use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::matchers::{header, header_exists, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const PR_DETAIL_FIXTURE: &str = include_str!("fixtures/pr_detail.json");
 const PR_TIMELINE_PAGE_1: &str = include_str!("fixtures/pr_timeline_page1.json");
 const PR_TIMELINE_PAGE_2: &str = include_str!("fixtures/pr_timeline_page2.json");
 const GRAPHQL_ERRORS: &str = include_str!("fixtures/graphql_errors.json");
+const REST_TIMELINE_FIXTURE: &str = include_str!("fixtures/timeline_full_lifecycle.json");
 
 async fn client_against(server: &MockServer) -> GitHubClient {
     let base = Url::parse(&server.uri()).unwrap();
@@ -320,4 +323,178 @@ async fn authorization_header_is_sent_per_request() {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn rest_timeline_deserialises_full_lifecycle() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(query_param("per_page", "100"))
+        .and(header("authorization", "Bearer ghp_test_pat"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "W/\"timeline-v1\"")
+                .insert_header("x-ratelimit-limit", "5000")
+                .insert_header("x-ratelimit-remaining", "4998")
+                .set_body_raw(
+                    REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_against(&server).await;
+    let result = list_pr_timeline(
+        &client,
+        RepoCoord {
+            owner: "owner",
+            repo: "repo",
+        },
+        42,
+        1,
+    )
+    .await
+    .unwrap();
+
+    let events = match result {
+        ListTimeline::Events(e) => e,
+        ListTimeline::NotModified => panic!("expected Events, got NotModified"),
+    };
+
+    // 11 input events; `committed`, `labeled`, `assigned` are dropped — leaves 8.
+    let event_names: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(
+        event_names,
+        vec![
+            "ready_for_review",
+            "review_requested",
+            "reviewed",
+            "convert_to_draft",
+            "ready_for_review",
+            "merged",
+            "closed",
+            "reopened",
+        ],
+    );
+
+    // The `reviewed` event must carry submitted_at, not a missing timestamp.
+    let reviewed = events.iter().find(|e| e.event == "reviewed").unwrap();
+    assert_eq!(reviewed.created_at, datetime!(2026-05-03 10:00:00 UTC));
+}
+
+#[tokio::test]
+async fn rest_timeline_drives_latest_status_change_to_reopened() {
+    // End-to-end: REST -> sync derivation. The fixture's last qualifying
+    // event is `reopened` at 2026-05-07T08:30Z, so that must win.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let client = client_against(&server).await;
+    let events = match list_pr_timeline(
+        &client,
+        RepoCoord {
+            owner: "owner",
+            repo: "repo",
+        },
+        42,
+        1,
+    )
+    .await
+    .unwrap()
+    {
+        ListTimeline::Events(e) => e,
+        ListTimeline::NotModified => unreachable!(),
+    };
+
+    let derived = latest_status_change(&events).expect("derived");
+    assert_eq!(derived.event_type, QualifyingEvent::Reopened);
+    assert_eq!(derived.at, datetime!(2026-05-07 08:30:00 UTC));
+}
+
+#[tokio::test]
+async fn rest_timeline_stores_etag_then_returns_not_modified_on_304() {
+    let server = MockServer::start().await;
+    let etags = Arc::new(InMemoryEtagStore::new());
+    let base = Url::parse(&server.uri()).unwrap();
+
+    // First call returns 200 + ETag.
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(query_param("per_page", "100"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "W/\"timeline-rev-1\"")
+                .set_body_raw(
+                    REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+                    "application/json",
+                ),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // Second call (after If-None-Match) returns 304.
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .and(header("if-none-match", "W/\"timeline-rev-1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::builder()
+        .account(AccountHandle::new(1, "github.com", "tester"))
+        .token_source(Arc::new(StaticTokenSource::new("ghp_test_pat")))
+        .etag_store(etags.clone() as Arc<dyn EtagStore>)
+        .base_rest_url(base.join("/").unwrap())
+        .base_graphql_url(base.join("/graphql").unwrap())
+        .build()
+        .unwrap();
+
+    let repo = RepoCoord {
+        owner: "owner",
+        repo: "repo",
+    };
+
+    let first = list_pr_timeline(&client, repo, 42, 1).await.unwrap();
+    assert!(first.is_modified());
+
+    let second = list_pr_timeline(&client, repo, 42, 1).await.unwrap();
+    assert!(matches!(second, ListTimeline::NotModified));
+
+    let stored = etags
+        .get("1:GET:/repos/owner/repo/issues/42/timeline?per_page=100")
+        .expect("etag entry");
+    assert_eq!(stored.etag, "W/\"timeline-rev-1\"");
+}
+
+#[tokio::test]
+async fn rest_timeline_404_maps_to_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/missing/issues/42/timeline"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = client_against(&server).await;
+    let err = list_pr_timeline(
+        &client,
+        RepoCoord {
+            owner: "owner",
+            repo: "missing",
+        },
+        42,
+        1,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, GitHubError::NotFound));
 }
