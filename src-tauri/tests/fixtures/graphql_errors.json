@@ -1,0 +1,9 @@
+{
+  "errors": [
+    {
+      "message": "Field 'pullRequestReviewThreads' doesn't exist on type 'PullRequest'",
+      "path": ["repository", "pullRequest", "pullRequestReviewThreads"],
+      "type": "FIELD_ERROR"
+    }
+  ]
+}

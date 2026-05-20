@@ -1,0 +1,59 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_kwDOABCDEF",
+        "number": 42,
+        "title": "Add a thing",
+        "isDraft": false,
+        "state": "OPEN",
+        "merged": false,
+        "mergeable": "MERGEABLE",
+        "url": "https://github.com/owner/repo/pull/42",
+        "createdAt": "2026-05-18T10:00:00Z",
+        "updatedAt": "2026-05-19T11:00:00Z",
+        "author": { "login": "alice" },
+        "baseRefName": "main",
+        "headRefName": "feat/thing",
+        "reviewDecision": "APPROVED",
+        "reviewThreads": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "id": "PRRT_thread1",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "src/lib.rs",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_1",
+                    "author": { "login": "bob" },
+                    "bodyText": "Nit: rename this.",
+                    "createdAt": "2026-05-18T12:00:00Z"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_thread2",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/main.rs",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_2",
+                    "author": { "login": "carol" },
+                    "bodyText": "Should this handle None?",
+                    "createdAt": "2026-05-18T13:00:00Z"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

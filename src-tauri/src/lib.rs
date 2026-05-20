@@ -7,6 +7,8 @@
 //! - `sync` (issue #13): background worker
 //! - `sync::status_timeline` (issue #14): timeline-event-derived status
 
+pub mod github;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

@@ -1,0 +1,19 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_kwDOABCDEF",
+        "timelineItems": {
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": [
+            {
+              "__typename": "MergedEvent",
+              "createdAt": "2026-05-19T09:00:00Z",
+              "actor": { "login": "alice" }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
