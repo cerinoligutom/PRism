@@ -599,6 +599,11 @@ onUnmounted(() => {
   overflow: auto;
   display: flex;
   justify-content: center;
+  /* Don't stretch the step to the body's height — its column-flex children
+   * would then shrink to fit and clip overflow:hidden blocks like
+   * `.onboarding-scopes`. Letting the step take its content height means
+   * the body's overflow:auto scrolls the whole thing instead. */
+  align-items: flex-start;
 }
 
 .onboarding-step {
