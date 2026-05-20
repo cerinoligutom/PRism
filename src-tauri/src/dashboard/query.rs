@@ -22,7 +22,7 @@ use rusqlite::{params_from_iter, Connection, Row};
 
 use crate::dashboard::types::{
     CiSummary, DashboardPullRequest, DashboardSort, DashboardView, RepoRef, ReviewerEntry,
-    ReviewerState,
+    ReviewerState, ThreadsSummary,
 };
 
 /// SQL fragment that selects every column the row projection needs, joined to
@@ -47,6 +47,9 @@ const PR_PROJECTION_COLUMNS: &str = "
     pr.ci_state,
     pr.ci_total,
     pr.ci_passing,
+    pr.threads_total,
+    pr.threads_unresolved,
+    pr.threads_involved,
     r.id,
     r.owner,
     r.name,
@@ -165,11 +168,29 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         passing: ci_passing.unwrap_or(0),
     });
 
-    let repo_id: i64 = row.get(19)?;
-    let repo_owner: String = row.get(20)?;
-    let repo_name: String = row.get(21)?;
-    let account_id: i64 = row.get(22)?;
-    let account_host: String = row.get(23)?;
+    // The migration sets the threads_* columns to `NOT NULL DEFAULT 0`, so a
+    // freshly-discovered PR before its first enrichment reads as zeros across
+    // the board. Emit `None` for that case so the frontend can render the
+    // muted em-dash state (per the contract's "Dashboard rollup" section)
+    // rather than a `0 / 0 / 0` summary.
+    let threads_total: i64 = row.get(19)?;
+    let threads_unresolved: i64 = row.get(20)?;
+    let threads_involved: i64 = row.get(21)?;
+    let threads = if threads_total == 0 {
+        None
+    } else {
+        Some(ThreadsSummary {
+            total: threads_total,
+            unresolved: threads_unresolved,
+            involved: threads_involved,
+        })
+    };
+
+    let repo_id: i64 = row.get(22)?;
+    let repo_owner: String = row.get(23)?;
+    let repo_name: String = row.get(24)?;
+    let account_id: i64 = row.get(25)?;
+    let account_host: String = row.get(26)?;
 
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");
@@ -193,6 +214,7 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         deletions: row.get(14)?,
         changed_files: row.get(15)?,
         ci,
+        threads,
         reviewers: Vec::new(),
         repo: RepoRef {
             id: repo_id,

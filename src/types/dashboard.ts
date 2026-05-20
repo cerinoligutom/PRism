@@ -31,6 +31,19 @@ export interface CiSummary {
   readonly passing: number;
 }
 
+/**
+ * Per-PR review-thread rollup pre-aggregated by the sync cycle. `null` on the
+ * parent DTO when the PR has never had a thread; the frontend renders the
+ * muted em-dash state in that case. See `docs/contracts/conversation-depth.md`
+ * "Dashboard rollup" and ADR 0010.
+ */
+export interface ThreadsSummary {
+  readonly total: number;
+  readonly unresolved: number;
+  /** Threads where the active account has at least one comment. */
+  readonly involved: number;
+}
+
 export interface ReviewerEntry {
   readonly login: string;
   readonly state: ReviewerState;
@@ -68,6 +81,7 @@ export interface DashboardPullRequest {
   readonly deletions: number | null;
   readonly changed_files: number | null;
   readonly ci: CiSummary | null;
+  readonly threads: ThreadsSummary | null;
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
   readonly account_id: number;

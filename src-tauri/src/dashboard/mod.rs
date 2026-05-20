@@ -10,5 +10,5 @@ pub mod types;
 
 pub use types::{
     CiSummary, DashboardPullRequest, DashboardSort, DashboardView, RepoRef, ReviewerEntry,
-    ReviewerState,
+    ReviewerState, ThreadsSummary,
 };

@@ -727,7 +727,7 @@ impl From<GitHubError> for SyncRepoError {
 async fn sync_repo(
     ctx: &WorkerContext,
     client: &GitHubClient,
-    _account: &Account,
+    account: &Account,
     repo: &RepoRow,
 ) -> Result<usize, SyncRepoError> {
     let prs = list_prs_for_repo(&ctx.db, repo.id)
@@ -773,8 +773,15 @@ async fn sync_repo(
         };
 
         // Persist whatever new data we have.
-        write_pr_updates(&ctx.db, repo.id, pr.id, detail.as_ref(), events.as_deref())
-            .map_err(|e| SyncRepoError::Other(format!("persist PR #{}: {e}", pr.number)))?;
+        write_pr_updates(
+            &ctx.db,
+            account.id,
+            repo.id,
+            pr.id,
+            detail.as_ref(),
+            events.as_deref(),
+        )
+        .map_err(|e| SyncRepoError::Other(format!("persist PR #{}: {e}", pr.number)))?;
     }
     Ok(visited)
 }
@@ -833,8 +840,14 @@ pub fn list_prs_for_repo(db: &DbHandle, repo_id: i64) -> Result<Vec<PrRow>, rusq
 /// Requested reviewers are replaced wholesale (delete-then-insert) whenever
 /// the detail response carries them so the cached set never drifts past the
 /// upstream truth.
+///
+/// `account_id` drives the per-account `threads_involved` rollup: the cycle
+/// runs per-account, so each cycle naturally writes the correct value for the
+/// active viewer. Multi-account users see the count for the most recently
+/// synced account (ADR 0010 negative consequences; M5 revisits).
 pub fn write_pr_updates(
     db: &DbHandle,
+    account_id: AccountId,
     repo_id: i64,
     pr_id: i64,
     detail: Option<&crate::github::graphql::PullRequestDetail>,
@@ -924,10 +937,6 @@ pub fn write_pr_updates(
                 params![ic.total_count, pr_id],
             )?;
         }
-
-        // NOTE: pull_requests.threads_total / threads_unresolved / threads_involved
-        // are written by M3-C in a follow-up UPDATE block landed in this same
-        // function on top of the thread upserts above.
     }
 
     if let Some(events) = events {
@@ -943,6 +952,36 @@ pub fn write_pr_updates(
             )?;
         }
     }
+
+    // Threads rollup (M3-C). Recomputed from the just-written `review_threads`
+    // / `review_comments` rows for the active account so the dashboard row can
+    // render the threads bar without sub-aggregating. Mirrors the M2 `ci_*`
+    // pattern; see `docs/contracts/conversation-depth.md` "Dashboard rollup"
+    // and ADR 0010. Runs unconditionally — even when `detail` is `None` the
+    // rollup stays consistent with the existing thread rows.
+    tx.execute(
+        "UPDATE pull_requests
+            SET threads_total = (
+                    SELECT COUNT(*) FROM review_threads
+                    WHERE pull_request_id = ?1
+                ),
+                threads_unresolved = (
+                    SELECT COUNT(*) FROM review_threads
+                    WHERE pull_request_id = ?1
+                      AND is_resolved = 0
+                      AND is_outdated = 0
+                ),
+                threads_involved = (
+                    SELECT COUNT(DISTINCT t.id) FROM review_threads t
+                    JOIN review_comments c ON c.review_thread_id = t.id
+                    JOIN accounts a ON a.login = c.author_login
+                    WHERE t.pull_request_id = ?1
+                      AND a.id = ?2
+                )
+          WHERE id = ?1",
+        params![pr_id, account_id as i64],
+    )?;
+
     tx.commit()
 }
 
@@ -1401,7 +1440,7 @@ mod tests {
             )),
         );
 
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let conn = db.lock().unwrap();
         type Row = (
@@ -1486,7 +1525,7 @@ mod tests {
             None,
         );
 
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let conn = db.lock().unwrap();
         let mut stmt = conn
@@ -1533,7 +1572,7 @@ mod tests {
             Some(ReviewRequestConnection { nodes: vec![] }),
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let count: i64 = db
             .lock()
@@ -1563,7 +1602,7 @@ mod tests {
         // `review_requests` absent from the response (None) — leave existing
         // cache untouched so a partial detail doesn't drop the set.
         let detail = detail_with(None, None, None, "UNKNOWN", None, None, None);
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let count: i64 = db
             .lock()
@@ -1687,7 +1726,7 @@ mod tests {
             )),
         );
 
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let (state, total, passing): (Option<String>, Option<i64>, Option<i64>) = db
             .lock()
@@ -1727,7 +1766,7 @@ mod tests {
             }),
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let logins: Vec<String> = {
             let conn = db.lock().unwrap();
@@ -1883,7 +1922,7 @@ mod tests {
             None,
         );
 
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let conn = db.lock().unwrap();
         type Row = (
@@ -1965,7 +2004,7 @@ mod tests {
             None,
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d1), None).unwrap();
         let resolved_at: Option<i64> = db
             .lock()
             .unwrap()
@@ -1991,7 +2030,7 @@ mod tests {
             None,
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d2), None).unwrap();
         let resolved_at: Option<i64> = db
             .lock()
             .unwrap()
@@ -2008,7 +2047,7 @@ mod tests {
         let stamped = resolved_at.unwrap();
 
         // Cycle 3: still resolved. resolved_at preserved (not bumped).
-        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d2), None).unwrap();
         let resolved_at: Option<i64> = db
             .lock()
             .unwrap()
@@ -2025,7 +2064,7 @@ mod tests {
         );
 
         // Cycle 4: thread flips back to unresolved. resolved_at must clear.
-        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d1), None).unwrap();
         let resolved_at: Option<i64> = db
             .lock()
             .unwrap()
@@ -2052,7 +2091,7 @@ mod tests {
             None,
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&d3), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d3), None).unwrap();
         let (is_outdated, resolved_at): (i64, Option<i64>) = db
             .lock()
             .unwrap()
@@ -2114,7 +2153,7 @@ mod tests {
             }),
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d1), None).unwrap();
 
         let thread_count: i64 = db
             .lock()
@@ -2160,7 +2199,7 @@ mod tests {
             }),
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&d2), None).unwrap();
 
         let surviving_threads: Vec<String> = {
             let conn = db.lock().unwrap();
@@ -2197,7 +2236,7 @@ mod tests {
             None,
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let reply_count: i64 = db
             .lock()
@@ -2219,7 +2258,7 @@ mod tests {
             None,
             Some(IssueCommentConnection { total_count: 17 }),
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         let count: i64 = db
             .lock()
@@ -2260,7 +2299,7 @@ mod tests {
             }),
             None,
         );
-        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 
         type ReviewRow = (String, String, Option<String>, Option<i64>, String);
         let rows: Vec<ReviewRow> = {
@@ -2291,5 +2330,200 @@ mod tests {
         assert!(rows[1].2.is_none());
         assert!(rows[1].3.is_none());
         assert_eq!(rows[1].4, "");
+    }
+
+    // ===== threads rollup tests (M3-C) =====
+    //
+    // Each test seeds `review_threads` (and `review_comments` where the
+    // `threads_involved` join is exercised) directly, then asserts the
+    // `pull_requests.threads_*` columns after `write_pr_updates` runs. We
+    // populate the threads via direct INSERT — M3-A owns the upsert path that
+    // would otherwise create them. The active account's login is `me`.
+
+    fn read_threads_rollup(db: &DbHandle, pr_id: i64) -> (i64, i64, i64) {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT threads_total, threads_unresolved, threads_involved
+                FROM pull_requests WHERE id = ?1",
+            params![pr_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn write_pr_updates_recomputes_threads_total_from_review_threads() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Three threads: two unresolved + active, one resolved. Seeded
+        // directly; we pass `None` for `detail` so M3-A's prune-on-absence
+        // pass doesn't strip them before the rollup runs.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES
+                    (1001, 100, 0, 0, 'RT_1'),
+                    (1002, 100, 0, 0, 'RT_2'),
+                    (1003, 100, 1, 0, 'RT_3');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        let (total, unresolved, involved) = read_threads_rollup(&db, pr_id);
+        assert_eq!(total, 3, "threads_total counts every row");
+        assert_eq!(unresolved, 2, "is_resolved=1 excluded from unresolved");
+        assert_eq!(involved, 0, "no comments authored by 'me' yet");
+    }
+
+    #[test]
+    fn write_pr_updates_excludes_outdated_threads_from_unresolved() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Three threads: 1 unresolved active, 1 unresolved + outdated, 1
+        // resolved + outdated. `unresolved` counts only the active-unresolved.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES
+                    (1001, 100, 0, 0, 'RT_a'),
+                    (1002, 100, 0, 1, 'RT_b'),
+                    (1003, 100, 1, 1, 'RT_c');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        let (total, unresolved, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(total, 3, "outdated rows still counted in total");
+        assert_eq!(
+            unresolved, 1,
+            "outdated rows excluded even when is_resolved = 0"
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_threads_involved_joins_account_via_review_comments() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Two threads: thread 1 has a comment by 'me'; thread 2 only by 'them'.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES
+                    (1001, 100, 0, 0, 'RT_x'),
+                    (1002, 100, 0, 0, 'RT_y');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES
+                    (2001, 1001, 'me',   'hi',   10),
+                    (2002, 1001, 'me',   'more', 20),
+                    (2003, 1002, 'them', 'x',    30);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        let (total, unresolved, involved) = read_threads_rollup(&db, pr_id);
+        assert_eq!(total, 2);
+        assert_eq!(unresolved, 2);
+        assert_eq!(
+            involved, 1,
+            "DISTINCT thread count: two comments by 'me' on the same thread still count once"
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_threads_rollup_reflects_resolution_change() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_q');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let (_, unresolved_before, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(unresolved_before, 1);
+
+        // Resolve the thread out-of-band (M3-A's upsert path will mutate this
+        // column in production); rerun the writer and confirm the rollup
+        // refreshes.
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE review_threads SET is_resolved = 1 WHERE id = 1001",
+                [],
+            )
+            .unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let (_, unresolved_after, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(unresolved_after, 0, "rollup follows resolution flip");
+    }
+
+    #[test]
+    fn write_pr_updates_threads_rollup_scopes_involved_to_active_account() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Add a second account whose login matches a commenter; the active
+        // account is still id=1 ('me'), so the count must not include the
+        // other account's threads.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO accounts (id, label, host, login, created_at)
+                    VALUES (2, 'b', 'github.com', 'other', 0);
+                 INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES
+                    (1001, 100, 0, 0, 'RT_m'),
+                    (1002, 100, 0, 0, 'RT_o');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES
+                    (2001, 1001, 'me',    'a', 1),
+                    (2002, 1002, 'other', 'b', 2);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let (_, _, involved_for_me) = read_threads_rollup(&db, pr_id);
+        assert_eq!(involved_for_me, 1, "scoped to account 1 ('me')");
+
+        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+        let (_, _, involved_for_other) = read_threads_rollup(&db, pr_id);
+        assert_eq!(involved_for_other, 1, "rewritten under account 2 ('other')");
+    }
+
+    #[test]
+    fn write_pr_updates_threads_rollup_runs_when_detail_is_none() {
+        // Even without a fresh detail payload, the rollup must keep the
+        // columns in sync with the current `review_threads` rows (e.g. after
+        // a partial fetch where only the timeline came back).
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_z');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let (total, unresolved, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(total, 1);
+        assert_eq!(unresolved, 1);
     }
 }

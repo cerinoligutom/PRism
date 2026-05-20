@@ -32,6 +32,12 @@ export interface CiSummary {
   readonly passing: number;
 }
 
+export interface ThreadsSummary {
+  readonly total: number;
+  readonly unresolved: number;
+  readonly involved: number;
+}
+
 export interface ReviewerEntry {
   readonly login: string;
   readonly state: ReviewerState;
@@ -63,6 +69,7 @@ export interface DashboardPullRequest {
   readonly deletions: number | null;
   readonly changed_files: number | null;
   readonly ci: CiSummary | null;
+  readonly threads: ThreadsSummary | null;
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
   readonly account_id: number;
