@@ -35,7 +35,9 @@ impl AccountChangeListener for NoopAccountListener {
 use crate::auth::keychain::OsKeychain;
 use crate::auth::store::{Account, AccountId, AccountStore, JsonAccountStore};
 use crate::auth::token_source::KeychainTokenSource;
-use crate::auth::validation::{validate_token, ValidationError};
+use crate::auth::validation::{
+    check_permissions, validate_token, PermissionChecks, ValidationError,
+};
 
 /// Emitted whenever any sync-path call returns 401, so the frontend can show
 /// the re-auth banner. Wired through `emit_reauth_required` so callers
@@ -218,11 +220,12 @@ pub struct ValidateTokenResult {
     pub login: String,
     pub scopes: Vec<String>,
     pub expires_at: Option<String>,
+    pub permissions: PermissionChecks,
 }
 
-/// Standalone validation — used from the onboarding "Connect →" button to
-/// surface "Token validated · X scopes" feedback before the user commits.
-/// Does not store anything in the keychain.
+/// Standalone validation — used from the onboarding flow to surface token
+/// status and per-permission grant state before the user commits. Does
+/// not store anything in the keychain.
 #[tauri::command]
 pub async fn validate_token_cmd(
     input: ValidateTokenInput,
@@ -230,10 +233,12 @@ pub async fn validate_token_cmd(
     let host = normalise_host(&input.host);
     let secret = SecretString::from(input.token);
     let validated = validate_token(&host, &secret).await?;
+    let permissions = check_permissions(&host, &secret, &validated.scopes).await?;
     Ok(ValidateTokenResult {
         login: validated.login,
         scopes: validated.scopes,
         expires_at: validated.expires_at,
+        permissions,
     })
 }
 

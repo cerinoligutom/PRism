@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import ScopeStateIcon from "@/components/onboarding/ScopeStateIcon.vue";
+import ScopeStateTag from "@/components/onboarding/ScopeStateTag.vue";
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PRismInput from "@/components/ui/PRismInput.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
-import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
+import {
+  useAccountsStore,
+  type Account,
+  type PermissionChecks,
+  type PermissionState,
+  type ValidateTokenResult,
+} from "@/stores/accounts";
 import { useSyncStore, type AccountSyncState } from "@/stores/sync";
 
 type StepIndex = 1 | 2 | 3;
@@ -33,12 +41,43 @@ const form = reactive({
 });
 
 const validation = ref<ValidationState>({ kind: "idle" });
+const connectError = ref<string | null>(null);
+
+// Monotonic id so a stale in-flight validation can't overwrite the
+// state of a newer one — incremented on every kick-off and on token
+// changes, only the latest id is allowed to commit a result.
+let validationToken = 0;
+
+// Members is intentionally not gated: classic users without read:org and
+// fine-grained users whose PAT isn't org-scoped both report it as
+// Missing/Unknown without that meaning Connect should be blocked.
+const requiredFineGrainedChecks: readonly (keyof PermissionChecks)[] = [
+  "contents",
+  "pull_requests",
+  "metadata",
+];
+
+const permissionsSatisfied = computed(() => {
+  if (validation.value.kind !== "valid") return false;
+  if (form.flavour === "fine-grained") {
+    const checks = validation.value.result.permissions;
+    // Unknown counts as "could not verify" — we accept it for Connect so
+    // users with empty repo lists aren't blocked. Missing is the only
+    // hard fail.
+    return requiredFineGrainedChecks.every((k) => checks[k] !== "missing");
+  }
+  return classicScopes
+    .filter((s) => s.required === true)
+    .every((s) => rowStateForScope(s.name) === "granted");
+});
 
 const canConnect = computed(() => {
   return (
     form.label.trim().length > 0 &&
     form.host.trim().length > 0 &&
     form.token.trim().length > 0 &&
+    validation.value.kind === "valid" &&
+    permissionsSatisfied.value &&
     !submitting.value
   );
 });
@@ -79,15 +118,20 @@ function goTo(step: StepIndex): void {
 }
 
 async function handleValidate(): Promise<void> {
-  if (form.token.trim().length === 0) {
-    validation.value = { kind: "error", message: "Paste a Personal Access Token first." };
+  const token = form.token.trim();
+  const host = form.host.trim();
+  if (token.length === 0 || host.length === 0) {
+    validation.value = { kind: "idle" };
     return;
   }
+  const ticket = ++validationToken;
   validation.value = { kind: "validating" };
   try {
-    const result = await accountsStore.validateToken(form.host.trim(), form.token.trim());
+    const result = await accountsStore.validateToken(host, token);
+    if (ticket !== validationToken) return;
     validation.value = { kind: "valid", result };
   } catch (err) {
+    if (ticket !== validationToken) return;
     validation.value = {
       kind: "error",
       message: err instanceof Error ? err.message : "Validation failed.",
@@ -95,8 +139,31 @@ async function handleValidate(): Promise<void> {
   }
 }
 
+function handleTokenBlur(): void {
+  // Auto-validate only when there's something to validate and we aren't
+  // already mid-flight. Re-entry on focus/blur cycles is debounced by the
+  // ticket counter in handleValidate.
+  if (form.token.trim().length === 0) return;
+  if (validation.value.kind === "validating") return;
+  void handleValidate();
+}
+
+// Any change to host or token invalidates the prior result and cancels any
+// in-flight request that hasn't returned yet — so the user can't paste a
+// new PAT and have the previous one's result linger in the UI.
+watch(
+  () => [form.token, form.host],
+  () => {
+    validationToken++;
+    if (validation.value.kind !== "idle") {
+      validation.value = { kind: "idle" };
+    }
+  },
+);
+
 async function handleConnect(): Promise<void> {
   submitting.value = true;
+  connectError.value = null;
   try {
     const account = await accountsStore.addAccount({
       label: form.label.trim(),
@@ -107,10 +174,10 @@ async function handleConnect(): Promise<void> {
     void syncStore.refreshSnapshot();
     goTo(3);
   } catch (err) {
-    validation.value = {
-      kind: "error",
-      message: err instanceof Error ? err.message : "Could not connect.",
-    };
+    // Token had already validated when Connect was clicked, so don't reset
+    // the inline validation status — surface a separate connect-time error
+    // near the action row instead.
+    connectError.value = err instanceof Error ? err.message : "Could not connect.";
   } finally {
     submitting.value = false;
   }
@@ -140,6 +207,8 @@ interface PermissionRow {
   desc: string;
   access: string;
   required?: boolean;
+  /** Key into PermissionChecks — drives the row's verified state. */
+  check: keyof PermissionChecks;
 }
 
 interface PermissionGroup {
@@ -156,17 +225,20 @@ const fineGrainedGroups: readonly PermissionGroup[] = [
         name: "Contents",
         desc: "Repository contents, commits, branches, downloads, releases, and merges.",
         access: "Read-only",
+        check: "contents",
       },
       {
         name: "Pull requests",
         desc: "Pull requests and related comments, assignees, labels, milestones, and merges.",
         access: "Read-only",
+        check: "pull_requests",
       },
       {
         name: "Metadata",
         desc: "Search repositories, list collaborators, and access repository metadata.",
         access: "Read-only",
         required: true,
+        check: "metadata",
       },
     ],
   },
@@ -178,6 +250,7 @@ const fineGrainedGroups: readonly PermissionGroup[] = [
         name: "Members",
         desc: "Organization members and teams.",
         access: "Read-only",
+        check: "members",
       },
     ],
   },
@@ -186,13 +259,38 @@ const fineGrainedGroups: readonly PermissionGroup[] = [
 interface ClassicScope {
   name: string;
   desc: string;
+  /** When false, the row shows but Connect doesn't gate on its presence. */
+  required?: boolean;
 }
 
 const classicScopes: readonly ClassicScope[] = [
-  { name: "repo", desc: "Full control of private repositories." },
-  { name: "read:org", desc: "Read org and team membership, read org projects." },
-  { name: "read:user", desc: "Read all user profile data." },
+  { name: "repo", desc: "Full control of private repositories.", required: true },
+  {
+    name: "read:org",
+    desc: "Read org and team membership, read org projects.",
+    required: true,
+  },
+  { name: "read:user", desc: "Read all user profile data.", required: true },
 ];
+
+type RowState = "pending" | "granted" | "missing" | "unknown";
+
+function rowStateForPermission(key: keyof PermissionChecks): RowState {
+  if (validation.value.kind !== "valid") return "pending";
+  const state: PermissionState = validation.value.result.permissions[key];
+  return state;
+}
+
+function rowStateForScope(scopeName: string): RowState {
+  if (validation.value.kind !== "valid") return "pending";
+  // GitHub returns scopes verbatim in the x-oauth-scopes header. `repo`
+  // also implies the narrower `public_repo`; we accept either as proof of
+  // the umbrella scope.
+  const scopes = validation.value.result.scopes;
+  if (scopes.includes(scopeName)) return "granted";
+  if (scopeName === "repo" && scopes.includes("public_repo")) return "granted";
+  return "missing";
+}
 
 onMounted(() => {
   void syncStore.bind();
@@ -379,7 +477,32 @@ onUnmounted(() => {
           </div>
 
           <div class="onboarding-field">
-            <label for="onb-token" class="onboarding-field__label">Personal Access Token</label>
+            <label for="onb-token" class="onboarding-field__label">
+              <span>Personal Access Token</span>
+              <span
+                class="onboarding-field__status"
+                :class="`onboarding-field__status--${validation.kind}`"
+                role="status"
+                aria-live="polite"
+              >
+                <template v-if="validation.kind === 'idle'">
+                  <span class="dot"></span>
+                  <span>Validates on blur</span>
+                </template>
+                <template v-else-if="validation.kind === 'validating'">
+                  <span class="onboarding-field__spinner" aria-hidden="true"></span>
+                  <span>Validating…</span>
+                </template>
+                <template v-else-if="validation.kind === 'valid'">
+                  <span class="dot dot-success"></span>
+                  <span>Token valid · {{ validation.result.login }}</span>
+                </template>
+                <template v-else>
+                  <span class="dot dot-danger"></span>
+                  <span>{{ validation.message }}</span>
+                </template>
+              </span>
+            </label>
             <PRismInput
               id="onb-token"
               v-model="form.token"
@@ -389,6 +512,7 @@ onUnmounted(() => {
               placeholder="github_pat_… or ghp_…"
               :spellcheck="false"
               autocomplete="off"
+              @blur="handleTokenBlur"
             />
             <p class="onboarding-field__hint">
               <a :href="tokenCreateUrl" target="_blank" rel="noreferrer">
@@ -430,12 +554,9 @@ onUnmounted(() => {
                 v-for="row in group.rows"
                 :key="row.name"
                 class="onboarding-scope"
+                :class="`onboarding-scope--${rowStateForPermission(row.check)}`"
               >
-                <span class="onboarding-scope__check" aria-hidden="true">
-                  <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3 8.5l3 3 7-7" />
-                  </svg>
-                </span>
+                <ScopeStateIcon :state="rowStateForPermission(row.check)" />
                 <div>
                   <div class="onboarding-scope__name">
                     {{ row.name }}
@@ -443,7 +564,10 @@ onUnmounted(() => {
                   </div>
                   <div class="onboarding-scope__desc">{{ row.desc }}</div>
                 </div>
-                <span class="onboarding-scope__tag">{{ row.access }}</span>
+                <ScopeStateTag
+                  :state="rowStateForPermission(row.check)"
+                  :default-label="row.access"
+                />
               </div>
             </div>
           </template>
@@ -453,16 +577,14 @@ onUnmounted(() => {
               v-for="scope in classicScopes"
               :key="scope.name"
               class="onboarding-scope"
+              :class="`onboarding-scope--${rowStateForScope(scope.name)}`"
             >
-              <span class="onboarding-scope__check" aria-hidden="true">
-                <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M3 8.5l3 3 7-7" />
-                </svg>
-              </span>
+              <ScopeStateIcon :state="rowStateForScope(scope.name)" />
               <div>
                 <div class="onboarding-scope__name onboarding-scope__name--scope">{{ scope.name }}</div>
                 <div class="onboarding-scope__desc">{{ scope.desc }}</div>
               </div>
+              <ScopeStateTag :state="rowStateForScope(scope.name)" />
             </div>
           </template>
         </section>
@@ -478,8 +600,8 @@ onUnmounted(() => {
           the OS keychain — never to disk, never to a log.
         </PRismCallout>
 
-        <div v-if="validation.kind === 'error'" class="onboarding-message onboarding-message--error">
-          {{ validation.message }}
+        <div v-if="connectError" class="onboarding-message onboarding-message--error">
+          {{ connectError }}
         </div>
 
         <div class="onboarding-step__foot">
@@ -488,20 +610,6 @@ onUnmounted(() => {
             <span v-if="submitting">Connecting…</span>
             <span v-else>Connect</span>
           </PRismButton>
-          <button
-            class="onboarding-validate"
-            type="button"
-            :disabled="form.token.trim().length === 0 || validation.kind === 'validating'"
-            @click="handleValidate"
-          >
-            <span v-if="validation.kind === 'idle'">Validate first</span>
-            <span v-else-if="validation.kind === 'validating'">Validating…</span>
-            <span v-else-if="validation.kind === 'valid'" class="onboarding-validate__ok">
-              <span class="dot dot-success"></span>
-              Token valid · {{ validation.result.login }}
-            </span>
-            <span v-else>Validate first</span>
-          </button>
         </div>
       </section>
 
@@ -843,6 +951,42 @@ onUnmounted(() => {
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text-mute);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.onboarding-field__status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-mute);
+}
+
+.onboarding-field__status--valid {
+  color: var(--success);
+}
+
+.onboarding-field__status--error {
+  color: var(--danger);
+}
+
+.onboarding-field__spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-3);
+  border-top-color: var(--accent);
+  animation: onboarding-spinner 0.8s linear infinite;
+}
+
+@keyframes onboarding-spinner {
+  to { transform: rotate(360deg); }
 }
 
 .onboarding-field__hint {
@@ -898,17 +1042,6 @@ onUnmounted(() => {
   border-bottom: 0;
 }
 
-.onboarding-scope__check {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--success-bg);
-  color: var(--success);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .onboarding-scope__name {
   font-family: var(--font-mono);
   font-size: var(--fs-11);
@@ -918,17 +1051,6 @@ onUnmounted(() => {
 .onboarding-scope__desc {
   color: var(--text-mute);
   font-size: var(--fs-11);
-}
-
-.onboarding-scope__tag {
-  font-family: var(--font-mono);
-  font-size: var(--fs-9);
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  padding: 1px 6px;
-  background: var(--bg-4);
-  border-radius: var(--r-1);
 }
 
 .onboarding-scope__name--scope {
