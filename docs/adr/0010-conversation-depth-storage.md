@@ -55,6 +55,8 @@ Three storage decisions need pinning before the M3 wave-2 implementers branch ou
 
 **Dashboard row rollup.** Pre-aggregate. Add `threads_total`, `threads_unresolved`, `threads_involved` columns to `pull_requests`, written by the sync worker inside `write_pr_updates` after the thread upserts have committed. The dashboard list query reads them as scalar columns alongside `ci_total` / `ci_passing` — same pattern, same cost shape.
 
+> **Superseded in part by [ADR 0012](0012-threads-bar-four-state-and-outdated-counted.md).** The three rollup columns above are replaced by the four-bucket `threads_(un)resolved_(un)involved` columns; the pre-aggregate-at-write-time pattern itself stays in force.
+
 **Comment-body hydration.** Capped + lazy.
 
 - The sync cycle's `PR_DETAIL_QUERY` pulls `reviewThreads(first:100)` with `comments(first:1)` head + `totalCount`, `reviews(first:30)` with bodies, and `issueComments(first:50).totalCount`. Head-comment snapshot columns on `review_threads` carry the row preview.
@@ -76,7 +78,7 @@ Review bodies (the "summary" comment-type) ship in the cycle because they're che
 ### Negative
 
 - Comment-type breakdown's "review" count (count of `review_comments`) reads as zero on PRs whose drawer / route has never been opened, until the first lazy hydration. The other tiles (oldest unresolved, avg response, resolution rate, summary count, issue count) are correct from cycle 1 because they read either thread-level columns or the `issue_comments_count` rollup. Documented in the contract; acceptable for v1.
-- `threads_involved` is per-account; PRs touched by multiple accounts overwrite the count on each cycle. Multi-account users see the count for the most recently synced account, not the union. M5 (multi-account) revisits.
+- `threads_involved` is per-account; PRs touched by multiple accounts overwrite the count on each cycle. Multi-account users see the count for the most recently synced account, not the union. M5 (multi-account) revisits. (ADR 0012 carries the same per-account constraint forward into the four-bucket rollup.)
 - The `node_id` columns are nullable to preserve the existing migration history (`0001_init.sql` rows seeded by tests have NULL node IDs). Partial unique indexes (`WHERE node_id IS NOT NULL`) enforce uniqueness for populated rows.
 
 ### Neutral / follow-ups

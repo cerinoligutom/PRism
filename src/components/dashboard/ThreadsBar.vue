@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ThreadsSummary } from "@/types/dashboard";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
   threads: ThreadsSummary | null;
@@ -8,17 +9,18 @@ interface Props {
 
 const props = defineProps<Props>();
 
-interface SegmentWidths {
-  readonly unresolved: number;
-  readonly involved: number;
-  readonly resolved: number;
-}
+type Bucket =
+  | "unresolved-uninvolved"
+  | "unresolved-involved"
+  | "resolved-uninvolved"
+  | "resolved-involved";
 
-const ZERO_WIDTHS: SegmentWidths = {
-  unresolved: 0,
-  involved: 0,
-  resolved: 0,
-} as const;
+interface Segment {
+  readonly bucket: Bucket;
+  readonly count: number;
+  readonly width: number;
+  readonly tooltip: string;
+}
 
 /**
  * Renders the em-dash count + segment-less bar. Backend contract: this fires
@@ -30,64 +32,92 @@ const isEmpty = computed<boolean>(
 );
 
 /**
- * Visual muting once nothing on the bar is urgent — applies whenever there
- * are zero unresolved threads (the empty case included). The artboard mutes
- * any row whose count reads `0/N`.
+ * Visual muting once nothing on the bar is urgent — applies whenever zero
+ * threads are unresolved (the empty case included). The artboard mutes any
+ * row whose count reads `0/N`.
  */
-const isMuted = computed<boolean>(
-  () => isEmpty.value || (props.threads?.unresolved ?? 0) === 0,
-);
-
-/**
- * Segment widths expressed as percentages of the bar. The three segments are
- * rendered as disjoint slices so the bar reads at a glance:
- *
- *   - `unresolved` claims the open-thread share of `total`.
- *   - `involved` shows only the *resolved* threads the active account has
- *     commented on (their "settled contributions" footprint). Capped at the
- *     resolved share so the segments stay disjoint.
- *   - `resolved` fills the remaining settled / outdated threads.
- *
- * Backend `involved` overlaps both states, so any thread that is both
- * unresolved and involved counts toward `unresolved` here.
- */
-const segments = computed<SegmentWidths>(() => {
-  if (props.threads === null || props.threads.total === 0) {
-    return ZERO_WIDTHS;
-  }
-  const { total, unresolved, involved } = props.threads;
-  const resolvedTotal = Math.max(0, total - unresolved);
-  const involvedSegment = Math.min(involved, resolvedTotal);
-  const resolvedSegment = resolvedTotal - involvedSegment;
-  return {
-    unresolved: (unresolved / total) * 100,
-    involved: (involvedSegment / total) * 100,
-    resolved: (resolvedSegment / total) * 100,
-  };
+const isMuted = computed<boolean>(() => {
+  if (isEmpty.value || props.threads === null) return true;
+  return (
+    props.threads.unresolved_involved + props.threads.unresolved_uninvolved === 0
+  );
 });
 
-const unresolvedCount = computed<number>(() => props.threads?.unresolved ?? 0);
+/**
+ * The four-bucket bar segments, in display order. Single-thread categories
+ * still need to be visible, so any non-zero bucket renders at minimum the
+ * sliver width (~5%) - smaller buckets get the floor; larger ones share what's
+ * left in proportion to their raw share. See ADR 0012.
+ */
+const segments = computed<readonly Segment[]>(() => {
+  const t = props.threads;
+  if (t === null || t.total === 0) return [];
+  const raw: { bucket: Bucket; count: number; tooltip: string }[] = (
+    [
+      ["unresolved-uninvolved", "Unresolved", t.unresolved_uninvolved],
+      ["unresolved-involved", "Unresolved (involved)", t.unresolved_involved],
+      ["resolved-uninvolved", "Resolved", t.resolved_uninvolved],
+      ["resolved-involved", "Resolved (involved)", t.resolved_involved],
+    ] as const
+  )
+    .map(([bucket, label, count]) => ({
+      bucket,
+      count,
+      tooltip: tooltipFor(label, count),
+    }))
+    .filter((s) => s.count > 0);
+
+  return distributeWidths(raw, t.total);
+});
+
 const totalCount = computed<number>(() => props.threads?.total ?? 0);
+const unresolvedCount = computed<number>(() => {
+  if (props.threads === null) return 0;
+  return (
+    props.threads.unresolved_involved + props.threads.unresolved_uninvolved
+  );
+});
+
+function tooltipFor(label: string, count: number): string {
+  const noun = count === 1 ? "thread" : "threads";
+  return `${label} · ${count} ${noun}`;
+}
+
+/**
+ * Allocate a 5% sliver floor to any non-zero bucket then proportionally share
+ * the remaining width across all buckets based on their raw count. This keeps
+ * single-thread buckets visible without crushing the larger ones to zero.
+ */
+function distributeWidths(
+  buckets: readonly { bucket: Bucket; count: number; tooltip: string }[],
+  total: number,
+): readonly Segment[] {
+  const SLIVER_PCT = 5;
+  const sliverTotal = SLIVER_PCT * buckets.length;
+  const remaining = Math.max(0, 100 - sliverTotal);
+  return buckets.map((b) => ({
+    bucket: b.bucket,
+    count: b.count,
+    tooltip: b.tooltip,
+    width: SLIVER_PCT + (b.count / total) * remaining,
+  }));
+}
 </script>
 
 <template>
   <div :class="['threads-bar', isMuted && 'threads-bar--muted']">
     <div class="threads-bar__seg" aria-hidden="true">
-      <div
-        v-if="segments.unresolved > 0"
-        class="threads-bar__seg-unresolved"
-        :style="{ width: `${segments.unresolved}%` }"
-      ></div>
-      <div
-        v-if="segments.involved > 0"
-        class="threads-bar__seg-involved"
-        :style="{ width: `${segments.involved}%` }"
-      ></div>
-      <div
-        v-if="segments.resolved > 0"
-        class="threads-bar__seg-resolved"
-        :style="{ width: `${segments.resolved}%` }"
-      ></div>
+      <PRismTooltip
+        v-for="segment in segments"
+        :key="segment.bucket"
+        :text="segment.tooltip"
+        :as-child="true"
+      >
+        <div
+          :class="['threads-bar__seg-band', `threads-bar__seg-band--${segment.bucket}`]"
+          :style="{ width: `${segment.width}%` }"
+        ></div>
+      </PRismTooltip>
     </div>
     <div class="threads-bar__nums">
       <template v-if="isEmpty">
@@ -121,19 +151,24 @@ const totalCount = computed<number>(() => props.threads?.total ?? 0);
   flex: 0 0 auto;
 }
 
-.threads-bar__seg-unresolved {
-  background: var(--accent);
+.threads-bar__seg-band {
   height: 100%;
 }
 
-.threads-bar__seg-involved {
+.threads-bar__seg-band--unresolved-uninvolved {
+  background: var(--danger);
+}
+
+.threads-bar__seg-band--unresolved-involved {
+  background: var(--warning);
+}
+
+.threads-bar__seg-band--resolved-uninvolved {
   background: var(--info);
-  height: 100%;
 }
 
-.threads-bar__seg-resolved {
+.threads-bar__seg-band--resolved-involved {
   background: var(--success);
-  height: 100%;
 }
 
 .threads-bar__nums {

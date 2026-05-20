@@ -37,7 +37,7 @@ export interface PullRequestThread {
   /** Unix seconds. */
   readonly last_reply_at: number | null;
   /** True when the active account's login appears anywhere in the thread. */
-  readonly is_you_in: boolean;
+  readonly is_involved: boolean;
 }
 
 export interface CommentBreakdown {

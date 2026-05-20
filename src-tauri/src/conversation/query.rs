@@ -5,7 +5,7 @@
 //! these queries depend on.
 //!
 //! - [`list_pr_threads`] - join `review_threads` + `review_comments` (head)
-//!   + `accounts` (for `is_you_in`).
+//!   + `accounts` (for `is_involved`).
 //! - [`get_conversation_stats`] - the four-tile stats card math (oldest
 //!   unresolved, avg time-to-response, resolution rate, comment-type
 //!   breakdown).
@@ -21,9 +21,9 @@ use crate::conversation::types::{
 };
 
 /// List per-thread state for a PR, joined to the head-comment snapshot. The
-/// `account_id` parameter resolves `is_you_in` via an `EXISTS` against
-/// `review_comments` joined to `accounts`; `None` always returns `is_you_in =
-/// false`.
+/// `account_id` parameter resolves `is_involved` via an `EXISTS` against
+/// `review_comments` joined to `accounts`; `None` always returns
+/// `is_involved = false`.
 pub fn list_pr_threads(
     conn: &Connection,
     pull_request_id: i64,
@@ -56,7 +56,7 @@ pub fn list_pr_threads(
                        AND a.id = ?2
                 ) THEN 1
                 ELSE 0
-            END AS is_you_in
+            END AS is_involved
         FROM review_threads t
         WHERE t.pull_request_id = ?1
         ORDER BY COALESCE(t.created_at, 0), t.id
@@ -86,7 +86,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let head_author: Option<String> = row.get(13)?;
     let head_body: Option<String> = row.get(14)?;
     let head_created_at: Option<i64> = row.get(15)?;
-    let is_you_in: i64 = row.get(16)?;
+    let is_involved: i64 = row.get(16)?;
 
     let head_comment = match (head_author, head_body, head_created_at) {
         (Some(author_login), Some(body_text), Some(created_at)) => Some(ThreadHeadComment {
@@ -119,7 +119,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
         created_at,
         resolved_at,
         last_reply_at,
-        is_you_in: is_you_in != 0,
+        is_involved: is_involved != 0,
     })
 }
 
@@ -132,7 +132,7 @@ pub fn get_conversation_stats(
     let counts = thread_counts(conn, pull_request_id)?;
     let oldest_unresolved_at = oldest_unresolved(conn, pull_request_id)?;
     let avg_response_seconds = avg_time_to_response(conn, pull_request_id)?;
-    let resolution_rate = compute_resolution_rate(counts.resolved, counts.total, counts.outdated);
+    let resolution_rate = compute_resolution_rate(counts.resolved, counts.total);
     let breakdown = comment_breakdown(conn, pull_request_id)?;
 
     Ok(ConversationStats {
@@ -157,18 +157,17 @@ struct ThreadCounts {
 }
 
 fn thread_counts(conn: &Connection, pull_request_id: i64) -> Result<ThreadCounts, rusqlite::Error> {
-    // Single aggregation: total, unresolved, resolved, outdated. `unresolved`
-    // AND `resolved` are both strict-active (exclude outdated) so the three
-    // visible buckets — unresolved, resolved, outdated — are disjoint over the
-    // active set (`total - outdated`). A thread that's both resolved AND
-    // outdated counts only in `outdated`; this matches the threads list which
-    // hides such threads behind the "Show N outdated" toggle and prevents the
-    // resolution rate from overshooting 100%.
+    // Single aggregation. `unresolved` and `resolved` partition every thread
+    // by `is_resolved`; outdated threads sort into whichever side matches
+    // their own `is_resolved` flag (see ADR 0012). `outdated` is still
+    // reported separately so the stats tile can surface the count, but it
+    // overlaps the unresolved / resolved buckets rather than carving itself
+    // out of them.
     let (total, unresolved, resolved, outdated): (i64, i64, i64, i64) = conn.query_row(
         "SELECT
              COUNT(*),
-             SUM(CASE WHEN is_resolved = 0 AND is_outdated = 0 THEN 1 ELSE 0 END),
-             SUM(CASE WHEN is_resolved = 1 AND is_outdated = 0 THEN 1 ELSE 0 END),
+             SUM(CASE WHEN is_resolved = 0 THEN 1 ELSE 0 END),
+             SUM(CASE WHEN is_resolved = 1 THEN 1 ELSE 0 END),
              SUM(CASE WHEN is_outdated = 1 THEN 1 ELSE 0 END)
            FROM review_threads
           WHERE pull_request_id = ?1",
@@ -194,12 +193,14 @@ fn oldest_unresolved(
     conn: &Connection,
     pull_request_id: i64,
 ) -> Result<Option<i64>, rusqlite::Error> {
+    // ADR 0012: outdated-but-unresolved threads still need attention, so
+    // they're included alongside fully-active unresolved threads. Only the
+    // `is_resolved = 0` filter remains.
     conn.query_row(
         "SELECT MIN(created_at)
            FROM review_threads
           WHERE pull_request_id = ?1
             AND is_resolved = 0
-            AND is_outdated = 0
             AND created_at IS NOT NULL",
         params![pull_request_id],
         |row| row.get::<_, Option<i64>>(0),
@@ -264,13 +265,13 @@ fn comment_breakdown(
     })
 }
 
-/// `resolved / (total - outdated)`. Zero when the denominator is zero.
-fn compute_resolution_rate(resolved: i64, total: i64, outdated: i64) -> f64 {
-    let denom = total - outdated;
-    if denom <= 0 {
+/// `resolved / total`. Zero when total is zero. Bounded `[0.0, 1.0]` by
+/// construction because `resolved <= total` in the source aggregation.
+fn compute_resolution_rate(resolved: i64, total: i64) -> f64 {
+    if total <= 0 {
         0.0
     } else {
-        (resolved as f64) / (denom as f64)
+        (resolved as f64) / (total as f64)
     }
 }
 
@@ -382,20 +383,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolution_rate_zero_when_no_active_threads() {
-        assert_eq!(compute_resolution_rate(0, 0, 0), 0.0);
-        assert_eq!(compute_resolution_rate(0, 3, 3), 0.0);
+    fn resolution_rate_zero_when_total_is_zero() {
+        assert_eq!(compute_resolution_rate(0, 0), 0.0);
     }
 
     #[test]
     fn resolution_rate_handles_typical_case() {
-        // 2 resolved / (5 total - 1 outdated) = 2 / 4 = 0.5
-        assert_eq!(compute_resolution_rate(2, 5, 1), 0.5);
+        // 2 resolved / 5 total = 0.4 (ADR 0012: outdated threads count
+        // in the denominator alongside everything else).
+        assert!((compute_resolution_rate(2, 5) - 0.4).abs() < 1e-9);
     }
 
     #[test]
     fn resolution_rate_full() {
-        // 4 resolved / (4 total - 0 outdated) = 1.0
-        assert_eq!(compute_resolution_rate(4, 4, 0), 1.0);
+        assert_eq!(compute_resolution_rate(4, 4), 1.0);
     }
 }

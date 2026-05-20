@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 
 import type { PullRequestThread, ThreadState } from "@/types/conversation";
 
@@ -13,53 +13,29 @@ import {
 
 interface Props {
   threads: readonly PullRequestThread[];
-  /**
-   * When false (the default), outdated threads are hidden behind the local
-   * toggle. The state is not persisted; re-opening the surface starts hidden.
-   * Pass an initial value if a host wants to seed the toggle differently.
-   */
-  showOutdated?: boolean;
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  showOutdated: false,
-});
-
-// Local toggle state. Per the contract, this is intentionally not persisted;
-// each time the conversation surface mounts, outdated threads start hidden.
-const showOutdated = ref<boolean>(props.showOutdated);
-
-const outdatedCount = computed<number>(
-  () => props.threads.filter((t) => t.state === "outdated").length,
-);
-
-const visibleThreads = computed<readonly PullRequestThread[]>(() => {
-  if (showOutdated.value) return props.threads;
-  return props.threads.filter((t) => t.state !== "outdated");
-});
+const props = defineProps<Props>();
 
 const orderedThreads = computed<readonly PullRequestThread[]>(() => {
-  // Unresolved-and-yours first, then unresolved, then resolved (newest first),
-  // then outdated. Inside each bucket, fall back to the most recent activity
-  // so the active conversation surfaces first.
+  // Unresolved-and-involved first, then unresolved, then resolved, then
+  // outdated. Inside each bucket, fall back to the most recent activity so
+  // the active conversation surfaces first. Outdated rows always render now
+  // (ADR 0012); the per-row dim treatment + badge carry the visual cue.
   const buckets: Record<ThreadState, number> = {
     unresolved: 0,
     resolved: 1,
     outdated: 2,
   };
-  return [...visibleThreads.value].sort((a, b) => {
-    const aWeight = buckets[a.state] + (a.is_you_in && a.state === "unresolved" ? -1 : 0);
-    const bWeight = buckets[b.state] + (b.is_you_in && b.state === "unresolved" ? -1 : 0);
+  return [...props.threads].sort((a, b) => {
+    const aWeight = buckets[a.state] + (a.is_involved && a.state === "unresolved" ? -1 : 0);
+    const bWeight = buckets[b.state] + (b.is_involved && b.state === "unresolved" ? -1 : 0);
     if (aWeight !== bWeight) return aWeight - bWeight;
     const aTs = a.last_reply_at ?? a.created_at ?? 0;
     const bTs = b.last_reply_at ?? b.created_at ?? 0;
     return bTs - aTs;
   });
 });
-
-function toggleOutdated(): void {
-  showOutdated.value = !showOutdated.value;
-}
 
 function threadKey(t: PullRequestThread): string {
   return `${t.id}:${t.node_id}`;
@@ -114,27 +90,8 @@ function isStale(t: PullRequestThread): boolean {
 
 <template>
   <div class="threads-list">
-    <div v-if="outdatedCount > 0" class="threads-list__toolbar">
-      <button
-        type="button"
-        class="btn btn-ghost btn-sm"
-        :aria-pressed="showOutdated"
-        @click="toggleOutdated"
-      >
-        <span aria-hidden="true" class="threads-list__toggle-icon">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-            <path d="M2 8c2-3.5 5-5 6-5s4 1.5 6 5c-2 3.5-5 5-6 5s-4-1.5-6-5z" />
-            <circle v-if="showOutdated" cx="8" cy="8" r="2" fill="currentColor" />
-            <path v-else d="M3 3l10 10" />
-          </svg>
-        </span>
-        {{ showOutdated ? "Hide" : "Show" }} {{ outdatedCount }} outdated
-      </button>
-    </div>
-
     <div v-if="orderedThreads.length === 0" class="threads-list__empty">
-      <p v-if="props.threads.length === 0">No review threads yet.</p>
-      <p v-else>No active threads. {{ outdatedCount }} outdated hidden.</p>
+      <p>No review threads yet.</p>
     </div>
 
     <div v-else class="threads-list__items">
@@ -144,7 +101,7 @@ function isStale(t: PullRequestThread): boolean {
         :class="[
           'thread-card',
           `thread-card--${thread.state}`,
-          thread.is_you_in && thread.state === 'unresolved' && 'thread-card--mine',
+          thread.is_involved && thread.state === 'unresolved' && 'thread-card--mine',
           isStale(thread) && 'thread-card--stale',
         ]"
       >
@@ -166,11 +123,11 @@ function isStale(t: PullRequestThread): boolean {
             <span v-else class="thread-card__path thread-card__path--missing">No file path</span>
             <span v-if="lineSuffix(thread) !== ''" class="thread-card__line">{{ lineSuffix(thread) }}</span>
             <span
-              v-if="thread.is_you_in && thread.state === 'unresolved'"
+              v-if="thread.is_involved && thread.state === 'unresolved'"
               class="thread-card__chip thread-card__chip--mine"
-            >YOU'RE IN</span>
+            >INVOLVED</span>
             <span
-              v-else-if="thread.state === 'outdated'"
+              v-if="thread.state === 'outdated'"
               class="thread-card__chip thread-card__chip--outdated"
             >OUTDATED</span>
           </div>
@@ -208,15 +165,6 @@ function isStale(t: PullRequestThread): boolean {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
-}
-
-.threads-list__toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.threads-list__toggle-icon {
-  display: inline-flex;
 }
 
 .threads-list__items {

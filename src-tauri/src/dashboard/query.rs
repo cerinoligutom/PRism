@@ -48,8 +48,10 @@ const PR_PROJECTION_COLUMNS: &str = "
     pr.ci_total,
     pr.ci_passing,
     pr.threads_total,
-    pr.threads_unresolved,
-    pr.threads_involved,
+    pr.threads_unresolved_involved,
+    pr.threads_unresolved_uninvolved,
+    pr.threads_resolved_involved,
+    pr.threads_resolved_uninvolved,
     r.id,
     r.owner,
     r.name,
@@ -172,25 +174,29 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     // freshly-discovered PR before its first enrichment reads as zeros across
     // the board. Emit `None` for that case so the frontend can render the
     // muted em-dash state (per the contract's "Dashboard rollup" section)
-    // rather than a `0 / 0 / 0` summary.
+    // rather than an all-zeros summary.
     let threads_total: i64 = row.get(19)?;
-    let threads_unresolved: i64 = row.get(20)?;
-    let threads_involved: i64 = row.get(21)?;
+    let threads_unresolved_involved: i64 = row.get(20)?;
+    let threads_unresolved_uninvolved: i64 = row.get(21)?;
+    let threads_resolved_involved: i64 = row.get(22)?;
+    let threads_resolved_uninvolved: i64 = row.get(23)?;
     let threads = if threads_total == 0 {
         None
     } else {
         Some(ThreadsSummary {
             total: threads_total,
-            unresolved: threads_unresolved,
-            involved: threads_involved,
+            unresolved_involved: threads_unresolved_involved,
+            unresolved_uninvolved: threads_unresolved_uninvolved,
+            resolved_involved: threads_resolved_involved,
+            resolved_uninvolved: threads_resolved_uninvolved,
         })
     };
 
-    let repo_id: i64 = row.get(22)?;
-    let repo_owner: String = row.get(23)?;
-    let repo_name: String = row.get(24)?;
-    let account_id: i64 = row.get(25)?;
-    let account_host: String = row.get(26)?;
+    let repo_id: i64 = row.get(24)?;
+    let repo_owner: String = row.get(25)?;
+    let repo_name: String = row.get(26)?;
+    let account_id: i64 = row.get(27)?;
+    let account_host: String = row.get(28)?;
 
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");

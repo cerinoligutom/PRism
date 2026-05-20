@@ -841,7 +841,7 @@ pub fn list_prs_for_repo(db: &DbHandle, repo_id: i64) -> Result<Vec<PrRow>, rusq
 /// the detail response carries them so the cached set never drifts past the
 /// upstream truth.
 ///
-/// `account_id` drives the per-account `threads_involved` rollup: the cycle
+/// `account_id` drives the per-account involvement bucket split: the cycle
 /// runs per-account, so each cycle naturally writes the correct value for the
 /// active viewer. Multi-account users see the count for the most recently
 /// synced account (ADR 0010 negative consequences; M5 revisits).
@@ -954,30 +954,49 @@ pub fn write_pr_updates(
         write_timeline_events(&tx, pr_id, events)?;
     }
 
-    // Threads rollup (M3-C). Recomputed from the just-written `review_threads`
-    // / `review_comments` rows for the active account so the dashboard row can
-    // render the threads bar without sub-aggregating. Mirrors the M2 `ci_*`
-    // pattern; see `docs/contracts/conversation-depth.md` "Dashboard rollup"
-    // and ADR 0010. Runs unconditionally — even when `detail` is `None` the
-    // rollup stays consistent with the existing thread rows.
+    // Threads rollup (ADR 0012, four-bucket redesign). Recomputed from the
+    // just-written `review_threads` / `review_comments` rows for the active
+    // account so the dashboard row + conversation surface bars render
+    // identical four-segment slicing without sub-aggregating. Mirrors the M2
+    // `ci_*` pattern; see `docs/contracts/conversation-depth.md` "Dashboard
+    // rollup" and ADRs 0010 + 0012. Runs unconditionally — even when `detail`
+    // is `None` the rollup stays consistent with the existing thread rows.
+    //
+    // `involvement_check` is the (resolved x involved) discriminator: a thread
+    // counts as involved when at least one comment on it is authored by the
+    // active account's login. Outdated threads sort into whichever bucket
+    // matches their (resolved x involved) state — they're no longer carved
+    // out of the denominator.
     tx.execute(
-        "UPDATE pull_requests
-            SET threads_total = (
-                    SELECT COUNT(*) FROM review_threads
-                    WHERE pull_request_id = ?1
+        "WITH involvement AS (
+             SELECT t.id,
+                    t.is_resolved,
+                    EXISTS (
+                        SELECT 1 FROM review_comments c
+                         JOIN accounts a ON a.login = c.author_login
+                         WHERE c.review_thread_id = t.id
+                           AND a.id = ?2
+                    ) AS is_involved
+               FROM review_threads t
+              WHERE t.pull_request_id = ?1
+         )
+         UPDATE pull_requests
+            SET threads_total = (SELECT COUNT(*) FROM involvement),
+                threads_unresolved_involved = (
+                    SELECT COUNT(*) FROM involvement
+                     WHERE is_resolved = 0 AND is_involved = 1
                 ),
-                threads_unresolved = (
-                    SELECT COUNT(*) FROM review_threads
-                    WHERE pull_request_id = ?1
-                      AND is_resolved = 0
-                      AND is_outdated = 0
+                threads_unresolved_uninvolved = (
+                    SELECT COUNT(*) FROM involvement
+                     WHERE is_resolved = 0 AND is_involved = 0
                 ),
-                threads_involved = (
-                    SELECT COUNT(DISTINCT t.id) FROM review_threads t
-                    JOIN review_comments c ON c.review_thread_id = t.id
-                    JOIN accounts a ON a.login = c.author_login
-                    WHERE t.pull_request_id = ?1
-                      AND a.id = ?2
+                threads_resolved_involved = (
+                    SELECT COUNT(*) FROM involvement
+                     WHERE is_resolved = 1 AND is_involved = 1
+                ),
+                threads_resolved_uninvolved = (
+                    SELECT COUNT(*) FROM involvement
+                     WHERE is_resolved = 1 AND is_involved = 0
                 )
           WHERE id = ?1",
         params![pr_id, account_id as i64],
@@ -2386,21 +2405,27 @@ mod tests {
         assert_eq!(rows[1].4, "");
     }
 
-    // ===== threads rollup tests (M3-C) =====
+    // ===== threads rollup tests (ADR 0012, four-bucket redesign) =====
     //
     // Each test seeds `review_threads` (and `review_comments` where the
-    // `threads_involved` join is exercised) directly, then asserts the
+    // involvement join is exercised) directly, then asserts the
     // `pull_requests.threads_*` columns after `write_pr_updates` runs. We
     // populate the threads via direct INSERT — M3-A owns the upsert path that
     // would otherwise create them. The active account's login is `me`.
 
-    fn read_threads_rollup(db: &DbHandle, pr_id: i64) -> (i64, i64, i64) {
+    /// Read the five rollup columns: total + the four (resolved x involved)
+    /// buckets in declaration order.
+    fn read_threads_rollup(db: &DbHandle, pr_id: i64) -> (i64, i64, i64, i64, i64) {
         let conn = db.lock().unwrap();
         conn.query_row(
-            "SELECT threads_total, threads_unresolved, threads_involved
+            "SELECT threads_total,
+                    threads_unresolved_involved,
+                    threads_unresolved_uninvolved,
+                    threads_resolved_involved,
+                    threads_resolved_uninvolved
                 FROM pull_requests WHERE id = ?1",
             params![pr_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .unwrap()
     }
@@ -2409,9 +2434,7 @@ mod tests {
     fn write_pr_updates_recomputes_threads_total_from_review_threads() {
         let (db, repo_id, pr_id) = seed_db_with_pr();
 
-        // Three threads: two unresolved + active, one resolved. Seeded
-        // directly; we pass `None` for `detail` so M3-A's prune-on-absence
-        // pass doesn't strip them before the rollup runs.
+        // Three threads. All uninvolved (no review_comments by 'me').
         db.lock()
             .unwrap()
             .execute_batch(
@@ -2426,18 +2449,24 @@ mod tests {
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
 
-        let (total, unresolved, involved) = read_threads_rollup(&db, pr_id);
+        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
         assert_eq!(total, 3, "threads_total counts every row");
-        assert_eq!(unresolved, 2, "is_resolved=1 excluded from unresolved");
-        assert_eq!(involved, 0, "no comments authored by 'me' yet");
+        assert_eq!(ui, 0);
+        assert_eq!(uu, 2, "two unresolved + uninvolved");
+        assert_eq!(ri, 0);
+        assert_eq!(ru, 1, "one resolved + uninvolved");
+        assert_eq!(ui + uu + ri + ru, total, "buckets partition total");
     }
 
     #[test]
-    fn write_pr_updates_excludes_outdated_threads_from_unresolved() {
+    fn write_pr_updates_counts_outdated_threads_in_the_denominator() {
+        // ADR 0012: outdated threads now sort into one of the four buckets
+        // by their own (resolved x involved) flags. They no longer carve
+        // themselves out of the bar denominator.
         let (db, repo_id, pr_id) = seed_db_with_pr();
 
         // Three threads: 1 unresolved active, 1 unresolved + outdated, 1
-        // resolved + outdated. `unresolved` counts only the active-unresolved.
+        // resolved + outdated.
         db.lock()
             .unwrap()
             .execute_batch(
@@ -2452,16 +2481,19 @@ mod tests {
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
 
-        let (total, unresolved, _) = read_threads_rollup(&db, pr_id);
+        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
         assert_eq!(total, 3, "outdated rows still counted in total");
+        assert_eq!(ui, 0);
         assert_eq!(
-            unresolved, 1,
-            "outdated rows excluded even when is_resolved = 0"
+            uu, 2,
+            "two unresolved (one active + one outdated-unresolved)"
         );
+        assert_eq!(ri, 0);
+        assert_eq!(ru, 1, "one resolved-and-outdated");
     }
 
     #[test]
-    fn write_pr_updates_threads_involved_joins_account_via_review_comments() {
+    fn write_pr_updates_threads_involved_join_uses_active_account() {
         let (db, repo_id, pr_id) = seed_db_with_pr();
 
         // Two threads: thread 1 has a comment by 'me'; thread 2 only by 'them'.
@@ -2484,13 +2516,15 @@ mod tests {
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
 
-        let (total, unresolved, involved) = read_threads_rollup(&db, pr_id);
+        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
         assert_eq!(total, 2);
-        assert_eq!(unresolved, 2);
         assert_eq!(
-            involved, 1,
-            "DISTINCT thread count: two comments by 'me' on the same thread still count once"
+            ui, 1,
+            "thread 1 unresolved + involved (two 'me' comments collapse to one row)"
         );
+        assert_eq!(uu, 1, "thread 2 unresolved + uninvolved");
+        assert_eq!(ri, 0);
+        assert_eq!(ru, 0);
     }
 
     #[test]
@@ -2507,12 +2541,10 @@ mod tests {
             .unwrap();
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, unresolved_before, _) = read_threads_rollup(&db, pr_id);
-        assert_eq!(unresolved_before, 1);
+        let (_, _, uu_before, _, ru_before) = read_threads_rollup(&db, pr_id);
+        assert_eq!(uu_before, 1);
+        assert_eq!(ru_before, 0);
 
-        // Resolve the thread out-of-band (M3-A's upsert path will mutate this
-        // column in production); rerun the writer and confirm the rollup
-        // refreshes.
         db.lock()
             .unwrap()
             .execute(
@@ -2521,17 +2553,18 @@ mod tests {
             )
             .unwrap();
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, unresolved_after, _) = read_threads_rollup(&db, pr_id);
-        assert_eq!(unresolved_after, 0, "rollup follows resolution flip");
+        let (_, _, uu_after, _, ru_after) = read_threads_rollup(&db, pr_id);
+        assert_eq!(uu_after, 0, "unresolved bucket empties on resolution");
+        assert_eq!(ru_after, 1, "thread migrates to resolved-uninvolved");
     }
 
     #[test]
     fn write_pr_updates_threads_rollup_scopes_involved_to_active_account() {
         let (db, repo_id, pr_id) = seed_db_with_pr();
 
-        // Add a second account whose login matches a commenter; the active
-        // account is still id=1 ('me'), so the count must not include the
-        // other account's threads.
+        // A second account ('other') has a comment on thread 1002. Running
+        // the rollup under account 1 should mark only thread 1001 involved;
+        // running it under account 2 should mark only thread 1002 involved.
         db.lock()
             .unwrap()
             .execute_batch(
@@ -2551,12 +2584,14 @@ mod tests {
             .unwrap();
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, _, involved_for_me) = read_threads_rollup(&db, pr_id);
-        assert_eq!(involved_for_me, 1, "scoped to account 1 ('me')");
+        let (_, ui_me, uu_me, _, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(ui_me, 1, "scoped to account 1 ('me')");
+        assert_eq!(uu_me, 1);
 
         write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
-        let (_, _, involved_for_other) = read_threads_rollup(&db, pr_id);
-        assert_eq!(involved_for_other, 1, "rewritten under account 2 ('other')");
+        let (_, ui_other, uu_other, _, _) = read_threads_rollup(&db, pr_id);
+        assert_eq!(ui_other, 1, "rewritten under account 2 ('other')");
+        assert_eq!(uu_other, 1);
     }
 
     #[test]
@@ -2576,9 +2611,9 @@ mod tests {
             .unwrap();
 
         write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (total, unresolved, _) = read_threads_rollup(&db, pr_id);
+        let (total, _, uu, _, _) = read_threads_rollup(&db, pr_id);
         assert_eq!(total, 1);
-        assert_eq!(unresolved, 1);
+        assert_eq!(uu, 1);
     }
 
     // ===== timeline_events persistence tests =====

@@ -5,6 +5,7 @@ import { storeToRefs } from "pinia";
 import { useConversationStore } from "@/stores/conversation";
 import { useDashboardStore } from "@/stores/dashboard";
 
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ConversationStats from "./ConversationStats.vue";
 import ReviewsTab from "./ReviewsTab.vue";
 import StatusTimelineTab from "./StatusTimelineTab.vue";
@@ -82,39 +83,62 @@ const threadsSummary = computed<string>(() => {
   return `${total} ${totalLabel} · ${unresolved} unresolved`;
 });
 
-const segmentPercents = computed<{
-  readonly unresolved: number;
-  readonly involved: number;
-  readonly resolved: number;
-}>(() => {
-  const c = conversation.value;
-  if (c === null) return { unresolved: 0, involved: 0, resolved: 0 };
-  const total = c.stats.threads_total - c.stats.threads_outdated;
-  if (total <= 0) return { unresolved: 0, involved: 0, resolved: 0 };
-  const involved = c.threads.filter(
-    (t) => t.state === "unresolved" && t.is_you_in,
-  ).length;
-  const unresolvedOnly = c.stats.threads_unresolved - involved;
-  return {
-    unresolved: (Math.max(0, unresolvedOnly) / total) * 100,
-    involved: (Math.max(0, involved) / total) * 100,
-    resolved: (c.stats.threads_resolved / total) * 100,
-  };
-});
+type Bucket =
+  | "unresolved-uninvolved"
+  | "unresolved-involved"
+  | "resolved-uninvolved"
+  | "resolved-involved";
 
-const summaryLine = computed<{ left: string; mid: string; right: string }>(() => {
+interface BarSegment {
+  readonly bucket: Bucket;
+  readonly count: number;
+  readonly width: number;
+  readonly tooltip: string;
+}
+
+/**
+ * Four-bucket segment widths matching the dashboard threads bar (ADR 0012).
+ * Buckets are derived from per-thread `(state, is_involved)`; the conversation
+ * surface needs the per-thread breakdown rather than the rollup because the
+ * cached stats only carry the global counts. Outdated threads sort into the
+ * matching (resolved x involved) bucket - they're no longer carved out.
+ */
+const barSegments = computed<readonly BarSegment[]>(() => {
   const c = conversation.value;
-  if (c === null) return { left: "", mid: "", right: "" };
-  const involved = c.threads.filter(
-    (t) => t.state === "unresolved" && t.is_you_in,
-  ).length;
-  const ratable = c.stats.threads_total - c.stats.threads_outdated;
-  const pct = ratable > 0 ? Math.round(c.stats.resolution_rate * 100) : 0;
-  return {
-    left: `${c.stats.threads_unresolved} unresolved${involved > 0 ? ` · ${involved} yours` : ""}`,
-    mid: involved > 0 ? `${involved} involved` : "",
-    right: `${c.stats.threads_resolved} resolved · ${pct}%`,
-  };
+  if (c === null || c.stats.threads_total === 0) return [];
+  const counts = {
+    "unresolved-uninvolved": 0,
+    "unresolved-involved": 0,
+    "resolved-uninvolved": 0,
+    "resolved-involved": 0,
+  } satisfies Record<Bucket, number>;
+  for (const t of c.threads) {
+    const resolved = t.state === "resolved";
+    const involvedKey = t.is_involved ? "involved" : "uninvolved";
+    const stateKey = resolved ? "resolved" : "unresolved";
+    counts[`${stateKey}-${involvedKey}` as Bucket] += 1;
+  }
+  const total = c.stats.threads_total;
+  const raw: { bucket: Bucket; count: number; tooltip: string }[] = (
+    [
+      ["unresolved-uninvolved", "Unresolved"],
+      ["unresolved-involved", "Unresolved (involved)"],
+      ["resolved-uninvolved", "Resolved"],
+      ["resolved-involved", "Resolved (involved)"],
+    ] as const
+  )
+    .map(([bucket, label]) => ({
+      bucket,
+      count: counts[bucket],
+      tooltip: `${label} · ${counts[bucket]} ${counts[bucket] === 1 ? "thread" : "threads"}`,
+    }))
+    .filter((s) => s.count > 0);
+  const SLIVER_PCT = 5;
+  const remaining = Math.max(0, 100 - SLIVER_PCT * raw.length);
+  return raw.map((b) => ({
+    ...b,
+    width: SLIVER_PCT + (b.count / total) * remaining,
+  }));
 });
 
 async function loadConversation(): Promise<void> {
@@ -181,32 +205,21 @@ watch(
         <div class="pr-conversation__threads-col">
           <div class="pr-conversation__col-head">
             <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
-            <span class="pr-conversation__legend">
-              <span><span class="dot" style="background: var(--accent)"></span> unresolved</span>
-              <span><span class="dot" style="background: var(--info)"></span> you're in</span>
-              <span><span class="dot dot-success"></span> resolved</span>
-            </span>
           </div>
 
           <div v-if="conversation.stats.threads_total > 0" class="pr-conversation__rollup">
             <div class="pr-conversation__bar">
-              <div
-                class="pr-conversation__bar-seg pr-conversation__bar-seg--unresolved"
-                :style="{ width: `${segmentPercents.unresolved}%` }"
-              ></div>
-              <div
-                class="pr-conversation__bar-seg pr-conversation__bar-seg--involved"
-                :style="{ width: `${segmentPercents.involved}%` }"
-              ></div>
-              <div
-                class="pr-conversation__bar-seg pr-conversation__bar-seg--resolved"
-                :style="{ width: `${segmentPercents.resolved}%` }"
-              ></div>
-            </div>
-            <div class="pr-conversation__rollup-line">
-              <span>{{ summaryLine.left }}</span>
-              <span v-if="summaryLine.mid !== ''">{{ summaryLine.mid }}</span>
-              <span>{{ summaryLine.right }}</span>
+              <PRismTooltip
+                v-for="segment in barSegments"
+                :key="segment.bucket"
+                :text="segment.tooltip"
+                :as-child="true"
+              >
+                <div
+                  :class="['pr-conversation__bar-seg', `pr-conversation__bar-seg--${segment.bucket}`]"
+                  :style="{ width: `${segment.width}%` }"
+                ></div>
+              </PRismTooltip>
             </div>
           </div>
 
@@ -370,20 +383,6 @@ watch(
   color: var(--text-faint);
 }
 
-.pr-conversation__legend {
-  display: flex;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-mute);
-}
-
-.pr-conversation__legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
 .pr-conversation__rollup {
   margin-bottom: var(--s-4);
 }
@@ -400,27 +399,20 @@ watch(
   height: 100%;
 }
 
-.pr-conversation__bar-seg--unresolved {
-  background: var(--accent);
+.pr-conversation__bar-seg--unresolved-uninvolved {
+  background: var(--danger);
 }
 
-.pr-conversation__bar-seg--involved {
+.pr-conversation__bar-seg--unresolved-involved {
+  background: var(--warning);
+}
+
+.pr-conversation__bar-seg--resolved-uninvolved {
   background: var(--info);
 }
 
-.pr-conversation__bar-seg--resolved {
+.pr-conversation__bar-seg--resolved-involved {
   background: var(--success);
-}
-
-.pr-conversation__rollup-line {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--s-3);
-  margin-top: 6px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-mute);
-  flex-wrap: wrap;
 }
 
 .pr-conversation__tab-body {

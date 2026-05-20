@@ -475,17 +475,19 @@ fn threads_is_none_when_pull_request_has_never_had_a_thread() {
 }
 
 #[test]
-fn threads_projects_total_unresolved_and_involved_when_populated() {
+fn threads_projects_four_buckets_when_populated() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
     conn.execute(
         "UPDATE pull_requests
             SET threads_total = ?2,
-                threads_unresolved = ?3,
-                threads_involved = ?4
+                threads_unresolved_involved = ?3,
+                threads_unresolved_uninvolved = ?4,
+                threads_resolved_involved = ?5,
+                threads_resolved_uninvolved = ?6
           WHERE id = ?1",
-        params![100i64, 5i64, 3i64, 2i64],
+        params![100i64, 5i64, 1i64, 2i64, 1i64, 1i64],
     )
     .unwrap();
 
@@ -499,6 +501,8 @@ fn threads_projects_total_unresolved_and_involved_when_populated() {
     let pr = rows.iter().find(|r| r.id == 100).unwrap();
     let threads = pr.threads.as_ref().expect("threads populated");
     assert_eq!(threads.total, 5);
-    assert_eq!(threads.unresolved, 3);
-    assert_eq!(threads.involved, 2);
+    assert_eq!(threads.unresolved_involved, 1);
+    assert_eq!(threads.unresolved_uninvolved, 2);
+    assert_eq!(threads.resolved_involved, 1);
+    assert_eq!(threads.resolved_uninvolved, 1);
 }
