@@ -33,7 +33,9 @@ Non-trivial decisions (stack, storage, sync, security, API protocol, library cho
 
 ### Issues, milestones, kanban
 
-All work is tied to a GitHub issue. The roadmap lives in milestones M1–M7 (mirroring the PRD milestones in the wiki Roadmap page). The kanban board is at <https://github.com/users/cerinoligutom/projects/7>. Don't open a PR without a linked issue unless it's a trivial typo fix.
+All work is tied to a GitHub issue. The roadmap lives in milestones M1–M7 (mirroring the PRD milestones in the wiki Roadmap page). The kanban board is at <https://github.com/users/cerinoligutom/projects/7>.
+
+**Issue-first routine.** Before starting non-trivial work, check for an existing issue. If none exists, open one with `gh issue create` (set the milestone, `type:*` / `scope:*` / `priority:*` labels, and assignee) _before_ branching. Reference the number in the branch name, commits, and PR body (`Closes #N` / `Refs #N`). Setting labels and assignee at issue creation keeps project-board automation firing in the correct order; applying them later mis-sequences the workflows. Trivial typo, doc grammar, and single-line config fixes are exempt. See [CONTRIBUTING.md → Pull request workflow](CONTRIBUTING.md#pull-request-workflow) for the full submission steps.
 
 ### Wiki sync
 
