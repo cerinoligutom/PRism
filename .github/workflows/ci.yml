@@ -88,10 +88,10 @@ jobs:
           run_install: false
 
       - name: Install Node
-        # pnpm 11 requires Node >= 22.13 (it imports node:sqlite, only stable in Node 22+).
+        # Tracks engines.node — Node 24 is the current LTS line (since 2025-10).
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install JS dependencies

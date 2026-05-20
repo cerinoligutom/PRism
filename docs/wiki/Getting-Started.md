@@ -10,7 +10,7 @@ PRism is built on Tauri 2 (ADR [0002](https://github.com/cerinoligutom/PRism/blo
 
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust (latest stable): <https://rustup.rs>
-- Node 22+ (use `nvm`, `fnm`, or your package manager — pnpm 11 needs Node 22.13+)
+- Node 24+ LTS (use `nvm`, `fnm`, or your package manager)
 - pnpm 11+: `corepack enable pnpm`
 
 ### Windows
@@ -18,7 +18,7 @@ PRism is built on Tauri 2 (ADR [0002](https://github.com/cerinoligutom/PRism/blo
 - [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (ships with Windows 11, install on 10)
 - Rust (latest stable): <https://rustup.rs>
-- Node 22+
+- Node 24+
 - pnpm 11+
 
 ### Linux
@@ -26,7 +26,7 @@ PRism is built on Tauri 2 (ADR [0002](https://github.com/cerinoligutom/PRism/blo
 - Standard build chain: `gcc`, `pkg-config`, `libssl-dev`
 - WebKitGTK and dependencies — see [Tauri Linux prereqs](https://tauri.app/start/prerequisites/#linux)
 - Rust (latest stable)
-- Node 22+
+- Node 24+
 - pnpm 11+
 
 ## Clone and run

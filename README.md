@@ -29,7 +29,7 @@ pnpm tauri:dev      # native window, hot reload
 pnpm tauri:build    # release binary under src-tauri/target/release/bundle/
 ```
 
-You need Node 22+, pnpm 11+, and Rust stable. Tauri's [Prerequisites guide](https://tauri.app/start/prerequisites/) covers the OS-specific bits.
+You need Node 24+ LTS, pnpm 11+, and Rust stable. Tauri's [Prerequisites guide](https://tauri.app/start/prerequisites/) covers the OS-specific bits.
 
 ## Project layout
 
