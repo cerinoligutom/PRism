@@ -158,13 +158,17 @@ struct ThreadCounts {
 
 fn thread_counts(conn: &Connection, pull_request_id: i64) -> Result<ThreadCounts, rusqlite::Error> {
     // Single aggregation: total, unresolved, resolved, outdated. `unresolved`
-    // excludes outdated threads per the contract (outdated is counted but not
-    // counted as unresolved).
+    // AND `resolved` are both strict-active (exclude outdated) so the three
+    // visible buckets — unresolved, resolved, outdated — are disjoint over the
+    // active set (`total - outdated`). A thread that's both resolved AND
+    // outdated counts only in `outdated`; this matches the threads list which
+    // hides such threads behind the "Show N outdated" toggle and prevents the
+    // resolution rate from overshooting 100%.
     let (total, unresolved, resolved, outdated): (i64, i64, i64, i64) = conn.query_row(
         "SELECT
              COUNT(*),
              SUM(CASE WHEN is_resolved = 0 AND is_outdated = 0 THEN 1 ELSE 0 END),
-             SUM(CASE WHEN is_resolved = 1 THEN 1 ELSE 0 END),
+             SUM(CASE WHEN is_resolved = 1 AND is_outdated = 0 THEN 1 ELSE 0 END),
              SUM(CASE WHEN is_outdated = 1 THEN 1 ELSE 0 END)
            FROM review_threads
           WHERE pull_request_id = ?1",
