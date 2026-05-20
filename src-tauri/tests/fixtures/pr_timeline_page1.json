@@ -1,0 +1,30 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_kwDOABCDEF",
+        "timelineItems": {
+          "pageInfo": { "hasNextPage": true, "endCursor": "Y2lyY2xlMQ==" },
+          "nodes": [
+            {
+              "__typename": "ReviewRequestedEvent",
+              "createdAt": "2026-05-18T11:00:00Z",
+              "actor": { "login": "alice" }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "createdAt": "2026-05-18T15:00:00Z",
+              "state": "APPROVED",
+              "author": { "login": "bob" }
+            },
+            {
+              "__typename": "ReadyForReviewEvent",
+              "createdAt": "2026-05-18T10:30:00Z",
+              "actor": { "login": "alice" }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
