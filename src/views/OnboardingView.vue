@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PRismInput from "@/components/ui/PRismInput.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
 import { useSyncStore, type AccountSyncState } from "@/stores/sync";
 
@@ -382,17 +383,27 @@ onUnmounted(() => {
             </div>
             <span class="onboarding-scope__tag">READ</span>
           </div>
-          <div class="onboarding-scope">
-            <span class="onboarding-scope__check" aria-hidden="true">
+          <div class="onboarding-scope onboarding-scope--optional">
+            <span class="onboarding-scope__check onboarding-scope__check--optional" aria-hidden="true">
               <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8.5l3 3 7-7" />
+                <path d="M8 4v5" />
+                <path d="M8 11.5v.5" />
               </svg>
             </span>
             <div>
-              <div class="onboarding-scope__name">Members (org)</div>
+              <div class="onboarding-scope__name">Members</div>
               <div class="onboarding-scope__desc">Resolve org members for team views.</div>
             </div>
-            <span class="onboarding-scope__tag">READ</span>
+            <PRismTooltip side="left" :side-offset="10">
+              <span class="onboarding-scope__tag onboarding-scope__tag--optional" tabindex="0">
+                ORG ONLY
+              </span>
+              <template #content>
+                <strong class="onboarding-tooltip__title">Only for organisation PATs.</strong>
+                Fine-grained tokens only show an "Organization permissions" section when the
+                Resource owner is an org. Skip this when connecting a personal account.
+              </template>
+            </PRismTooltip>
           </div>
         </section>
 
@@ -608,6 +619,21 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--s-5);
   position: relative;
+}
+
+.onboarding-step--1::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(50% 40% at 30% 20%, oklch(0.32 0.08 var(--accent-h) / 0.4), transparent 70%),
+    radial-gradient(40% 35% at 90% 95%, oklch(0.28 0.12 25 / 0.3), transparent 70%);
+  pointer-events: none;
+}
+
+.onboarding-step--1 > * {
+  position: relative;
+  z-index: 1;
 }
 
 .onboarding-step__head {
@@ -852,6 +878,29 @@ onUnmounted(() => {
   padding: 1px 6px;
   background: var(--bg-4);
   border-radius: var(--r-1);
+}
+
+.onboarding-scope__check--optional {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.onboarding-scope__tag--optional {
+  color: var(--info);
+  background: var(--info-bg);
+  cursor: help;
+  outline: none;
+}
+
+.onboarding-scope__tag--optional:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.onboarding-tooltip__title {
+  display: block;
+  color: var(--text-strong);
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .onboarding-validate {
