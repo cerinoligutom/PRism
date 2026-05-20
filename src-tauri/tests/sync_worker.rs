@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use prism_lib::auth::store::{Account, AccountStore, JsonAccountStore};
+use prism_lib::auth::store::{Account, AccountStore, SqlAccountStore};
 use prism_lib::db::{open_at, DbHandle};
 use prism_lib::github::{
     AccountHandle, EtagStore, GitHubClient, GitHubError, InMemoryEtagStore, StaticTokenSource,
@@ -136,8 +136,7 @@ impl Harness {
 fn setup_harness(server: &MockServer) -> Harness {
     let tmp = TempDir::new().expect("tempdir");
     let db = open_at(&tmp.path().join("prism.sqlite")).expect("open db");
-    let accounts_store: Arc<dyn AccountStore> =
-        Arc::new(JsonAccountStore::open(tmp.path().join("accounts.json")).unwrap());
+    let accounts_store: Arc<dyn AccountStore> = Arc::new(SqlAccountStore::new(db.clone()));
 
     let base = Url::parse(&server.uri()).unwrap();
     Harness {
@@ -166,15 +165,6 @@ fn seed_account(h: &Harness, id: u64, login: &str) -> Account {
         expires_at: None,
     };
     h.accounts.upsert(account.clone()).unwrap();
-    // Also insert into the DB `accounts` row so foreign keys hold.
-    h.db.lock()
-        .unwrap()
-        .execute(
-            "INSERT OR IGNORE INTO accounts (id, label, host, login, scopes, created_at)
-               VALUES (?1, ?2, ?3, ?4, '', 0)",
-            params![id as i64, account.label, account.host, account.login],
-        )
-        .unwrap();
     account
 }
 
