@@ -48,6 +48,10 @@ export const router = createRouter({
       component: () => import("@/views/SettingsView.vue"),
       children: [
         {
+          path: "",
+          redirect: { name: "settings.accounts" },
+        },
+        {
           path: "accounts",
           name: "settings.accounts",
           component: () => import("@/views/settings/AccountsPanel.vue"),
