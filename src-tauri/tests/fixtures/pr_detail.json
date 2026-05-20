@@ -52,7 +52,11 @@
               "isResolved": true,
               "isOutdated": false,
               "path": "src/lib.rs",
+              "line": 42,
+              "startLine": null,
+              "originalLine": 41,
               "comments": {
+                "totalCount": 1,
                 "nodes": [
                   {
                     "id": "PRRC_1",
@@ -68,7 +72,11 @@
               "isResolved": false,
               "isOutdated": false,
               "path": "src/main.rs",
+              "line": 88,
+              "startLine": 86,
+              "originalLine": 87,
               "comments": {
+                "totalCount": 3,
                 "nodes": [
                   {
                     "id": "PRRC_2",
@@ -80,6 +88,27 @@
               }
             }
           ]
+        },
+        "reviews": {
+          "nodes": [
+            {
+              "id": "PRR_1",
+              "state": "APPROVED",
+              "body": "LGTM overall.",
+              "submittedAt": "2026-05-18T15:00:00Z",
+              "author": { "login": "bob" }
+            },
+            {
+              "id": "PRR_2",
+              "state": "COMMENTED",
+              "body": "",
+              "submittedAt": "2026-05-18T16:30:00Z",
+              "author": { "login": "carol" }
+            }
+          ]
+        },
+        "issueComments": {
+          "totalCount": 7
         }
       }
     }

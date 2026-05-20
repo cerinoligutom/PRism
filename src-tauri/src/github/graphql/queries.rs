@@ -70,7 +70,11 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           isResolved
           isOutdated
           path
+          line
+          startLine
+          originalLine
           comments(first: 1) {
+            totalCount
             nodes {
               id
               author { login }
@@ -79,6 +83,18 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
             }
           }
         }
+      }
+      reviews(first: 30) {
+        nodes {
+          id
+          state
+          body
+          submittedAt
+          author { login }
+        }
+      }
+      issueComments(first: 50) {
+        totalCount
       }
     }
   }
@@ -205,6 +221,10 @@ pub struct PullRequestDetail {
     #[serde(default)]
     pub commits: Option<PrCommitConnection>,
     pub review_threads: ReviewThreadConnection,
+    #[serde(default)]
+    pub reviews: Option<PullRequestReviewConnection>,
+    #[serde(default)]
+    pub issue_comments: Option<IssueCommentConnection>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -299,11 +319,19 @@ pub struct ReviewThread {
     pub is_outdated: bool,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
+    pub line: Option<i64>,
+    #[serde(default)]
+    pub start_line: Option<i64>,
+    #[serde(default)]
+    pub original_line: Option<i64>,
     pub comments: CommentConnection,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommentConnection {
+    pub total_count: i64,
     pub nodes: Vec<Comment>,
 }
 
@@ -315,6 +343,30 @@ pub struct Comment {
     pub author: Option<Actor>,
     pub body_text: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PullRequestReviewConnection {
+    pub nodes: Vec<PullRequestReviewNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestReviewNode {
+    pub id: String,
+    pub state: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub submitted_at: Option<String>,
+    #[serde(default)]
+    pub author: Option<Actor>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueCommentConnection {
+    pub total_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -526,6 +578,92 @@ mod tests {
                 "pr detail query missing field: {field}"
             );
         }
+    }
+
+    #[test]
+    fn pr_detail_query_includes_conversation_depth_fields() {
+        // Thread line range + comments.totalCount + head comment shape.
+        for field in [
+            "line",
+            "startLine",
+            "originalLine",
+            "comments(first: 1)",
+            "reviews(first: 30)",
+            "submittedAt",
+            "issueComments(first: 50)",
+        ] {
+            assert!(
+                PR_DETAIL_QUERY.contains(field),
+                "pr detail query missing conversation-depth field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_thread_deserialises_with_line_range_and_total_count() {
+        let json = serde_json::json!({
+            "id": "PRRT_1",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/lib.rs",
+            "line": 42,
+            "startLine": 40,
+            "originalLine": 41,
+            "comments": {
+                "totalCount": 3,
+                "nodes": [{
+                    "id": "PRRC_1",
+                    "author": { "login": "alice" },
+                    "bodyText": "Looks good",
+                    "createdAt": "2026-05-19T10:00:00Z"
+                }]
+            }
+        });
+        let thread: ReviewThread = serde_json::from_value(json).unwrap();
+        assert_eq!(thread.line, Some(42));
+        assert_eq!(thread.start_line, Some(40));
+        assert_eq!(thread.original_line, Some(41));
+        assert_eq!(thread.comments.total_count, 3);
+        assert_eq!(thread.comments.nodes.len(), 1);
+    }
+
+    #[test]
+    fn pull_request_review_node_deserialises_full_shape() {
+        let json = serde_json::json!({
+            "id": "PRR_1",
+            "state": "APPROVED",
+            "body": "LGTM",
+            "submittedAt": "2026-05-19T12:00:00Z",
+            "author": { "login": "alice" }
+        });
+        let review: PullRequestReviewNode = serde_json::from_value(json).unwrap();
+        assert_eq!(review.id, "PRR_1");
+        assert_eq!(review.state, "APPROVED");
+        assert_eq!(review.body.as_deref(), Some("LGTM"));
+        assert_eq!(review.submitted_at.as_deref(), Some("2026-05-19T12:00:00Z"));
+        assert_eq!(review.author.unwrap().login, "alice");
+    }
+
+    #[test]
+    fn pull_request_review_node_deserialises_with_null_optionals() {
+        // PENDING reviews have no submittedAt or body.
+        let json = serde_json::json!({
+            "id": "PRR_2",
+            "state": "PENDING",
+            "body": null,
+            "submittedAt": null,
+            "author": { "login": "bob" }
+        });
+        let review: PullRequestReviewNode = serde_json::from_value(json).unwrap();
+        assert!(review.body.is_none());
+        assert!(review.submitted_at.is_none());
+    }
+
+    #[test]
+    fn issue_comment_connection_deserialises_total_count_only() {
+        let json = serde_json::json!({ "totalCount": 17 });
+        let ic: IssueCommentConnection = serde_json::from_value(json).unwrap();
+        assert_eq!(ic.total_count, 17);
     }
 
     #[test]

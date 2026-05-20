@@ -911,6 +911,23 @@ pub fn write_pr_updates(
                 )?;
             }
         }
+
+        write_review_threads(&tx, pr_id, &d.review_threads.nodes)?;
+
+        if let Some(reviews) = d.reviews.as_ref() {
+            write_reviews(&tx, pr_id, &reviews.nodes)?;
+        }
+
+        if let Some(ic) = d.issue_comments.as_ref() {
+            tx.execute(
+                "UPDATE pull_requests SET issue_comments_count = ?1 WHERE id = ?2",
+                params![ic.total_count, pr_id],
+            )?;
+        }
+
+        // NOTE: pull_requests.threads_total / threads_unresolved / threads_involved
+        // are written by M3-C in a follow-up UPDATE block landed in this same
+        // function on top of the thread upserts above.
     }
 
     if let Some(events) = events {
@@ -995,6 +1012,200 @@ fn reviewer_type_and_login(
         RequestedReviewer::Team { slug } => Some(("team", slug.as_str())),
         RequestedReviewer::Other => None,
     }
+}
+
+/// Upsert per-thread state. Tracks transitions on `is_resolved` so
+/// `resolved_at` is set when a thread becomes resolved and cleared when it
+/// flips back. Prunes any prior thread for this PR whose `node_id` is absent
+/// from the fetched set; cascading deletes on `review_comments` follow.
+fn write_review_threads(
+    tx: &rusqlite::Transaction<'_>,
+    pr_id: i64,
+    threads: &[crate::github::graphql::ReviewThread],
+) -> Result<(), rusqlite::Error> {
+    use std::collections::HashMap;
+
+    // Snapshot the existing rows so we can detect resolve transitions
+    // (set `resolved_at` only on the cycle the flag flips) and preserve
+    // `created_at` once it's stamped.
+    let mut existing: HashMap<String, ExistingThread> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT node_id, is_resolved, resolved_at, created_at
+               FROM review_threads
+              WHERE pull_request_id = ?1 AND node_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![pr_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                ExistingThread {
+                    is_resolved: r.get::<_, i64>(1)? != 0,
+                    resolved_at: r.get::<_, Option<i64>>(2)?,
+                    created_at: r.get::<_, Option<i64>>(3)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (node_id, info) = row?;
+            existing.insert(node_id, info);
+        }
+    }
+
+    for thread in threads {
+        let head = thread.comments.nodes.first();
+        let head_created_at = head.and_then(|c| rfc3339_to_unix(&c.created_at));
+        let head_author = head.and_then(|c| c.author.as_ref().map(|a| a.login.as_str()));
+        let head_body = head.map(|c| c.body_text.as_str());
+
+        let prior = existing.remove(&thread.id);
+        let created_at = prior
+            .as_ref()
+            .and_then(|p| p.created_at)
+            .or(head_created_at);
+
+        // Resolved-at follows the resolved flag transition: set on the cycle
+        // it flips true, clear on the cycle it flips back. Preserve when the
+        // state is unchanged.
+        let resolved_at = match (prior.as_ref().map(|p| p.is_resolved), thread.is_resolved) {
+            (Some(true), true) => prior.as_ref().and_then(|p| p.resolved_at),
+            (Some(false), true) | (None, true) => Some(unix_now()),
+            (_, false) => None,
+        };
+
+        // The reply count denormalises the post-head replies. `totalCount`
+        // covers head + replies; one comment means zero replies.
+        let reply_count = (thread.comments.total_count - 1).max(0);
+
+        // The unique constraint on review_threads.node_id is a partial index
+        // (WHERE node_id IS NOT NULL from migration 0004). SQLite requires the
+        // ON CONFLICT target to repeat the WHERE clause for partial indexes.
+        tx.execute(
+            "INSERT INTO review_threads
+                (pull_request_id, node_id, is_resolved, is_outdated, path,
+                 line, start_line, original_line, created_at, resolved_at,
+                 last_reply_at, reply_count, head_comment_author_login,
+                 head_comment_body_text, head_comment_created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
+                pull_request_id = excluded.pull_request_id,
+                is_resolved = excluded.is_resolved,
+                is_outdated = excluded.is_outdated,
+                path = excluded.path,
+                line = excluded.line,
+                start_line = excluded.start_line,
+                original_line = excluded.original_line,
+                created_at = COALESCE(review_threads.created_at, excluded.created_at),
+                resolved_at = excluded.resolved_at,
+                last_reply_at = excluded.last_reply_at,
+                reply_count = excluded.reply_count,
+                head_comment_author_login = excluded.head_comment_author_login,
+                head_comment_body_text = excluded.head_comment_body_text,
+                head_comment_created_at = excluded.head_comment_created_at",
+            params![
+                pr_id,
+                thread.id,
+                thread.is_resolved as i64,
+                thread.is_outdated as i64,
+                thread.path,
+                thread.line,
+                thread.start_line,
+                thread.original_line,
+                created_at,
+                resolved_at,
+                head_created_at,
+                reply_count,
+                head_author,
+                head_body,
+                head_created_at,
+            ],
+        )?;
+    }
+
+    // Pruning: any thread row left in the snapshot wasn't present in the
+    // latest fetch, so the thread has been removed on GitHub. Comments
+    // cascade via the existing FK.
+    for stale in existing.keys() {
+        tx.execute(
+            "DELETE FROM review_threads
+              WHERE pull_request_id = ?1 AND node_id = ?2",
+            params![pr_id, stale],
+        )?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ExistingThread {
+    is_resolved: bool,
+    resolved_at: Option<i64>,
+    created_at: Option<i64>,
+}
+
+/// Upsert submitted reviews and prune any prior row whose `node_id` is absent
+/// from the fetched set.
+fn write_reviews(
+    tx: &rusqlite::Transaction<'_>,
+    pr_id: i64,
+    reviews: &[crate::github::graphql::PullRequestReviewNode],
+) -> Result<(), rusqlite::Error> {
+    use std::collections::HashSet;
+
+    let mut existing: HashSet<String> = HashSet::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT node_id FROM reviews
+              WHERE pull_request_id = ?1 AND node_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![pr_id], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            existing.insert(row?);
+        }
+    }
+
+    for review in reviews {
+        let author = review
+            .author
+            .as_ref()
+            .map(|a| a.login.as_str())
+            .unwrap_or("");
+        let submitted_at = review.submitted_at.as_deref().and_then(rfc3339_to_unix);
+
+        // Same partial-index conflict target shape as review_threads.
+        tx.execute(
+            "INSERT INTO reviews
+                (pull_request_id, node_id, reviewer_login, state, submitted_at, body)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
+                pull_request_id = excluded.pull_request_id,
+                reviewer_login = excluded.reviewer_login,
+                state = excluded.state,
+                submitted_at = excluded.submitted_at,
+                body = excluded.body",
+            params![
+                pr_id,
+                review.id,
+                author,
+                review.state,
+                submitted_at,
+                review.body,
+            ],
+        )?;
+
+        existing.remove(&review.id);
+    }
+
+    // Pruning: any review row whose node_id wasn't in the latest fetch is
+    // gone upstream; drop it locally.
+    for stale in &existing {
+        tx.execute(
+            "DELETE FROM reviews
+              WHERE pull_request_id = ?1 AND node_id = ?2",
+            params![pr_id, stale],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn qualifying_event_wire_name(ev: crate::sync::status_timeline::QualifyingEvent) -> &'static str {
@@ -1140,6 +1351,8 @@ mod tests {
             review_requests,
             commits,
             review_threads: empty_review_threads(),
+            reviews: None,
+            issue_comments: None,
         }
     }
 
@@ -1530,5 +1743,553 @@ mod tests {
                 .collect()
         };
         assert_eq!(logins, vec!["alice".to_string()]);
+    }
+
+    // ===== Conversation depth (M3-A) tests =====
+
+    use crate::github::graphql::{
+        CommentConnection as GqlCommentConnection, IssueCommentConnection, PageInfo,
+        PullRequestReviewConnection, PullRequestReviewNode, ReviewThread,
+    };
+
+    struct ThreadSpec<'a> {
+        node_id: &'a str,
+        is_resolved: bool,
+        is_outdated: bool,
+        path: &'a str,
+        line: Option<i64>,
+        start_line: Option<i64>,
+        original_line: Option<i64>,
+        head: Option<(&'a str, &'a str, &'a str)>,
+        total_count: i64,
+    }
+
+    impl<'a> ThreadSpec<'a> {
+        fn open(node_id: &'a str, path: &'a str, head: (&'a str, &'a str, &'a str)) -> Self {
+            Self {
+                node_id,
+                is_resolved: false,
+                is_outdated: false,
+                path,
+                line: None,
+                start_line: None,
+                original_line: None,
+                head: Some(head),
+                total_count: 1,
+            }
+        }
+
+        fn resolved(mut self, resolved: bool) -> Self {
+            self.is_resolved = resolved;
+            self
+        }
+
+        fn outdated(mut self, outdated: bool) -> Self {
+            self.is_outdated = outdated;
+            self
+        }
+
+        fn lines(mut self, line: Option<i64>, start: Option<i64>, original: Option<i64>) -> Self {
+            self.line = line;
+            self.start_line = start;
+            self.original_line = original;
+            self
+        }
+
+        fn total_count(mut self, count: i64) -> Self {
+            self.total_count = count;
+            self
+        }
+    }
+
+    fn thread(spec: ThreadSpec<'_>) -> ReviewThread {
+        let head_node = spec
+            .head
+            .map(|(id, login, created_at)| crate::github::graphql::Comment {
+                id: id.into(),
+                author: Some(Actor {
+                    login: login.into(),
+                }),
+                body_text: "head body".into(),
+                created_at: created_at.into(),
+            });
+        ReviewThread {
+            id: spec.node_id.into(),
+            is_resolved: spec.is_resolved,
+            is_outdated: spec.is_outdated,
+            path: Some(spec.path.into()),
+            line: spec.line,
+            start_line: spec.start_line,
+            original_line: spec.original_line,
+            comments: GqlCommentConnection {
+                total_count: spec.total_count,
+                nodes: head_node.into_iter().collect(),
+            },
+        }
+    }
+
+    fn empty_thread(node_id: &str, path: &str) -> ReviewThread {
+        ReviewThread {
+            id: node_id.into(),
+            is_resolved: false,
+            is_outdated: false,
+            path: Some(path.into()),
+            line: None,
+            start_line: None,
+            original_line: None,
+            comments: GqlCommentConnection {
+                total_count: 0,
+                nodes: vec![],
+            },
+        }
+    }
+
+    fn review_threads(nodes: Vec<ReviewThread>) -> ReviewThreadConnection {
+        ReviewThreadConnection {
+            page_info: PageInfo {
+                has_next_page: false,
+                end_cursor: None,
+            },
+            nodes,
+        }
+    }
+
+    fn detail_with_threads(
+        threads: ReviewThreadConnection,
+        reviews: Option<PullRequestReviewConnection>,
+        issue_comments: Option<IssueCommentConnection>,
+    ) -> PullRequestDetail {
+        let mut d = detail_with(None, None, None, "MERGEABLE", None, None, None);
+        d.review_threads = threads;
+        d.reviews = reviews;
+        d.issue_comments = issue_comments;
+        d
+    }
+
+    #[test]
+    fn write_pr_updates_upserts_review_threads_with_line_range_and_head_snapshot() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_1",
+                    "src/lib.rs",
+                    ("PRRC_1", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(42), Some(40), Some(41))
+                .total_count(3),
+            )]),
+            None,
+            None,
+        );
+
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let conn = db.lock().unwrap();
+        type Row = (
+            String,
+            i64,
+            i64,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        );
+        let row: Row = conn
+            .query_row(
+                "SELECT node_id, is_resolved, is_outdated, path, line, start_line,
+                        original_line, created_at, resolved_at, last_reply_at, reply_count,
+                        head_comment_author_login, head_comment_body_text, head_comment_created_at
+                   FROM review_threads
+                  WHERE pull_request_id = ?1 AND node_id = 'PRRT_1'",
+                params![pr_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                        r.get(12)?,
+                        r.get(13)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "PRRT_1");
+        assert_eq!(row.1, 0); // is_resolved
+        assert_eq!(row.2, 0); // is_outdated
+        assert_eq!(row.3.as_deref(), Some("src/lib.rs"));
+        assert_eq!(row.4, Some(42));
+        assert_eq!(row.5, Some(40));
+        assert_eq!(row.6, Some(41));
+        // created_at + last_reply_at derived from the head comment's createdAt.
+        assert_eq!(row.7, rfc3339_to_unix("2026-05-18T10:00:00Z"));
+        assert_eq!(row.8, None); // resolved_at — unresolved on first write.
+        assert_eq!(row.9, rfc3339_to_unix("2026-05-18T10:00:00Z"));
+        assert_eq!(row.10, 2); // reply_count = totalCount(3) - 1
+        assert_eq!(row.11.as_deref(), Some("alice"));
+        assert_eq!(row.12.as_deref(), Some("head body"));
+        assert_eq!(row.13, rfc3339_to_unix("2026-05-18T10:00:00Z"));
+    }
+
+    #[test]
+    fn write_pr_updates_tracks_resolved_at_transitions() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Cycle 1: unresolved.
+        let d1 = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_1",
+                    "src/lib.rs",
+                    ("PRRC_1", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(1), None, None),
+            )]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+        let resolved_at: Option<i64> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_at, None);
+
+        // Cycle 2: resolved. resolved_at must be set.
+        let d2 = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_1",
+                    "src/lib.rs",
+                    ("PRRC_1", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(1), None, None)
+                .resolved(true),
+            )]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+        let resolved_at: Option<i64> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            resolved_at.is_some(),
+            "resolved_at must be stamped on transition to resolved"
+        );
+        let stamped = resolved_at.unwrap();
+
+        // Cycle 3: still resolved. resolved_at preserved (not bumped).
+        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+        let resolved_at: Option<i64> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved_at,
+            Some(stamped),
+            "resolved_at must be preserved when state is unchanged"
+        );
+
+        // Cycle 4: thread flips back to unresolved. resolved_at must clear.
+        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+        let resolved_at: Option<i64> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_at, None);
+
+        // Cycle 5: thread becomes outdated (still unresolved). Outdated flag
+        // recorded, resolved_at remains null.
+        let d3 = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_1",
+                    "src/lib.rs",
+                    ("PRRC_1", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(1), None, None)
+                .outdated(true),
+            )]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&d3), None).unwrap();
+        let (is_outdated, resolved_at): (i64, Option<i64>) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_outdated, resolved_at FROM review_threads WHERE node_id = 'PRRT_1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_outdated, 1);
+        assert_eq!(resolved_at, None);
+    }
+
+    #[test]
+    fn write_pr_updates_prunes_removed_threads_and_reviews() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Cycle 1: two threads + two reviews persisted.
+        let d1 = detail_with_threads(
+            review_threads(vec![
+                thread(
+                    ThreadSpec::open(
+                        "PRRT_keep",
+                        "a.rs",
+                        ("PRRC_a", "alice", "2026-05-18T10:00:00Z"),
+                    )
+                    .lines(Some(1), None, None),
+                ),
+                thread(
+                    ThreadSpec::open(
+                        "PRRT_drop",
+                        "b.rs",
+                        ("PRRC_b", "bob", "2026-05-18T11:00:00Z"),
+                    )
+                    .lines(Some(2), None, None),
+                ),
+            ]),
+            Some(PullRequestReviewConnection {
+                nodes: vec![
+                    PullRequestReviewNode {
+                        id: "PRR_keep".into(),
+                        state: "APPROVED".into(),
+                        body: Some("LGTM".into()),
+                        submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                        author: Some(Actor {
+                            login: "alice".into(),
+                        }),
+                    },
+                    PullRequestReviewNode {
+                        id: "PRR_drop".into(),
+                        state: "COMMENTED".into(),
+                        body: None,
+                        submitted_at: Some("2026-05-18T13:00:00Z".into()),
+                        author: Some(Actor {
+                            login: "bob".into(),
+                        }),
+                    },
+                ],
+            }),
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&d1), None).unwrap();
+
+        let thread_count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM review_threads WHERE pull_request_id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(thread_count, 2);
+        let review_count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM reviews WHERE pull_request_id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(review_count, 2);
+
+        // Cycle 2: only the "keep" thread + review remain upstream.
+        let d2 = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_keep",
+                    "a.rs",
+                    ("PRRC_a", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .lines(Some(1), None, None),
+            )]),
+            Some(PullRequestReviewConnection {
+                nodes: vec![PullRequestReviewNode {
+                    id: "PRR_keep".into(),
+                    state: "APPROVED".into(),
+                    body: Some("LGTM".into()),
+                    submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                    author: Some(Actor {
+                        login: "alice".into(),
+                    }),
+                }],
+            }),
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&d2), None).unwrap();
+
+        let surviving_threads: Vec<String> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT node_id FROM review_threads WHERE pull_request_id = ?1")
+                .unwrap();
+            stmt.query_map(params![pr_id], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(surviving_threads, vec!["PRRT_keep".to_string()]);
+
+        let surviving_reviews: Vec<String> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT node_id FROM reviews WHERE pull_request_id = ?1")
+                .unwrap();
+            stmt.query_map(params![pr_id], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(surviving_reviews, vec!["PRR_keep".to_string()]);
+    }
+
+    #[test]
+    fn write_pr_updates_clamps_reply_count_to_zero_on_empty_thread() {
+        // Defensive: GraphQL shouldn't surface totalCount = 0 for a populated
+        // thread, but guard against negative reply_count if it ever does.
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            review_threads(vec![empty_thread("PRRT_empty", "x.rs")]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let reply_count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT reply_count FROM review_threads WHERE node_id = 'PRRT_empty'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reply_count, 0);
+    }
+
+    #[test]
+    fn write_pr_updates_writes_issue_comments_count() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            empty_review_threads(),
+            None,
+            Some(IssueCommentConnection { total_count: 17 }),
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT issue_comments_count FROM pull_requests WHERE id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 17);
+    }
+
+    #[test]
+    fn write_pr_updates_persists_reviews_with_optional_body() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            empty_review_threads(),
+            Some(PullRequestReviewConnection {
+                nodes: vec![
+                    PullRequestReviewNode {
+                        id: "PRR_a".into(),
+                        state: "APPROVED".into(),
+                        body: Some("LGTM".into()),
+                        submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                        author: Some(Actor {
+                            login: "alice".into(),
+                        }),
+                    },
+                    PullRequestReviewNode {
+                        id: "PRR_b".into(),
+                        state: "COMMENTED".into(),
+                        body: None,
+                        submitted_at: None,
+                        author: None,
+                    },
+                ],
+            }),
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        type ReviewRow = (String, String, Option<String>, Option<i64>, String);
+        let rows: Vec<ReviewRow> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, state, body, submitted_at, reviewer_login
+                       FROM reviews
+                      WHERE pull_request_id = ?1
+                      ORDER BY node_id",
+                )
+                .unwrap();
+            stmt.query_map(params![pr_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "PRR_a");
+        assert_eq!(rows[0].1, "APPROVED");
+        assert_eq!(rows[0].2.as_deref(), Some("LGTM"));
+        assert_eq!(rows[0].3, rfc3339_to_unix("2026-05-18T12:00:00Z"));
+        assert_eq!(rows[0].4, "alice");
+        assert_eq!(rows[1].0, "PRR_b");
+        assert_eq!(rows[1].1, "COMMENTED");
+        assert!(rows[1].2.is_none());
+        assert!(rows[1].3.is_none());
+        assert_eq!(rows[1].4, "");
     }
 }

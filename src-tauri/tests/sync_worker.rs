@@ -349,6 +349,78 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
         ]
     );
 
+    // Conversation-depth enrichments (M3-A): threads, reviews, issue-comments
+    // count. Fixture carries two threads (one resolved, one unresolved), two
+    // reviews, and seven issue comments.
+    type ThreadRow = (String, i64, i64, Option<String>, Option<i64>, i64);
+    let threads: Vec<ThreadRow> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT node_id, is_resolved, is_outdated, path, line, reply_count
+                   FROM review_threads
+                  WHERE pull_request_id = 999
+                  ORDER BY node_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    assert_eq!(threads.len(), 2, "two threads from the fixture");
+    assert_eq!(threads[0].0, "PRRT_thread1");
+    assert_eq!(threads[0].1, 1, "thread1 is resolved");
+    assert_eq!(threads[0].3.as_deref(), Some("src/lib.rs"));
+    assert_eq!(threads[0].4, Some(42));
+    assert_eq!(threads[0].5, 0, "totalCount(1) - 1 = 0 replies");
+    assert_eq!(threads[1].0, "PRRT_thread2");
+    assert_eq!(threads[1].1, 0, "thread2 is unresolved");
+    assert_eq!(threads[1].4, Some(88));
+    assert_eq!(threads[1].5, 2, "totalCount(3) - 1 = 2 replies");
+
+    let reviews: Vec<(String, String, Option<String>, String)> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT node_id, state, body, reviewer_login FROM reviews
+                  WHERE pull_request_id = 999 ORDER BY node_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(reviews.len(), 2);
+    assert_eq!(reviews[0].0, "PRR_1");
+    assert_eq!(reviews[0].1, "APPROVED");
+    assert_eq!(reviews[0].2.as_deref(), Some("LGTM overall."));
+    assert_eq!(reviews[0].3, "bob");
+    assert_eq!(reviews[1].0, "PRR_2");
+    assert_eq!(reviews[1].1, "COMMENTED");
+
+    let issue_count: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT issue_comments_count FROM pull_requests WHERE id = 999",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(issue_count, 7);
+
     // Status event fired at least twice (Syncing + Synced).
     assert!(harness.emit.count("sync://status") >= 2);
     assert_eq!(harness.reauth.count(), 0);
@@ -818,4 +890,344 @@ async fn discovery_failure_returns_failed_and_skips_pruning() {
         )
         .unwrap();
     assert_eq!(survivors, 1, "discovery hiccup must not drop relations");
+}
+
+struct ThreadFixture<'a> {
+    node_id: &'a str,
+    is_resolved: bool,
+    is_outdated: bool,
+    path: &'a str,
+    line: Option<i64>,
+    total_count: i64,
+}
+
+struct ReviewFixture<'a> {
+    node_id: &'a str,
+    state: &'a str,
+    body: &'a str,
+    author: &'a str,
+}
+
+/// Build a `PrDetail` GraphQL response body for the conversation-depth fields.
+/// Keeps the rest of the PR shape minimal so the body stays diffable.
+fn pr_detail_body_with_threads_and_issue_comments(
+    threads: &[ThreadFixture<'_>],
+    reviews: &[ReviewFixture<'_>],
+    issue_comments_total: i64,
+) -> String {
+    let thread_nodes: Vec<String> = threads
+        .iter()
+        .map(|t| {
+            let line_json = match t.line {
+                Some(n) => n.to_string(),
+                None => "null".into(),
+            };
+            format!(
+                r#"{{
+                    "id": "{node_id}",
+                    "isResolved": {is_resolved},
+                    "isOutdated": {is_outdated},
+                    "path": "{path}",
+                    "line": {line_json},
+                    "startLine": null,
+                    "originalLine": null,
+                    "comments": {{
+                        "totalCount": {total_count},
+                        "nodes": [{{
+                            "id": "{node_id}_C1",
+                            "author": {{ "login": "alice" }},
+                            "bodyText": "head body",
+                            "createdAt": "2026-05-18T10:00:00Z"
+                        }}]
+                    }}
+                }}"#,
+                node_id = t.node_id,
+                is_resolved = t.is_resolved,
+                is_outdated = t.is_outdated,
+                path = t.path,
+                total_count = t.total_count,
+            )
+        })
+        .collect();
+
+    let review_nodes: Vec<String> = reviews
+        .iter()
+        .map(|r| {
+            format!(
+                r#"{{
+                    "id": "{node_id}",
+                    "state": "{state}",
+                    "body": "{body}",
+                    "submittedAt": "2026-05-18T12:00:00Z",
+                    "author": {{ "login": "{author}" }}
+                }}"#,
+                node_id = r.node_id,
+                state = r.state,
+                body = r.body,
+                author = r.author,
+            )
+        })
+        .collect();
+
+    format!(
+        r#"{{
+            "data": {{
+                "repository": {{
+                    "pullRequest": {{
+                        "id": "PR_test",
+                        "number": 42,
+                        "title": "Threaded PR",
+                        "isDraft": false,
+                        "state": "OPEN",
+                        "merged": false,
+                        "mergeable": "MERGEABLE",
+                        "url": "https://github.com/owner/repo/pull/42",
+                        "createdAt": "2026-05-18T10:00:00Z",
+                        "updatedAt": "2026-05-19T11:00:00Z",
+                        "author": {{ "login": "alice" }},
+                        "baseRefName": "main",
+                        "headRefName": "feat/threads",
+                        "reviewDecision": null,
+                        "additions": 1,
+                        "deletions": 0,
+                        "changedFiles": 1,
+                        "reviewRequests": {{ "nodes": [] }},
+                        "commits": {{ "nodes": [] }},
+                        "reviewThreads": {{
+                            "pageInfo": {{ "hasNextPage": false, "endCursor": null }},
+                            "nodes": [{}]
+                        }},
+                        "reviews": {{ "nodes": [{}] }},
+                        "issueComments": {{ "totalCount": {issue_comments_total} }}
+                    }}
+                }}
+            }}
+        }}"#,
+        thread_nodes.join(","),
+        review_nodes.join(",")
+    )
+}
+
+#[tokio::test]
+async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycle() {
+    // Two cycles. Cycle 1 carries three threads (unresolved, resolved,
+    // outdated) and two reviews. Cycle 2 drops one thread and one review,
+    // resolves a previously-unresolved thread, and flips a resolved thread
+    // back to unresolved. Asserts: upserts apply, resolved_at tracks the
+    // transition, pruning removes gone threads/reviews, issue_comments_count
+    // re-writes.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    // Cycle 1.
+    let cycle1_body = pr_detail_body_with_threads_and_issue_comments(
+        &[
+            ThreadFixture {
+                node_id: "PRRT_unresolved",
+                is_resolved: false,
+                is_outdated: false,
+                path: "a.rs",
+                line: Some(1),
+                total_count: 1,
+            },
+            ThreadFixture {
+                node_id: "PRRT_resolved",
+                is_resolved: true,
+                is_outdated: false,
+                path: "b.rs",
+                line: Some(2),
+                total_count: 1,
+            },
+            ThreadFixture {
+                node_id: "PRRT_drop",
+                is_resolved: false,
+                is_outdated: false,
+                path: "c.rs",
+                line: Some(3),
+                total_count: 1,
+            },
+        ],
+        &[
+            ReviewFixture {
+                node_id: "PRR_keep",
+                state: "APPROVED",
+                body: "LGTM",
+                author: "bob",
+            },
+            ReviewFixture {
+                node_id: "PRR_drop",
+                state: "COMMENTED",
+                body: "wip",
+                author: "carol",
+            },
+        ],
+        5,
+    );
+    let cycle1_mock = Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000).set_body_raw(cycle1_body.into_bytes(), "application/json"),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+    drop(cycle1_mock);
+
+    let resolved_at_initial: Option<i64> = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_resolved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        resolved_at_initial.is_some(),
+        "thread that arrived resolved must have resolved_at set"
+    );
+
+    let issue_count: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT issue_comments_count FROM pull_requests WHERE id = 999",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(issue_count, 5);
+
+    // Cycle 2: drop PRRT_drop + PRR_drop; resolve the previously-unresolved
+    // thread; flip the previously-resolved thread back to unresolved; bump
+    // issue_comments_count to 8.
+    let cycle2_body = pr_detail_body_with_threads_and_issue_comments(
+        &[
+            ThreadFixture {
+                node_id: "PRRT_unresolved",
+                is_resolved: true,
+                is_outdated: false,
+                path: "a.rs",
+                line: Some(1),
+                total_count: 1,
+            },
+            ThreadFixture {
+                node_id: "PRRT_resolved",
+                is_resolved: false,
+                is_outdated: false,
+                path: "b.rs",
+                line: Some(2),
+                total_count: 1,
+            },
+        ],
+        &[ReviewFixture {
+            node_id: "PRR_keep",
+            state: "APPROVED",
+            body: "LGTM",
+            author: "bob",
+        }],
+        8,
+    );
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4998, 5000).set_body_raw(cycle2_body.into_bytes(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    // PRRT_unresolved transitioned to resolved → resolved_at stamped.
+    let resolved_at_new: Option<i64> = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_unresolved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        resolved_at_new.is_some(),
+        "transition to resolved must stamp resolved_at"
+    );
+
+    // PRRT_resolved transitioned back → resolved_at cleared.
+    let resolved_at_cleared: Option<i64> = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT resolved_at FROM review_threads WHERE node_id = 'PRRT_resolved'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resolved_at_cleared, None,
+        "transition back to unresolved must clear resolved_at"
+    );
+
+    // PRRT_drop pruned.
+    let drop_present: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM review_threads WHERE node_id = 'PRRT_drop'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(drop_present, 0, "dropped thread must be pruned");
+
+    // PRR_drop pruned.
+    let drop_review_present: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM reviews WHERE node_id = 'PRR_drop'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(drop_review_present, 0, "dropped review must be pruned");
+
+    // issue_comments_count overwrites.
+    let issue_count: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT issue_comments_count FROM pull_requests WHERE id = 999",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(issue_count, 8);
 }
