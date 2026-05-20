@@ -12,6 +12,7 @@ use rusqlite_migration::{Migrations, M};
 const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_dashboard_fields.sql"),
+    include_str!("../../migrations/0003_accounts_expires_at.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct

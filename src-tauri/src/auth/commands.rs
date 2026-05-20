@@ -5,7 +5,7 @@
 //! sanitised `Account` metadata. `list_accounts` and `remove_account` never
 //! see tokens at all.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use secrecy::SecretString;
@@ -33,11 +33,14 @@ impl AccountChangeListener for NoopAccountListener {
 }
 
 use crate::auth::keychain::OsKeychain;
-use crate::auth::store::{Account, AccountId, AccountStore, JsonAccountStore};
+use crate::auth::store::{
+    import_legacy_json_if_present, Account, AccountId, AccountStore, SqlAccountStore,
+};
 use crate::auth::token_source::KeychainTokenSource;
 use crate::auth::validation::{
     check_permissions, validate_token, PermissionChecks, ValidationError,
 };
+use crate::db::DbHandle;
 
 /// Emitted whenever any sync-path call returns 401, so the frontend can show
 /// the re-auth banner. Wired through `emit_reauth_required` so callers
@@ -92,10 +95,13 @@ pub struct AuthState {
 }
 
 impl AuthState {
-    pub fn new(data_dir: PathBuf) -> Result<Self, String> {
-        let store_path = data_dir.join("accounts.json");
-        let store =
-            JsonAccountStore::open(&store_path).map_err(|e| format!("open account store: {e}"))?;
+    pub fn new(db: DbHandle, data_dir: &Path) -> Result<Self, String> {
+        let store = SqlAccountStore::new(db);
+        // One-shot import of any pre-#62 accounts.json the user may still
+        // have on disk. Best-effort: errors log but don't block startup.
+        if let Err(e) = import_legacy_json_if_present(&store, data_dir) {
+            eprintln!("legacy accounts.json import: {e}");
+        }
         Ok(Self {
             store: Arc::new(store),
             token_source: Arc::new(KeychainTokenSource::new(OsKeychain::new())),
@@ -276,15 +282,15 @@ fn internal(message: &str) -> AuthCommandError {
     AuthCommandError::Internal
 }
 
-/// Wires `AuthState` into the running Tauri app. Called from `lib.rs` after
-/// the builder is constructed so it can resolve the OS-specific app-data dir.
-pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+/// Wires `AuthState` into the running Tauri app. Called from `lib.rs::setup`
+/// after the SQLite cache is open so we can share its connection handle.
+pub fn install<R: Runtime>(app: &AppHandle<R>, db: DbHandle) -> Result<(), String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolve app data dir: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
-    let state = AuthState::new(data_dir)?;
+    let state = AuthState::new(db, &data_dir)?;
     app.manage(state);
     Ok(())
 }

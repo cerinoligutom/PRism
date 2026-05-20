@@ -53,6 +53,18 @@ Rationale: SQLite is the only option in the list that gives us relational querie
 - A follow-up ADR may decide on a migration library after [#9](https://github.com/cerinoligutom/PRism/issues/9) lands.
 - WAL mode and journal_size pragmas are tuning decisions for an issue, not an ADR.
 
+## Addenda
+
+### 2026-05-20 — Accounts store moved off JSON onto SQLite (#62)
+
+The auth layer originally shipped with a `JsonAccountStore` writing to `<app_data_dir>/accounts.json` — a tactical decision so onboarding could ship before the SQLite schema landed. The `AccountStore` trait was always designed to be swap-shaped (see `src-tauri/src/auth/store.rs` module doc).
+
+`SqlAccountStore` now backs `AuthState` directly against the `accounts` table. Migration `0003_accounts_expires_at.sql` adds the `expires_at` column the JSON store had but the original SQL schema didn't. Scopes are stored as a comma-joined string in the existing `TEXT` column.
+
+A one-shot import in `AuthState::new` reads any legacy `accounts.json` into SQL on first startup and renames the file to `.bak`. The shim can be deleted once no machine in the wild still has the legacy file.
+
+This closes the JSON/SQL divergence that left `repos.account_id`'s foreign key pointing at nothing — relevant to the M5 multi-account work in [#59](https://github.com/cerinoligutom/PRism/issues/59).
+
 ## References
 
 - [rusqlite](https://github.com/rusqlite/rusqlite)
