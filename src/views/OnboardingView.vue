@@ -610,21 +610,6 @@ onUnmounted(() => {
   position: relative;
 }
 
-.onboarding-step--1::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(50% 40% at 30% 20%, oklch(0.32 0.08 var(--accent-h) / 0.4), transparent 70%),
-    radial-gradient(40% 35% at 90% 95%, oklch(0.28 0.12 25 / 0.3), transparent 70%);
-  pointer-events: none;
-}
-
-.onboarding-step--1 > * {
-  position: relative;
-  z-index: 1;
-}
-
 .onboarding-step__head {
   display: flex;
   align-items: center;
