@@ -108,6 +108,19 @@ fn parse_timeline_page(bytes: &Bytes) -> Result<Vec<TimelineEvent>, GitHubError>
         .collect())
 }
 
+/// Actor entry on a timeline event payload. Only the login is consumed.
+#[derive(Debug, Deserialize)]
+struct RawActor {
+    login: String,
+}
+
+/// Reviewer entry on the `reviewed` event - GitHub puts the user under `user`
+/// rather than `actor` on this variant alone.
+#[derive(Debug, Deserialize)]
+struct RawReviewedUser {
+    login: String,
+}
+
 /// Wire-shape for one element of the `/issues/{n}/timeline` list.
 ///
 /// The set of variants intentionally mirrors `QualifyingEvent` plus the
@@ -119,31 +132,52 @@ enum RawTimelineEvent {
     ReadyForReview {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
     ConvertToDraft {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
     ReviewRequested {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
-    /// `reviewed` puts its timestamp under `submitted_at`, not `created_at`.
+    /// `reviewed` puts its timestamp under `submitted_at`, not `created_at`,
+    /// and the reviewer under `user` rather than `actor`. The `state` field
+    /// (`approved` / `changes_requested` / `commented` / `dismissed`) is
+    /// surfaced lowercase by GitHub; we normalise to upper-case when
+    /// persisting so the wire shape matches the GraphQL
+    /// `PullRequestReviewState` enum the frontend already consumes.
     Reviewed {
         #[serde(with = "time::serde::rfc3339")]
         submitted_at: OffsetDateTime,
+        #[serde(default)]
+        user: Option<RawReviewedUser>,
+        #[serde(default)]
+        state: Option<String>,
     },
     Merged {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
     Closed {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
     Reopened {
         #[serde(with = "time::serde::rfc3339")]
         created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
     },
     /// `committed` carries `committer.date` instead of a top-level timestamp
     /// and is not a qualifying status-change event. We model it explicitly to
@@ -157,33 +191,51 @@ enum RawTimelineEvent {
 impl RawTimelineEvent {
     fn into_event(self) -> Option<TimelineEvent> {
         match self {
-            Self::ReadyForReview { created_at } => Some(TimelineEvent {
+            Self::ReadyForReview { created_at, actor } => Some(TimelineEvent {
                 event: "ready_for_review".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
-            Self::ConvertToDraft { created_at } => Some(TimelineEvent {
+            Self::ConvertToDraft { created_at, actor } => Some(TimelineEvent {
                 event: "convert_to_draft".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
-            Self::ReviewRequested { created_at } => Some(TimelineEvent {
+            Self::ReviewRequested { created_at, actor } => Some(TimelineEvent {
                 event: "review_requested".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
-            Self::Reviewed { submitted_at } => Some(TimelineEvent {
+            Self::Reviewed {
+                submitted_at,
+                user,
+                state,
+            } => Some(TimelineEvent {
                 event: "reviewed".into(),
                 created_at: submitted_at,
+                actor_login: user.map(|u| u.login),
+                review_state: state.map(|s| s.to_uppercase()),
             }),
-            Self::Merged { created_at } => Some(TimelineEvent {
+            Self::Merged { created_at, actor } => Some(TimelineEvent {
                 event: "merged".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
-            Self::Closed { created_at } => Some(TimelineEvent {
+            Self::Closed { created_at, actor } => Some(TimelineEvent {
                 event: "closed".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
-            Self::Reopened { created_at } => Some(TimelineEvent {
+            Self::Reopened { created_at, actor } => Some(TimelineEvent {
                 event: "reopened".into(),
                 created_at,
+                actor_login: actor.map(|a| a.login),
+                review_state: None,
             }),
             Self::Committed | Self::Other => None,
         }
@@ -266,5 +318,45 @@ mod tests {
     fn list_timeline_is_modified_predicate() {
         assert!(ListTimeline::Events(vec![]).is_modified());
         assert!(!ListTimeline::NotModified.is_modified());
+    }
+
+    #[test]
+    fn actor_login_carries_through_to_event() {
+        let json = br#"[
+            {
+                "event": "ready_for_review",
+                "created_at": "2026-05-02T14:30:00Z",
+                "actor": { "login": "alice", "id": 1 }
+            }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].actor_login.as_deref(), Some("alice"));
+        assert!(events[0].review_state.is_none());
+    }
+
+    #[test]
+    fn reviewed_event_carries_user_login_and_state_upper_cased() {
+        let json = br#"[
+            {
+                "event": "reviewed",
+                "submitted_at": "2026-05-03T10:00:00Z",
+                "state": "approved",
+                "user": { "login": "bob", "id": 2 }
+            }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        assert_eq!(events[0].actor_login.as_deref(), Some("bob"));
+        assert_eq!(events[0].review_state.as_deref(), Some("APPROVED"));
+    }
+
+    #[test]
+    fn event_with_missing_actor_falls_back_to_none() {
+        let json = br#"[
+            { "event": "closed", "created_at": "2026-05-06T11:00:00Z" }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].actor_login.is_none());
     }
 }

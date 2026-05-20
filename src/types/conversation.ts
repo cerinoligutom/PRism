@@ -102,6 +102,22 @@ export interface HydratedConversation {
 }
 
 /**
+ * One persisted row from `timeline_events`. Mirrors the Rust
+ * `TimelineEventRecord` DTO. The `event_type` is the GitHub wire name per
+ * ADR 0007 (`ready_for_review`, `convert_to_draft`, `review_requested`,
+ * `reviewed`, `merged`, `closed`, `reopened`). `review_state` is populated
+ * only on `reviewed` events (`APPROVED` / `CHANGES_REQUESTED` / `COMMENTED`
+ * / `DISMISSED`).
+ */
+export interface TimelineEventRecord {
+  readonly event_type: string;
+  readonly actor_login: string | null;
+  /** Unix seconds. */
+  readonly created_at: number;
+  readonly review_state: string | null;
+}
+
+/**
  * Detail-surface selector value. Inline expansion was considered as a
  * third surface and cancelled before launch — see ADR 0011.
  */

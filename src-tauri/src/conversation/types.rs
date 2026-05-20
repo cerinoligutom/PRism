@@ -132,3 +132,20 @@ pub struct HydratedConversation {
     pub reviews: Vec<PullRequestReview>,
     pub stats: ConversationStats,
 }
+
+/// One persisted row from `timeline_events`, surfaced through
+/// `list_pr_timeline_events`. The frontend uses `event_type` to pick the
+/// rendering branch and `review_state` to badge `reviewed` events.
+///
+/// `event_type` is the GitHub wire name (`ready_for_review`,
+/// `convert_to_draft`, `review_requested`, `reviewed`, `merged`, `closed`,
+/// `reopened`) per ADR 0007. `review_state` is extracted from the row's
+/// `payload` JSON on `reviewed` events only; other rows return `None`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEventRecord {
+    pub event_type: String,
+    pub actor_login: Option<String>,
+    /// Unix seconds.
+    pub created_at: i64,
+    pub review_state: Option<String>,
+}

@@ -719,3 +719,97 @@ fn parameterised_pr_id_isolates_queries_across_prs() {
     let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
     assert_eq!(threads.len(), 4, "PR 100 unaffected by PR 101 row");
 }
+
+// ===== list_pr_timeline_events =====
+
+fn seed_timeline_events(db: &DbHandle) {
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        r#"
+        -- Sibling PR so the isolation row below clears the FK constraint.
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref,
+             issue_comments_count)
+            VALUES
+            (101, 10, 2, 'web/#2', 'open', 0, 'alice', 0, 0, 'main', 'feat', 0);
+
+        INSERT INTO timeline_events
+            (pull_request_id, event_type, actor_login, created_at, payload) VALUES
+            (100, 'ready_for_review', 'alice', 1000, '{}'),
+            (100, 'review_requested', 'alice', 1100, '{}'),
+            (100, 'reviewed',         'bob',   1200, '{"state":"APPROVED"}'),
+            (100, 'merged',           'alice', 1300, '{}'),
+            -- Another PR's row to verify isolation.
+            (101, 'closed',           'alice', 1400, '{}');
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn list_pr_timeline_events_orders_by_created_at() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    // Insert an out-of-order timeline event to confirm ordering.
+    {
+        let conn = db.lock().unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO timeline_events
+                (pull_request_id, event_type, actor_login, created_at, payload) VALUES
+                (100, 'merged',           'alice', 2000, '{}'),
+                (100, 'ready_for_review', 'alice', 1000, '{}'),
+                (100, 'reviewed',         'bob',   1500, '{"state":"CHANGES_REQUESTED"}');
+            "#,
+        )
+        .unwrap();
+    }
+    let conn = db.lock().unwrap();
+    let events = query::list_pr_timeline_events(&conn, PR_ID).unwrap();
+    let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(types, vec!["ready_for_review", "reviewed", "merged"]);
+}
+
+#[test]
+fn list_pr_timeline_events_extracts_review_state_from_payload() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    seed_timeline_events(&db);
+    let conn = db.lock().unwrap();
+    let events = query::list_pr_timeline_events(&conn, PR_ID).unwrap();
+    let reviewed = events
+        .iter()
+        .find(|e| e.event_type == "reviewed")
+        .expect("reviewed event present");
+    assert_eq!(reviewed.review_state.as_deref(), Some("APPROVED"));
+    assert_eq!(reviewed.actor_login.as_deref(), Some("bob"));
+
+    let merged = events
+        .iter()
+        .find(|e| e.event_type == "merged")
+        .expect("merged event present");
+    assert!(
+        merged.review_state.is_none(),
+        "non-reviewed events have no state",
+    );
+}
+
+#[test]
+fn list_pr_timeline_events_isolates_by_pull_request() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    seed_timeline_events(&db);
+    let conn = db.lock().unwrap();
+    let events = query::list_pr_timeline_events(&conn, PR_ID).unwrap();
+    assert_eq!(events.len(), 4, "rows for PR 101 stay out");
+}
+
+#[test]
+fn list_pr_timeline_events_returns_empty_for_unknown_pr() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let events = query::list_pr_timeline_events(&conn, 9999).unwrap();
+    assert!(events.is_empty());
+}

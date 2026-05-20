@@ -320,6 +320,7 @@ Enrichment additions per PR:
 4. `write_pr_updates` writes `pull_requests.issue_comments_count` from `issueComments.totalCount`.
 5. After all per-PR writes for a cycle, the worker recomputes `pull_requests.threads_total / threads_unresolved / threads_involved` from the just-written rows for that account. The recompute is a single SQL aggregation per PR (see "Dashboard rollup" below).
 6. Threads / reviews removed on GitHub are pruned: any `review_threads` / `reviews` row whose `node_id` doesn't appear in the latest fetch is deleted. Comments cascade.
+7. `write_pr_updates` writes the qualifying timeline events to `timeline_events` after the latest-status-change derivation runs. Wipe-and-rewrite per PR per cycle: `DELETE FROM timeline_events WHERE pull_request_id = ?` followed by an `INSERT` per fetched event, all inside the existing transaction. The per-event `payload` JSON carries `{"state": "..."}` for `reviewed` events and `{}` otherwise. `events = None` (e.g. 304 on the REST timeline endpoint) leaves the cached rows untouched.
 
 ### Rate budget impact
 
@@ -434,6 +435,18 @@ pub struct HydratedConversation {
     pub reviews: Vec<PullRequestReview>,
     pub stats: ConversationStats,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TimelineEventRecord {
+    /// GitHub wire name: `ready_for_review`, `convert_to_draft`,
+    /// `review_requested`, `reviewed`, `merged`, `closed`, `reopened`.
+    pub event_type: String,
+    pub actor_login: Option<String>,
+    pub created_at: i64,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED` on
+    /// `reviewed` events; `None` otherwise.
+    pub review_state: Option<String>,
+}
 ```
 
 ```rust
@@ -453,6 +466,16 @@ pub fn get_pr_conversation_stats(
     pull_request_id: i64,
     db: State<'_, DbHandle>,
 ) -> Result<ConversationStats, String>;
+
+/// List the persisted timeline events for a PR. Reads from the local cache
+/// only; no network round-trip. Each row is one qualifying event per
+/// ADR 0007 ordered by `created_at`. The `review_state` field is populated
+/// only for `reviewed` events.
+#[tauri::command]
+pub fn list_pr_timeline_events(
+    pull_request_id: i64,
+    db: State<'_, DbHandle>,
+) -> Result<Vec<TimelineEventRecord>, String>;
 
 /// Lazy hydration: fetch full thread replies + issue-comment bodies from
 /// GitHub, persist them, return the hydrated DTO. Called when the drawer /
@@ -661,7 +684,7 @@ defineProps<{
 }>();
 ```
 
-Reads from the existing `pull_requests.latest_status_change_*` columns and (post-M3) the `timeline_events` table. v1 renders the qualifying event list per ADR 0007.
+On mount, calls `invoke('list_pr_timeline_events', { pullRequestId })` and renders the persisted qualifying-event list per ADR 0007. The `pullRequest` prop still funds the synthesised fallback that runs when the events array is empty (e.g. a PR discovered this cycle whose enrichment hasn't landed yet) so the tab never renders blank. Pre-existing `pull_requests.latest_status_change_*` columns remain available for downstream consumers but the tab itself no longer reads them directly.
 
 ### `PullRequestDrawer.vue`
 
@@ -809,7 +832,7 @@ These belong here so Wave-2 / Wave-3 agents don't reinvent them, but they don't 
 - **Body-text vs body.** `bodyText` is GraphQL's pre-rendered plain text (markdown stripped). The threads-list snippet uses `body_text`; the Reviews tab and full comment view render the markdown `body`. Both are persisted.
 - **PullRequestReviewState `PENDING`.** A reviewer who hasn't submitted appears in `requested_reviewers` (M2) but not in `reviews`. The Reviews tab merges both sources: submitted reviews from `reviews` + pending placeholders from `requested_reviewers` where no `reviews` row exists for that login on this PR.
 - **Outdated toggle persistence.** The `showOutdated` toggle state is local to the `ThreadsList.vue` component — not persisted. Re-opening the drawer / route starts with outdated hidden. If user signal demands it, persist via the appearance store post-M3.
-- **Status timeline tab.** Reads from the existing `latest_status_change_*` columns plus the `timeline_events` table populated by M1. No backend work in M3; the visual is the new piece.
+- **Status timeline tab.** Reads from the `timeline_events` table populated each sync cycle by the worker. The frontend invokes `list_pr_timeline_events` on mount and renders the qualifying-event list per ADR 0007; a synthesised view from `DashboardPullRequest` fills in when the table is empty for the PR (e.g. before the first enrichment cycle has landed). The persistence policy is **wipe-and-rewrite per PR per cycle** rather than upsert: GitHub timelines are append-only on the server, so the latest fetch is authoritative for the PR's history, and the wipe keeps the table consistent with the latest-status-change derivation that runs alongside the insert.
 
 ## ADR cross-references
 
