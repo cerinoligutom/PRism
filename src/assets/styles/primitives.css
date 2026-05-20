@@ -286,7 +286,7 @@ kbd {
 }
 
 /* ────── PR row state strip (left edge accent) ────── */
-.row-strip-needs    { background: var(--accent); }
+.row-strip-needs    { background: var(--info); }
 .row-strip-approved { background: var(--success); }
 .row-strip-changes  { background: var(--danger); }
 .row-strip-stale    { background: var(--warning); }

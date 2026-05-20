@@ -3,6 +3,7 @@ import { computed } from "vue";
 import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
 import { formatRelativeAgo, secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
 import MergeableBadge from "./MergeableBadge.vue";
@@ -62,6 +63,24 @@ const stripClass = computed<RowStrip>(() => {
 
   if (pr.review_decision === "APPROVED") return "row-strip-approved";
   return "row-strip-none";
+});
+
+const stripTooltip = computed<string>(() => {
+  switch (stripClass.value) {
+    case "row-strip-draft":
+      return "Draft";
+    case "row-strip-changes":
+      return "Changes requested";
+    case "row-strip-stale":
+      return "Stale (no activity 7d+)";
+    case "row-strip-needs":
+      return "Needs your review";
+    case "row-strip-approved":
+      return "Approved";
+    case "row-strip-none":
+    default:
+      return "";
+  }
 });
 
 const branchLabel = computed<string>(() => props.pullRequest.head_ref);
@@ -128,7 +147,17 @@ function onKey(event: KeyboardEvent): void {
     @click="onClick"
     @keydown="onKey"
   >
-    <div :class="['pr-row__strip', stripClass]" aria-hidden="true"></div>
+    <PRismTooltip
+      :text="stripTooltip"
+      :disabled="stripClass === 'row-strip-none'"
+      as-child
+    >
+      <div
+        :class="['pr-row__strip', stripClass]"
+        :aria-label="stripTooltip || undefined"
+        :aria-hidden="stripClass === 'row-strip-none' ? 'true' : undefined"
+      ></div>
+    </PRismTooltip>
 
     <div class="pr-row__num">#{{ pullRequest.number }}</div>
 
@@ -199,7 +228,7 @@ function onKey(event: KeyboardEvent): void {
 .pr-row {
   position: relative;
   display: grid;
-  grid-template-columns: 4px 54px 1fr 144px 180px 80px 80px 28px;
+  grid-template-columns: 6px 54px 1fr 144px 180px 80px 80px 28px;
   align-items: center;
   gap: 14px;
   padding: 0 var(--s-6) 0 0;
@@ -231,7 +260,7 @@ function onKey(event: KeyboardEvent): void {
 }
 
 .pr-row__strip {
-  width: 3px;
+  width: 5px;
   height: 30px;
   border-radius: 2px;
   margin-left: 1px;
