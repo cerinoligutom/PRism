@@ -31,6 +31,7 @@ sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "serde-well-known", "macros"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "2"
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 wiremock = "0.6"
