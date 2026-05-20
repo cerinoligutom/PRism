@@ -777,16 +777,16 @@ onUnmounted(() => {
 
 .onboarding-field__label {
   font-family: var(--font-mono);
-  font-size: var(--fs-10);
+  font-size: var(--fs-12);
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: var(--text-faint);
+  color: var(--text-mute);
 }
 
 .onboarding-field__hint {
   margin: 2px 0 0;
-  color: var(--text-faint);
-  font-size: var(--fs-11);
+  color: var(--text-mute);
+  font-size: var(--fs-12);
 }
 
 .onboarding-field__hint a {

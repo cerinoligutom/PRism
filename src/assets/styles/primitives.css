@@ -224,11 +224,11 @@
 
 /* ────── Section headers ────── */
 .section-title {
-  font-size: var(--fs-10);
+  font-size: var(--fs-12);
   font-weight: 600;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--text-mute);
   font-family: var(--font-mono);
 }
 

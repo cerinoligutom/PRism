@@ -2,10 +2,10 @@
  * Dark (default) + light + accent picker.
  *
  * WCAG AA contrast targets (measured against --bg-1):
- *   --text-strong ≥ 12:1   primary
- *   --text        ≥ 7:1    body
- *   --text-mute   ≥ 4.5:1  secondary
- *   --text-faint  reserved for ≥18px / 14px bold only
+ *   --text-strong  >= 12:1  primary
+ *   --text         >=  9:1  body
+ *   --text-mute    >=  7:1  secondary (still scannable at 11-12px)
+ *   --text-faint   >=  5:1  small captions / labels (11-12px allowed)
  *
  * Source: docs/design/tokens.css (canonical reference is checked in there).
  *
@@ -32,9 +32,9 @@
   /* ────── Text (contrast measured vs --bg-1 #0c0c10) ────── */
   --text-strong: #f4f4f7;   /* 17.5 : 1 */
   --text:        #d4d4dc;   /* 12.4 : 1 */
-  --text-mute:   #9a9aa6;   /*  6.8 : 1 */
-  --text-faint:  #6c6c78;   /*  3.6 : 1 — large only */
-  --text-disabled: #454552;
+  --text-mute:   #b6b6c0;   /*  9.6 : 1 */
+  --text-faint:  #9090a0;   /*  5.3 : 1 — small captions ok */
+  --text-disabled: #545464;
 
   /* ────── Accent (user-pickable; default magenta) ────── */
   --accent-h: 320;
@@ -129,9 +129,9 @@
   /* contrast vs #ffffff */
   --text-strong: #0a0a0d;
   --text:        #1e1e25;
-  --text-mute:   #595963;
-  --text-faint:  #7a7a85;
-  --text-disabled: #b0b0b8;
+  --text-mute:   #4c4c57;
+  --text-faint:  #6a6a76;
+  --text-disabled: #a3a3ad;
 
   --accent:        oklch(0.55 var(--accent-c) var(--accent-h));
   --accent-strong: oklch(0.48 var(--accent-c) var(--accent-h));
@@ -166,7 +166,7 @@ body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-size: 13px;
+  font-size: 14px;
   line-height: var(--lh-body);
 }
 
