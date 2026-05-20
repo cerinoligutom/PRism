@@ -6,11 +6,13 @@
 //! - `github`: GraphQL + REST clients
 //! - `sync`: background worker
 //! - `dashboard`: dashboard query surface (M2)
+//! - `repos`: repo discovery + Team-tracked opt-in (M2-D)
 
 pub mod auth;
 pub mod dashboard;
 pub mod db;
 pub mod github;
+pub mod repos;
 pub mod sync;
 
 use std::sync::Arc;
@@ -61,6 +63,9 @@ pub fn run() {
             auth::commands::remove_account,
             auth::commands::validate_token_cmd,
             dashboard::commands::list_dashboard_pull_requests,
+            repos::commands::list_repos_for_account,
+            repos::commands::refresh_account_repos,
+            repos::commands::set_repo_team_tracked,
             sync::commands::get_sync_status,
             sync::commands::refresh_now,
             sync::commands::set_sync_interval,

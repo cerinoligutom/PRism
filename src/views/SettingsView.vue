@@ -22,6 +22,12 @@ import { RouterLink, RouterView } from "vue-router";
           </span>
           Accounts
         </RouterLink>
+        <RouterLink to="/settings/repositories" class="nav-item" :class="{ active: $route.name === 'settings.repositories' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h7l3 3v8H3z" /><path d="M3 11h10" /><path d="M6 2.5v3h4v-3" /></svg>
+          </span>
+          Repositories
+        </RouterLink>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M3/M4">Sync &amp; data</span>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M3">Appearance</span>
         <span class="nav-item nav-item--disabled" aria-disabled="true" title="Lands in M5">Notifications</span>

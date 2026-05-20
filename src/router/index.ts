@@ -25,6 +25,11 @@ export const router = createRouter({
           name: "settings.accounts",
           component: () => import("@/views/settings/AccountsPanel.vue"),
         },
+        {
+          path: "repositories",
+          name: "settings.repositories",
+          component: () => import("@/views/settings/RepositoriesSettings.vue"),
+        },
       ],
     },
   ],
