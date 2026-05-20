@@ -37,13 +37,20 @@ pub fn run() {
             let auth_state = app.state::<auth::commands::AuthState>();
             let etag_store: Arc<dyn github::EtagStore> =
                 Arc::new(db::SqliteEtagStore::new(db_handle.clone()));
-            let client_factory = Arc::new(sync::DefaultClientFactory::new(
-                auth_state.token_source.clone(),
-                etag_store,
-            ));
+            let client_factory: Arc<dyn sync::ClientFactory> = Arc::new(
+                sync::DefaultClientFactory::new(auth_state.token_source.clone(), etag_store),
+            );
+            let account_store = auth_state.store.clone();
+            // Hoist the factory + store into Tauri-managed state so the
+            // conversation hydrator (`fetch_pr_conversation`) can build a
+            // per-account client without going through the worker handle. The
+            // worker shares the same Arcs.
+            app.manage::<conversation::commands::ClientFactoryHandle>(client_factory.clone());
+            app.manage::<conversation::commands::AccountStoreHandle>(account_store.clone());
+
             let ctx = sync::WorkerContext {
                 db: db_handle.clone(),
-                accounts: auth_state.store.clone(),
+                accounts: account_store,
                 clients: client_factory,
                 config: sync::SchedulerConfig::shared(),
                 state: sync::SyncStateMap::new(),

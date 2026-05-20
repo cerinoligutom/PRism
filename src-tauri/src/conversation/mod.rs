@@ -1,4 +1,4 @@
-//! Conversation surface — per-thread state, conversation stats, and the
+//! Conversation surface - per-thread state, conversation stats, and the
 //! lazy-hydration command path.
 //!
 //! The shared interface contract for this module is
@@ -10,6 +10,7 @@ pub mod commands;
 pub mod query;
 pub mod types;
 
+pub use commands::{AccountStoreHandle, ClientFactoryHandle};
 pub use types::{
     CommentBreakdown, ConversationStats, HydratedConversation, IssueComment, PullRequestReview,
     PullRequestThread, ThreadComment, ThreadHeadComment, ThreadState,
