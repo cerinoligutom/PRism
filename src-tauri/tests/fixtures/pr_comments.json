@@ -19,8 +19,7 @@
                     "createdAt": "2026-05-19T10:00:00Z",
                     "path": "src/lib.rs",
                     "line": 42,
-                    "originalLine": 42,
-                    "side": "RIGHT"
+                    "originalLine": 42
                   },
                   {
                     "id": "PRRC_r1",
@@ -31,8 +30,7 @@
                     "createdAt": "2026-05-19T10:05:00Z",
                     "path": "src/lib.rs",
                     "line": 42,
-                    "originalLine": 42,
-                    "side": "RIGHT"
+                    "originalLine": 42
                   }
                 ]
               }
