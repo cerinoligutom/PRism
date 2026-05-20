@@ -16,6 +16,34 @@
         "baseRefName": "main",
         "headRefName": "feat/thing",
         "reviewDecision": "APPROVED",
+        "additions": 120,
+        "deletions": 30,
+        "changedFiles": 5,
+        "reviewRequests": {
+          "nodes": [
+            { "requestedReviewer": { "__typename": "User", "login": "dave" } },
+            { "requestedReviewer": { "__typename": "Team", "slug": "platform" } }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "totalCount": 3,
+                    "nodes": [
+                      { "__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED" },
+                      { "__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED" },
+                      { "__typename": "StatusContext", "state": "SUCCESS" }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
         "reviewThreads": {
           "pageInfo": { "hasNextPage": false, "endCursor": null },
           "nodes": [

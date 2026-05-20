@@ -825,9 +825,12 @@ pub fn list_prs_for_repo(db: &DbHandle, repo_id: i64) -> Result<Vec<PrRow>, rusq
 
 /// Apply the freshly-fetched PR detail and timeline events to the local cache.
 ///
-/// Only fields exposed by the v1 schema are updated; everything else is
+/// Only fields exposed by the v2 schema are updated; everything else is
 /// untouched. The status-change derivation (ADR 0007) runs here so the
 /// `latest_status_change_*` columns reflect the most recent timeline pull.
+/// Requested reviewers are replaced wholesale (delete-then-insert) whenever
+/// the detail response carries them so the cached set never drifts past the
+/// upstream truth.
 pub fn write_pr_updates(
     db: &DbHandle,
     repo_id: i64,
@@ -835,16 +838,21 @@ pub fn write_pr_updates(
     detail: Option<&crate::github::graphql::PullRequestDetail>,
     events: Option<&[crate::sync::status_timeline::TimelineEvent]>,
 ) -> Result<(), rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let mut conn = db.lock().expect("db poisoned");
+    let tx = conn.transaction()?;
 
     if let Some(d) = detail {
         let state = if d.merged { "merged" } else { d.state.as_str() };
         let author = d.author.as_ref().map(|a| a.login.as_str()).unwrap_or("");
-        conn.execute(
+        let ci = compute_ci_rollup(d);
+        tx.execute(
             "INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
-                 created_at, updated_at, base_ref, head_ref)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 created_at, updated_at, base_ref, head_ref,
+                 mergeable, review_decision, additions, deletions, changed_files,
+                 ci_state, ci_total, ci_passing)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                        ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 state = excluded.state,
@@ -852,7 +860,15 @@ pub fn write_pr_updates(
                 author_login = excluded.author_login,
                 updated_at = excluded.updated_at,
                 base_ref = excluded.base_ref,
-                head_ref = excluded.head_ref",
+                head_ref = excluded.head_ref,
+                mergeable = excluded.mergeable,
+                review_decision = excluded.review_decision,
+                additions = excluded.additions,
+                deletions = excluded.deletions,
+                changed_files = excluded.changed_files,
+                ci_state = excluded.ci_state,
+                ci_total = excluded.ci_total,
+                ci_passing = excluded.ci_passing",
             params![
                 pr_id,
                 repo_id,
@@ -865,15 +881,41 @@ pub fn write_pr_updates(
                 rfc3339_to_unix(&d.updated_at).unwrap_or(0),
                 d.base_ref_name,
                 d.head_ref_name,
+                d.mergeable,
+                d.review_decision,
+                d.additions,
+                d.deletions,
+                d.changed_files,
+                ci.state,
+                ci.total,
+                ci.passing,
             ],
         )?;
+
+        if let Some(rr) = d.review_requests.as_ref() {
+            tx.execute(
+                "DELETE FROM requested_reviewers WHERE pull_request_id = ?1",
+                params![pr_id],
+            )?;
+            for entry in &rr.nodes {
+                let Some((reviewer_type, login)) = reviewer_type_and_login(entry) else {
+                    continue;
+                };
+                tx.execute(
+                    "INSERT OR IGNORE INTO requested_reviewers
+                        (pull_request_id, login, reviewer_type)
+                        VALUES (?1, ?2, ?3)",
+                    params![pr_id, login, reviewer_type],
+                )?;
+            }
+        }
     }
 
     if let Some(events) = events {
         if let Some(change) = crate::sync::status_timeline::latest_status_change(events) {
             let event_name = qualifying_event_wire_name(change.event_type);
             let at_secs = change.at.unix_timestamp();
-            conn.execute(
+            tx.execute(
                 "UPDATE pull_requests
                     SET latest_status_change_at = ?1,
                         latest_status_change_event_type = ?2
@@ -882,7 +924,75 @@ pub fn write_pr_updates(
             )?;
         }
     }
-    Ok(())
+    tx.commit()
+}
+
+/// Pre-aggregated CI rollup persisted to the `ci_*` columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CiRollup {
+    state: Option<String>,
+    total: Option<i64>,
+    passing: Option<i64>,
+}
+
+/// Walk `commits.nodes[0].commit.statusCheckRollup` and return the dashboard
+/// CI summary. `passing` counts `CheckRun.conclusion == "SUCCESS"` and
+/// `StatusContext.state == "SUCCESS"`; a `null` `CheckRun.conclusion` means
+/// the run is still in progress (counted in `total` only, never in `passing`).
+fn compute_ci_rollup(detail: &crate::github::graphql::PullRequestDetail) -> CiRollup {
+    let Some(commit) = detail
+        .commits
+        .as_ref()
+        .and_then(|c| c.nodes.first())
+        .map(|n| &n.commit)
+    else {
+        return CiRollup {
+            state: None,
+            total: None,
+            passing: None,
+        };
+    };
+    let Some(rollup) = commit.status_check_rollup.as_ref() else {
+        return CiRollup {
+            state: None,
+            total: None,
+            passing: None,
+        };
+    };
+
+    use crate::github::graphql::StatusCheckContext;
+    let passing = rollup
+        .contexts
+        .nodes
+        .iter()
+        .filter(|ctx| match ctx {
+            StatusCheckContext::CheckRun { conclusion, .. } => {
+                conclusion.as_deref() == Some("SUCCESS")
+            }
+            StatusCheckContext::StatusContext { state } => state == "SUCCESS",
+            StatusCheckContext::Other => false,
+        })
+        .count() as i64;
+
+    CiRollup {
+        state: Some(rollup.state.clone()),
+        total: Some(rollup.contexts.total_count),
+        passing: Some(passing),
+    }
+}
+
+/// Map a `ReviewRequest` node to the `(reviewer_type, login)` pair persisted
+/// to `requested_reviewers`. Returns `None` when the node has no reviewer
+/// (deleted user/team) or the reviewer is neither a `User` nor a `Team`.
+fn reviewer_type_and_login(
+    request: &crate::github::graphql::ReviewRequest,
+) -> Option<(&'static str, &str)> {
+    use crate::github::graphql::RequestedReviewer;
+    match request.requested_reviewer.as_ref()? {
+        RequestedReviewer::User { login } => Some(("user", login.as_str())),
+        RequestedReviewer::Team { slug } => Some(("team", slug.as_str())),
+        RequestedReviewer::Other => None,
+    }
 }
 
 fn qualifying_event_wire_name(ev: crate::sync::status_timeline::QualifyingEvent) -> &'static str {
@@ -953,5 +1063,470 @@ mod tests {
         // 2026-01-01T00:00:00Z → 1767225600
         let secs = rfc3339_to_unix("2026-01-01T00:00:00Z").unwrap();
         assert_eq!(secs, 1_767_225_600);
+    }
+
+    // ===== write_pr_updates persistence tests =====
+    //
+    // Each test stands up an in-memory SQLite DB at the latest migration,
+    // seeds an account + repo + placeholder PR row, then calls
+    // `write_pr_updates` with a hand-rolled `PullRequestDetail`.
+
+    use crate::github::graphql::{
+        Actor, PrCommit, PrCommitConnection, PrCommitNode, PullRequestDetail, RequestedReviewer,
+        ReviewRequest, ReviewRequestConnection, ReviewThreadConnection, StatusCheckContext,
+        StatusCheckContexts, StatusCheckRollup,
+    };
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn empty_review_threads() -> ReviewThreadConnection {
+        ReviewThreadConnection {
+            page_info: crate::github::graphql::PageInfo {
+                has_next_page: false,
+                end_cursor: None,
+            },
+            nodes: vec![],
+        }
+    }
+
+    fn seed_db_with_pr() -> (DbHandle, i64, i64) {
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::migrate::run(&mut conn).expect("migrations");
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 42, 'placeholder', 'open', 0, '', 0, 0, 'main', 'feat');",
+        )
+        .unwrap();
+        (Arc::new(Mutex::new(conn)), 10, 100)
+    }
+
+    fn detail_with(
+        additions: Option<i64>,
+        deletions: Option<i64>,
+        changed_files: Option<i64>,
+        mergeable: &str,
+        review_decision: Option<&str>,
+        review_requests: Option<ReviewRequestConnection>,
+        commits: Option<PrCommitConnection>,
+    ) -> PullRequestDetail {
+        PullRequestDetail {
+            id: "PR_test".into(),
+            number: 42,
+            title: "Add a thing".into(),
+            is_draft: false,
+            state: "OPEN".into(),
+            merged: false,
+            mergeable: mergeable.into(),
+            url: "https://github.com/owner/repo/pull/42".into(),
+            created_at: "2026-05-18T10:00:00Z".into(),
+            updated_at: "2026-05-19T11:00:00Z".into(),
+            author: Some(Actor {
+                login: "alice".into(),
+            }),
+            base_ref_name: "main".into(),
+            head_ref_name: "feat/thing".into(),
+            review_decision: review_decision.map(str::to_string),
+            additions,
+            deletions,
+            changed_files,
+            review_requests,
+            commits,
+            review_threads: empty_review_threads(),
+        }
+    }
+
+    fn rollup_with(state: &str, total: i64, nodes: Vec<StatusCheckContext>) -> PrCommitConnection {
+        PrCommitConnection {
+            nodes: vec![PrCommitNode {
+                commit: PrCommit {
+                    status_check_rollup: Some(StatusCheckRollup {
+                        state: state.into(),
+                        contexts: StatusCheckContexts {
+                            total_count: total,
+                            nodes,
+                        },
+                    }),
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn write_pr_updates_persists_every_new_column() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with(
+            Some(120),
+            Some(30),
+            Some(5),
+            "MERGEABLE",
+            Some("APPROVED"),
+            None,
+            Some(rollup_with(
+                "SUCCESS",
+                3,
+                vec![
+                    StatusCheckContext::CheckRun {
+                        conclusion: Some("SUCCESS".into()),
+                        status: Some("COMPLETED".into()),
+                    },
+                    StatusCheckContext::CheckRun {
+                        conclusion: Some("SUCCESS".into()),
+                        status: Some("COMPLETED".into()),
+                    },
+                    StatusCheckContext::StatusContext {
+                        state: "SUCCESS".into(),
+                    },
+                ],
+            )),
+        );
+
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let conn = db.lock().unwrap();
+        type Row = (
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let row: Row = conn
+            .query_row(
+                "SELECT mergeable, review_decision, additions, deletions, changed_files,
+                        ci_state, ci_total, ci_passing
+                   FROM pull_requests WHERE id = ?1",
+                params![pr_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("MERGEABLE"));
+        assert_eq!(row.1.as_deref(), Some("APPROVED"));
+        assert_eq!(row.2, Some(120));
+        assert_eq!(row.3, Some(30));
+        assert_eq!(row.4, Some(5));
+        assert_eq!(row.5.as_deref(), Some("SUCCESS"));
+        assert_eq!(row.6, Some(3));
+        assert_eq!(row.7, Some(3));
+    }
+
+    #[test]
+    fn write_pr_updates_replaces_requested_reviewers() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        // Seed an existing reviewer that should be replaced.
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (?1, 'stale-user', 'user')",
+                params![pr_id],
+            )
+            .unwrap();
+
+        let detail = detail_with(
+            None,
+            None,
+            None,
+            "UNKNOWN",
+            None,
+            Some(ReviewRequestConnection {
+                nodes: vec![
+                    ReviewRequest {
+                        requested_reviewer: Some(RequestedReviewer::User {
+                            login: "dave".into(),
+                        }),
+                    },
+                    ReviewRequest {
+                        requested_reviewer: Some(RequestedReviewer::Team {
+                            slug: "platform".into(),
+                        }),
+                    },
+                    // A null reviewer (deleted account) must be silently
+                    // dropped, not persisted as an empty-string row.
+                    ReviewRequest {
+                        requested_reviewer: None,
+                    },
+                ],
+            }),
+            None,
+        );
+
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let conn = db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT login, reviewer_type FROM requested_reviewers
+                  WHERE pull_request_id = ?1 ORDER BY reviewer_type, login",
+            )
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map(params![pr_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("platform".to_string(), "team".to_string()),
+                ("dave".to_string(), "user".to_string()),
+            ],
+            "delete-then-insert: stale-user is gone, dave + platform are present"
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_clears_requested_reviewers_when_empty() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (?1, 'stale-user', 'user')",
+                params![pr_id],
+            )
+            .unwrap();
+
+        // Empty `nodes` array — upstream returned the field, but no reviewers.
+        let detail = detail_with(
+            None,
+            None,
+            None,
+            "UNKNOWN",
+            None,
+            Some(ReviewRequestConnection { nodes: vec![] }),
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM requested_reviewers WHERE pull_request_id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn write_pr_updates_skips_requested_reviewers_when_absent() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (?1, 'keeper', 'user')",
+                params![pr_id],
+            )
+            .unwrap();
+
+        // `review_requests` absent from the response (None) — leave existing
+        // cache untouched so a partial detail doesn't drop the set.
+        let detail = detail_with(None, None, None, "UNKNOWN", None, None, None);
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM requested_reviewers WHERE pull_request_id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn compute_ci_rollup_tallies_mixed_contexts_and_in_progress() {
+        // 4 contexts: 1 SUCCESS CheckRun, 1 in-progress CheckRun (null
+        // conclusion), 1 SUCCESS StatusContext, 1 FAILURE StatusContext.
+        // Expected: state PENDING (rollup-provided), total 4, passing 2.
+        let detail = detail_with(
+            None,
+            None,
+            None,
+            "UNKNOWN",
+            None,
+            None,
+            Some(rollup_with(
+                "PENDING",
+                4,
+                vec![
+                    StatusCheckContext::CheckRun {
+                        conclusion: Some("SUCCESS".into()),
+                        status: Some("COMPLETED".into()),
+                    },
+                    StatusCheckContext::CheckRun {
+                        conclusion: None,
+                        status: Some("IN_PROGRESS".into()),
+                    },
+                    StatusCheckContext::StatusContext {
+                        state: "SUCCESS".into(),
+                    },
+                    StatusCheckContext::StatusContext {
+                        state: "FAILURE".into(),
+                    },
+                ],
+            )),
+        );
+
+        let ci = compute_ci_rollup(&detail);
+        assert_eq!(ci.state.as_deref(), Some("PENDING"));
+        assert_eq!(ci.total, Some(4));
+        assert_eq!(ci.passing, Some(2));
+    }
+
+    #[test]
+    fn compute_ci_rollup_returns_none_when_rollup_absent() {
+        // No commits at all.
+        let no_commits = detail_with(None, None, None, "UNKNOWN", None, None, None);
+        let ci = compute_ci_rollup(&no_commits);
+        assert_eq!(
+            ci,
+            CiRollup {
+                state: None,
+                total: None,
+                passing: None,
+            }
+        );
+
+        // Commit present but no rollup attached.
+        let no_rollup = detail_with(
+            None,
+            None,
+            None,
+            "UNKNOWN",
+            None,
+            None,
+            Some(PrCommitConnection {
+                nodes: vec![PrCommitNode {
+                    commit: PrCommit {
+                        status_check_rollup: None,
+                    },
+                }],
+            }),
+        );
+        let ci = compute_ci_rollup(&no_rollup);
+        assert_eq!(
+            ci,
+            CiRollup {
+                state: None,
+                total: None,
+                passing: None,
+            }
+        );
+    }
+
+    #[test]
+    fn write_pr_updates_persists_ci_rollup_with_in_progress_run() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with(
+            None,
+            None,
+            None,
+            "MERGEABLE",
+            None,
+            None,
+            Some(rollup_with(
+                "PENDING",
+                3,
+                vec![
+                    StatusCheckContext::CheckRun {
+                        conclusion: Some("SUCCESS".into()),
+                        status: Some("COMPLETED".into()),
+                    },
+                    StatusCheckContext::CheckRun {
+                        conclusion: None,
+                        status: Some("IN_PROGRESS".into()),
+                    },
+                    StatusCheckContext::StatusContext {
+                        state: "SUCCESS".into(),
+                    },
+                ],
+            )),
+        );
+
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let (state, total, passing): (Option<String>, Option<i64>, Option<i64>) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT ci_state, ci_total, ci_passing FROM pull_requests WHERE id = ?1",
+                params![pr_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state.as_deref(), Some("PENDING"));
+        assert_eq!(total, Some(3));
+        assert_eq!(passing, Some(2));
+    }
+
+    #[test]
+    fn write_pr_updates_skips_unknown_reviewer_typenames() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+
+        let detail = detail_with(
+            None,
+            None,
+            None,
+            "UNKNOWN",
+            None,
+            Some(ReviewRequestConnection {
+                nodes: vec![
+                    ReviewRequest {
+                        requested_reviewer: Some(RequestedReviewer::Other),
+                    },
+                    ReviewRequest {
+                        requested_reviewer: Some(RequestedReviewer::User {
+                            login: "alice".into(),
+                        }),
+                    },
+                ],
+            }),
+            None,
+        );
+        write_pr_updates(&db, repo_id, pr_id, Some(&detail), None).unwrap();
+
+        let logins: Vec<String> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT login FROM requested_reviewers
+                      WHERE pull_request_id = ?1 ORDER BY login",
+                )
+                .unwrap();
+            stmt.query_map(params![pr_id], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(logins, vec!["alice".to_string()]);
     }
 }

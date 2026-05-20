@@ -34,6 +34,35 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
       baseRefName
       headRefName
       reviewDecision
+      additions
+      deletions
+      changedFiles
+      reviewRequests(first: 20) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User { login }
+            ... on Team { slug }
+          }
+        }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              state
+              contexts(first: 100) {
+                totalCount
+                nodes {
+                  __typename
+                  ... on CheckRun { conclusion status }
+                  ... on StatusContext { state }
+                }
+              }
+            }
+          }
+        }
+      }
       reviewThreads(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -165,7 +194,94 @@ pub struct PullRequestDetail {
     pub head_ref_name: String,
     #[serde(default)]
     pub review_decision: Option<String>,
+    #[serde(default)]
+    pub additions: Option<i64>,
+    #[serde(default)]
+    pub deletions: Option<i64>,
+    #[serde(default)]
+    pub changed_files: Option<i64>,
+    #[serde(default)]
+    pub review_requests: Option<ReviewRequestConnection>,
+    #[serde(default)]
+    pub commits: Option<PrCommitConnection>,
     pub review_threads: ReviewThreadConnection,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ReviewRequestConnection {
+    pub nodes: Vec<ReviewRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewRequest {
+    #[serde(default)]
+    pub requested_reviewer: Option<RequestedReviewer>,
+}
+
+/// Discriminated union over `User` and `Team` reviewer nodes. Both branches
+/// carry an identifier (`login` for users, `slug` for teams) that's persisted
+/// to `requested_reviewers.login`; the variant distinguishes `reviewer_type`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "__typename")]
+pub enum RequestedReviewer {
+    User {
+        login: String,
+    },
+    Team {
+        slug: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PrCommitConnection {
+    pub nodes: Vec<PrCommitNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PrCommitNode {
+    pub commit: PrCommit,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCommit {
+    #[serde(default)]
+    pub status_check_rollup: Option<StatusCheckRollup>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct StatusCheckRollup {
+    pub state: String,
+    pub contexts: StatusCheckContexts,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusCheckContexts {
+    pub total_count: i64,
+    pub nodes: Vec<StatusCheckContext>,
+}
+
+/// One entry under `statusCheckRollup.contexts`. `CheckRun` carries
+/// `conclusion`/`status` (a `null` conclusion means the run is still in
+/// progress); `StatusContext` is the legacy commit-status shape with `state`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "__typename")]
+pub enum StatusCheckContext {
+    CheckRun {
+        #[serde(default)]
+        conclusion: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    StatusContext {
+        state: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -386,6 +502,99 @@ mod tests {
     fn pr_detail_query_includes_is_resolved() {
         assert!(PR_DETAIL_QUERY.contains("isResolved"));
         assert!(PR_DETAIL_QUERY.contains("reviewThreads"));
+    }
+
+    #[test]
+    fn pr_detail_query_includes_dashboard_enrichment_fields() {
+        for field in [
+            "additions",
+            "deletions",
+            "changedFiles",
+            "reviewRequests(first: 20)",
+            "requestedReviewer",
+            "... on User { login }",
+            "... on Team { slug }",
+            "commits(last: 1)",
+            "statusCheckRollup",
+            "contexts(first: 100)",
+            "totalCount",
+            "... on CheckRun { conclusion status }",
+            "... on StatusContext { state }",
+        ] {
+            assert!(
+                PR_DETAIL_QUERY.contains(field),
+                "pr detail query missing field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn requested_reviewer_deserialises_user_and_team() {
+        let user: RequestedReviewer =
+            serde_json::from_value(serde_json::json!({ "__typename": "User", "login": "alice" }))
+                .unwrap();
+        assert_eq!(
+            user,
+            RequestedReviewer::User {
+                login: "alice".into()
+            }
+        );
+
+        let team: RequestedReviewer =
+            serde_json::from_value(serde_json::json!({ "__typename": "Team", "slug": "platform" }))
+                .unwrap();
+        assert_eq!(
+            team,
+            RequestedReviewer::Team {
+                slug: "platform".into()
+            }
+        );
+
+        let unknown: RequestedReviewer =
+            serde_json::from_value(serde_json::json!({ "__typename": "Bot" })).unwrap();
+        assert_eq!(unknown, RequestedReviewer::Other);
+    }
+
+    #[test]
+    fn status_check_context_deserialises_check_run_and_status_context() {
+        let check: StatusCheckContext = serde_json::from_value(serde_json::json!({
+            "__typename": "CheckRun",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+        }))
+        .unwrap();
+        assert_eq!(
+            check,
+            StatusCheckContext::CheckRun {
+                conclusion: Some("SUCCESS".into()),
+                status: Some("COMPLETED".into()),
+            }
+        );
+
+        let in_progress: StatusCheckContext = serde_json::from_value(serde_json::json!({
+            "__typename": "CheckRun",
+            "status": "IN_PROGRESS"
+        }))
+        .unwrap();
+        assert_eq!(
+            in_progress,
+            StatusCheckContext::CheckRun {
+                conclusion: None,
+                status: Some("IN_PROGRESS".into()),
+            }
+        );
+
+        let status: StatusCheckContext = serde_json::from_value(serde_json::json!({
+            "__typename": "StatusContext",
+            "state": "FAILURE"
+        }))
+        .unwrap();
+        assert_eq!(
+            status,
+            StatusCheckContext::StatusContext {
+                state: "FAILURE".into()
+            }
+        );
     }
 
     #[test]
