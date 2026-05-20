@@ -95,7 +95,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           author { login }
         }
       }
-      issueComments(first: 50) {
+      issueComments: comments(first: 50) {
         totalCount
       }
     }
@@ -172,12 +172,11 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
               path
               line
               originalLine
-              side
             }
           }
         }
       }
-      issueComments(first: 100, after: $issueCommentsAfter) {
+      issueComments: comments(first: 100, after: $issueCommentsAfter) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -724,7 +723,7 @@ mod tests {
             "comments(first: 1)",
             "reviews(first: 30)",
             "submittedAt",
-            "issueComments(first: 50)",
+            "issueComments: comments(first: 50)",
         ] {
             assert!(
                 PR_DETAIL_QUERY.contains(field),
@@ -961,12 +960,11 @@ mod tests {
     fn pr_comments_query_includes_threads_and_issue_comments() {
         for field in [
             "reviewThreads(first: 100",
-            "issueComments(first: 100",
+            "issueComments: comments(first: 100",
             "comments(first: 100)",
             "databaseId",
             "bodyText",
             "originalLine",
-            "side",
         ] {
             assert!(
                 PR_COMMENTS_QUERY.contains(field),
@@ -995,8 +993,7 @@ mod tests {
                                     "createdAt": "2026-05-19T10:00:00Z",
                                     "path": "src/lib.rs",
                                     "line": 12,
-                                    "originalLine": 10,
-                                    "side": "RIGHT"
+                                    "originalLine": 10
                                 }]
                             }
                         }]
@@ -1022,7 +1019,10 @@ mod tests {
         let c = &pr.review_threads.nodes[0].comments.nodes[0];
         assert_eq!(c.database_id, Some(4242));
         assert_eq!(c.path.as_deref(), Some("src/lib.rs"));
-        assert_eq!(c.side.as_deref(), Some("RIGHT"));
+        // `side` lives on PullRequestReviewThread.diffSide, not on the
+        // comment; this query no longer requests it, so the field is None
+        // and the DB column stays NULL until a future query pulls diffSide.
+        assert_eq!(c.side, None);
         assert_eq!(pr.issue_comments.nodes.len(), 1);
         assert!(pr.issue_comments.page_info.has_next_page);
         assert_eq!(
