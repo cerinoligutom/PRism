@@ -52,7 +52,14 @@ withDefaults(defineProps<Props>(), {
   </TooltipProvider>
 </template>
 
-<style scoped>
+<!--
+  Styles are global (no `scoped`) because Reka's `TooltipPortal` teleports
+  the content node to `document.body`, and Vue's scoped `data-v-*` attribute
+  selectors don't reliably follow it across the portal. The BEM class names
+  (`prism-tooltip__content` / `prism-tooltip__arrow`) are unique enough not
+  to need scoping.
+-->
+<style>
 .prism-tooltip__content {
   background: var(--bg-3);
   color: var(--text);
