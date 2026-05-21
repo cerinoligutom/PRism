@@ -221,6 +221,16 @@ ALTER TABLE pull_requests DROP COLUMN threads_involved;
 
 The four bucket columns are disjoint over the full thread set (including outdated). `threads_total` equals their sum. `threads_outdated` is computed at stats-read time from `review_threads.is_outdated`; it never had a dedicated column.
 
+**Extended by `0007_review_thread_url.sql` (issue #102).** Adds a single `url TEXT` column to `review_threads` to carry the GitHub permalink the conversation surface uses for the per-thread "Open in GitHub" action:
+
+```sql
+-- src-tauri/migrations/0007_review_thread_url.sql
+
+ALTER TABLE review_threads ADD COLUMN url TEXT;
+```
+
+The worker writes the URL from `reviewThreads.nodes.url` in `PR_DETAIL_QUERY`. Rows written before this migration carry NULL and the frontend hides the "Open in GitHub" button for them - the next sync cycle backfills the URL.
+
 ### Rationale for the schema choices
 
 - **`node_id TEXT` as the upsert key.** GitHub's GraphQL `ReviewThread` exposes only the global node ID (a string); there's no `databaseId`. Keeping the existing `INTEGER PRIMARY KEY` for cheap foreign keys and adding `node_id TEXT UNIQUE` for upserts is cleaner than rewriting the PK. The same pattern extends to `review_comments`, `issue_comments`, and `reviews` for consistency.
@@ -248,6 +258,7 @@ reviewThreads(first: 100) {
     line
     startLine
     originalLine
+    url
     comments(first: 1) {
       totalCount
       nodes {
@@ -378,6 +389,14 @@ pub struct PullRequestThread {
     /// True when the active account's login appears as a comment author
     /// anywhere in this thread.
     pub is_involved: bool,
+    /// `is_resolved` and `is_outdated` carried separately from `state` so the
+    /// frontend can pick the four-state icon palette without collapsing
+    /// outdated + resolved into the same bucket (issue #102).
+    pub is_resolved: bool,
+    pub is_outdated: bool,
+    /// GitHub permalink for the thread; powers the per-thread "Open in
+    /// GitHub" action. `None` for rows written before migration 0007.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -393,6 +412,16 @@ pub struct ConversationStats {
     pub threads_unresolved: i64,
     pub threads_resolved: i64,
     pub threads_outdated: i64,
+    /// Four-bucket breakdown matching the dashboard row's `ThreadsSummary`
+    /// (ADR 0012, issue #102). Sourced from the pre-aggregated
+    /// `pull_requests.threads_*` rollup columns the worker writes, so the
+    /// conversation surface's bar renders identical numbers + tooltips to the
+    /// dashboard row's. Disjoint over the full thread set including outdated;
+    /// the four buckets sum to `threads_total`.
+    pub threads_unresolved_involved: i64,
+    pub threads_unresolved_uninvolved: i64,
+    pub threads_resolved_involved: i64,
+    pub threads_resolved_uninvolved: i64,
     /// Oldest `review_threads.created_at` among unresolved threads (outdated
     /// or not, per ADR 0012). `None` when there are zero unresolved threads.
     pub oldest_unresolved_at: Option<i64>,
@@ -690,10 +719,22 @@ On mount: calls `invoke('fetch_pr_conversation', { pullRequestId })`, stores the
 ```ts
 defineProps<{
   threads: PullRequestThread[];
+  threadComments?: ThreadComment[];
 }>();
 ```
 
-Renders per-thread cards per the dashboard-expanded artboard. `unresolved && is_involved` gets the "INVOLVED" badge + accent gradient highlight. Outdated threads always render with a dim treatment + `OUTDATED` badge (ADR 0012 dropped the "Show N outdated" toggle).
+Renders per-thread cards per the dashboard-expanded artboard. `is_involved && !is_resolved` gets the "INVOLVED" badge + accent gradient highlight. The leftmost icon picks one of four colours per the ADR 0012 palette:
+
+| Bucket | Icon shape | Token |
+|---|---|---|
+| Unresolved · not involved | Dot | `--danger` |
+| Unresolved · involved | Dot | `--warning` |
+| Resolved · not involved | Checkmark | `--info` |
+| Resolved · involved | Checkmark | `--success` |
+
+Outdated threads keep their colour and add a dim opacity treatment + the existing `OUTDATED` badge. The icon carries a `PRismTooltip` with the bucket label (e.g. `"Unresolved (involved)"` or `"Resolved (outdated)"`).
+
+Each row carries two trailing icon buttons: an expand chevron that toggles inline rendering of the matching `thread_comments` (filtered by `thread_id`, ordered by `created_at`), and an "Open in GitHub" button that calls `openUrl(thread.url)` from `@tauri-apps/plugin-opener`. The button is hidden when `thread.url` is null (legacy rows pre-migration 0007). Lazy rendering only - the comments are already in `useConversationStore`'s cache from `fetch_pr_conversation`.
 
 ### `ConversationStats.vue`
 

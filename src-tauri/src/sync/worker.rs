@@ -1230,8 +1230,8 @@ fn write_review_threads(
                 (pull_request_id, node_id, is_resolved, is_outdated, path,
                  line, start_line, original_line, created_at, resolved_at,
                  last_reply_at, reply_count, head_comment_author_login,
-                 head_comment_body_text, head_comment_created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 head_comment_body_text, head_comment_created_at, url)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
                 pull_request_id = excluded.pull_request_id,
                 is_resolved = excluded.is_resolved,
@@ -1246,7 +1246,8 @@ fn write_review_threads(
                 reply_count = excluded.reply_count,
                 head_comment_author_login = excluded.head_comment_author_login,
                 head_comment_body_text = excluded.head_comment_body_text,
-                head_comment_created_at = excluded.head_comment_created_at",
+                head_comment_created_at = excluded.head_comment_created_at,
+                url = COALESCE(excluded.url, review_threads.url)",
             params![
                 pr_id,
                 thread.id,
@@ -1263,6 +1264,7 @@ fn write_review_threads(
                 head_author,
                 head_body,
                 head_created_at,
+                thread.url,
             ],
         )?;
     }
@@ -1961,6 +1963,7 @@ mod tests {
         original_line: Option<i64>,
         head: Option<(&'a str, &'a str, &'a str)>,
         total_count: i64,
+        url: Option<&'a str>,
     }
 
     impl<'a> ThreadSpec<'a> {
@@ -1975,6 +1978,7 @@ mod tests {
                 original_line: None,
                 head: Some(head),
                 total_count: 1,
+                url: None,
             }
         }
 
@@ -1999,6 +2003,11 @@ mod tests {
             self.total_count = count;
             self
         }
+
+        fn url(mut self, url: &'a str) -> Self {
+            self.url = Some(url);
+            self
+        }
     }
 
     fn thread(spec: ThreadSpec<'_>) -> ReviewThread {
@@ -2018,6 +2027,7 @@ mod tests {
             line: spec.line,
             start_line: spec.start_line,
             original_line: spec.original_line,
+            url: spec.url.map(str::to_string),
             comments: GqlCommentConnection {
                 total_count: spec.total_count,
                 nodes: head_node.into_iter().collect(),
@@ -2034,6 +2044,7 @@ mod tests {
             line: None,
             start_line: None,
             original_line: None,
+            url: None,
             comments: GqlCommentConnection {
                 total_count: 0,
                 nodes: vec![],
@@ -2143,6 +2154,68 @@ mod tests {
         assert_eq!(row.11.as_deref(), Some("alice"));
         assert_eq!(row.12.as_deref(), Some("head body"));
         assert_eq!(row.13, rfc3339_to_unix("2026-05-18T10:00:00Z"));
+    }
+
+    #[test]
+    fn write_pr_updates_persists_review_thread_url() {
+        // Issue #102: the thread URL backs the conversation surface's per-thread
+        // "Open in GitHub" action. Confirm the worker writes it on first insert
+        // and preserves it across cycles when a later payload happens to omit
+        // it (`COALESCE(excluded.url, review_threads.url)`).
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            review_threads(vec![thread(
+                ThreadSpec::open(
+                    "PRRT_URL",
+                    "src/lib.rs",
+                    ("PRRC_U1", "alice", "2026-05-18T10:00:00Z"),
+                )
+                .url("https://github.com/owner/repo/pull/1#discussion_r42"),
+            )]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+        let url: Option<String> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT url FROM review_threads WHERE node_id = 'PRRT_URL'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#discussion_r42")
+        );
+
+        // Cycle 2: same thread, URL absent. The COALESCE in the upsert keeps the
+        // previously-persisted URL rather than blanking it on a partial payload.
+        let detail2 = detail_with_threads(
+            review_threads(vec![thread(ThreadSpec::open(
+                "PRRT_URL",
+                "src/lib.rs",
+                ("PRRC_U1", "alice", "2026-05-18T10:00:00Z"),
+            ))]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail2), None).unwrap();
+        let url_after: Option<String> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT url FROM review_threads WHERE node_id = 'PRRT_URL'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            url_after.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#discussion_r42"),
+            "thread url must survive a payload with no url"
+        );
     }
 
     #[test]

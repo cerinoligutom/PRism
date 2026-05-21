@@ -5,7 +5,8 @@ import { storeToRefs } from "pinia";
 import { useConversationStore } from "@/stores/conversation";
 import { useDashboardStore } from "@/stores/dashboard";
 
-import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import type { ThreadsSummary } from "@/types/dashboard";
+import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
 import ConversationStats from "./ConversationStats.vue";
 import ReviewsTab from "./ReviewsTab.vue";
 import StatusTimelineTab from "./StatusTimelineTab.vue";
@@ -83,62 +84,24 @@ const threadsSummary = computed<string>(() => {
   return `${total} ${totalLabel} · ${unresolved} unresolved`;
 });
 
-type Bucket =
-  | "unresolved-uninvolved"
-  | "unresolved-involved"
-  | "resolved-uninvolved"
-  | "resolved-involved";
-
-interface BarSegment {
-  readonly bucket: Bucket;
-  readonly count: number;
-  readonly width: number;
-  readonly tooltip: string;
-}
-
 /**
- * Four-bucket segment widths matching the dashboard threads bar (ADR 0012).
- * Buckets are derived from per-thread `(state, is_involved)`; the conversation
- * surface needs the per-thread breakdown rather than the rollup because the
- * cached stats only carry the global counts. Outdated threads sort into the
- * matching (resolved x involved) bucket - they're no longer carved out.
+ * Mount the dashboard's `ThreadsBar` against the same four-bucket breakdown the
+ * row consumes (issue #102, ADR 0012). The stats come from the pre-aggregated
+ * `pull_requests.threads_*` rollup written by the sync worker, so the bar
+ * renders identical numbers + tooltips on both surfaces by construction.
+ * Previously this component re-bucketed from per-thread `state`, which mis-
+ * classified outdated-but-resolved threads.
  */
-const barSegments = computed<readonly BarSegment[]>(() => {
+const threadsSummaryForBar = computed<ThreadsSummary | null>(() => {
   const c = conversation.value;
-  if (c === null || c.stats.threads_total === 0) return [];
-  const counts = {
-    "unresolved-uninvolved": 0,
-    "unresolved-involved": 0,
-    "resolved-uninvolved": 0,
-    "resolved-involved": 0,
-  } satisfies Record<Bucket, number>;
-  for (const t of c.threads) {
-    const resolved = t.state === "resolved";
-    const involvedKey = t.is_involved ? "involved" : "uninvolved";
-    const stateKey = resolved ? "resolved" : "unresolved";
-    counts[`${stateKey}-${involvedKey}` as Bucket] += 1;
-  }
-  const total = c.stats.threads_total;
-  const raw: { bucket: Bucket; count: number; tooltip: string }[] = (
-    [
-      ["unresolved-uninvolved", "Unresolved"],
-      ["unresolved-involved", "Unresolved (involved)"],
-      ["resolved-uninvolved", "Resolved"],
-      ["resolved-involved", "Resolved (involved)"],
-    ] as const
-  )
-    .map(([bucket, label]) => ({
-      bucket,
-      count: counts[bucket],
-      tooltip: `${label} · ${counts[bucket]} ${counts[bucket] === 1 ? "thread" : "threads"}`,
-    }))
-    .filter((s) => s.count > 0);
-  const SLIVER_PCT = 5;
-  const remaining = Math.max(0, 100 - SLIVER_PCT * raw.length);
-  return raw.map((b) => ({
-    ...b,
-    width: SLIVER_PCT + (b.count / total) * remaining,
-  }));
+  if (c === null) return null;
+  return {
+    total: c.stats.threads_total,
+    unresolved_involved: c.stats.threads_unresolved_involved,
+    unresolved_uninvolved: c.stats.threads_unresolved_uninvolved,
+    resolved_involved: c.stats.threads_resolved_involved,
+    resolved_uninvolved: c.stats.threads_resolved_uninvolved,
+  };
 });
 
 async function loadConversation(): Promise<void> {
@@ -208,22 +171,13 @@ watch(
           </div>
 
           <div v-if="conversation.stats.threads_total > 0" class="pr-conversation__rollup">
-            <div class="pr-conversation__bar">
-              <PRismTooltip
-                v-for="segment in barSegments"
-                :key="segment.bucket"
-                :text="segment.tooltip"
-                :as-child="true"
-              >
-                <div
-                  :class="['pr-conversation__bar-seg', `pr-conversation__bar-seg--${segment.bucket}`]"
-                  :style="{ width: `${segment.width}%` }"
-                ></div>
-              </PRismTooltip>
-            </div>
+            <ThreadsBar :threads="threadsSummaryForBar" />
           </div>
 
-          <ThreadsList :threads="conversation.threads" />
+          <ThreadsList
+            :threads="conversation.threads"
+            :thread-comments="conversation.thread_comments"
+          />
         </div>
 
         <aside class="pr-conversation__meta-col">
@@ -385,34 +339,6 @@ watch(
 
 .pr-conversation__rollup {
   margin-bottom: var(--s-4);
-}
-
-.pr-conversation__bar {
-  display: flex;
-  height: 8px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--bg-4);
-}
-
-.pr-conversation__bar-seg {
-  height: 100%;
-}
-
-.pr-conversation__bar-seg--unresolved-uninvolved {
-  background: var(--danger);
-}
-
-.pr-conversation__bar-seg--unresolved-involved {
-  background: var(--warning);
-}
-
-.pr-conversation__bar-seg--resolved-uninvolved {
-  background: var(--info);
-}
-
-.pr-conversation__bar-seg--resolved-involved {
-  background: var(--success);
 }
 
 .pr-conversation__tab-body {

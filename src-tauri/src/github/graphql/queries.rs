@@ -75,6 +75,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           line
           startLine
           originalLine
+          url
           comments(first: 1) {
             totalCount
             nodes {
@@ -377,6 +378,11 @@ pub struct ReviewThread {
     pub start_line: Option<i64>,
     #[serde(default)]
     pub original_line: Option<i64>,
+    /// GitHub permalink for the thread. Persisted to `review_threads.url` so the
+    /// conversation surface can offer an "Open in GitHub" per-thread action
+    /// without reconstructing the URL client-side. See issue #102.
+    #[serde(default)]
+    pub url: Option<String>,
     pub comments: CommentConnection,
 }
 
@@ -735,7 +741,7 @@ mod tests {
 
     #[test]
     fn pr_detail_query_includes_conversation_depth_fields() {
-        // Thread line range + comments.totalCount + head comment shape.
+        // Thread line range + comments.totalCount + head comment shape + url.
         for field in [
             "line",
             "startLine",
@@ -744,6 +750,7 @@ mod tests {
             "reviews(first: 30)",
             "submittedAt",
             "issueComments: comments(first: 50)",
+            "url",
         ] {
             assert!(
                 PR_DETAIL_QUERY.contains(field),
@@ -762,6 +769,7 @@ mod tests {
             "line": 42,
             "startLine": 40,
             "originalLine": 41,
+            "url": "https://github.com/owner/repo/pull/1#discussion_r1",
             "comments": {
                 "totalCount": 3,
                 "nodes": [{
@@ -776,8 +784,31 @@ mod tests {
         assert_eq!(thread.line, Some(42));
         assert_eq!(thread.start_line, Some(40));
         assert_eq!(thread.original_line, Some(41));
+        assert_eq!(
+            thread.url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#discussion_r1")
+        );
         assert_eq!(thread.comments.total_count, 3);
         assert_eq!(thread.comments.nodes.len(), 1);
+    }
+
+    #[test]
+    fn review_thread_deserialises_with_missing_url_as_none() {
+        // Older fixtures (and tests that wrote thread JSON before #102) won't
+        // carry the new `url` field. Confirm it defaults to None rather than
+        // failing the whole detail parse.
+        let json = serde_json::json!({
+            "id": "PRRT_2",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/lib.rs",
+            "line": 10,
+            "startLine": null,
+            "originalLine": null,
+            "comments": { "totalCount": 0, "nodes": [] }
+        });
+        let thread: ReviewThread = serde_json::from_value(json).unwrap();
+        assert!(thread.url.is_none());
     }
 
     #[test]

@@ -53,9 +53,15 @@ fn seed_fixture(db: &DbHandle) {
         INSERT INTO pull_requests
             (id, repo_id, number, title, state, draft, author_login,
              created_at, updated_at, base_ref, head_ref,
-             issue_comments_count)
+             issue_comments_count,
+             threads_total,
+             threads_unresolved_involved,
+             threads_unresolved_uninvolved,
+             threads_resolved_involved,
+             threads_resolved_uninvolved)
             VALUES
-            (100, 10, 1, 'web/#1', 'open', 0, 'alice', 0, 0, 'main', 'feat', 4);
+            (100, 10, 1, 'web/#1', 'open', 0, 'alice', 0, 0, 'main', 'feat', 4,
+             4, 1, 2, 0, 1);
 
         -- Three threads with distinct state combos.
         INSERT INTO review_threads
@@ -192,6 +198,31 @@ fn stats_total_counts_every_thread_including_outdated() {
     assert_eq!(stats.threads_unresolved, 3, "1000 + 1002 + 1003");
     assert_eq!(stats.threads_resolved, 1, "1001");
     assert_eq!(stats.threads_outdated, 1, "1002 (overlaps unresolved)");
+}
+
+#[test]
+fn stats_four_buckets_read_from_rollup_columns() {
+    // Issue #102: the conversation surface mounts the dashboard ThreadsBar
+    // against these four buckets so the bar renders identically to the
+    // dashboard row's. Reading from the pre-aggregated rollup the worker
+    // writes (instead of re-bucketing per-thread on the fly) keeps the two
+    // surfaces consistent by construction.
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    assert_eq!(stats.threads_unresolved_involved, 1);
+    assert_eq!(stats.threads_unresolved_uninvolved, 2);
+    assert_eq!(stats.threads_resolved_involved, 0);
+    assert_eq!(stats.threads_resolved_uninvolved, 1);
+    let bucket_sum = stats.threads_unresolved_involved
+        + stats.threads_unresolved_uninvolved
+        + stats.threads_resolved_involved
+        + stats.threads_resolved_uninvolved;
+    assert_eq!(
+        bucket_sum, stats.threads_total,
+        "four buckets must sum to threads_total"
+    );
 }
 
 #[test]

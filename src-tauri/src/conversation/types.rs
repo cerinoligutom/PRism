@@ -39,6 +39,18 @@ pub struct PullRequestThread {
     /// True when the active account's login appears as a comment author
     /// anywhere in this thread.
     pub is_involved: bool,
+    /// Resolved-state flag carried separately from `state` so the frontend can
+    /// pick the four-state icon palette (`(is_resolved, is_involved)`) without
+    /// losing the orthogonal `is_outdated` cue. `state` collapses outdated +
+    /// resolved into `Outdated`; this field preserves the underlying bit.
+    pub is_resolved: bool,
+    /// `is_outdated` mirror so the frontend can apply the dim treatment + badge
+    /// regardless of which bucket the four-state icon resolves to.
+    pub is_outdated: bool,
+    /// GitHub permalink for the thread; the conversation surface uses this for
+    /// the "Open in GitHub" per-thread action. `None` for legacy rows written
+    /// before the column was introduced.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +72,15 @@ pub struct ConversationStats {
     pub threads_unresolved: i64,
     pub threads_resolved: i64,
     pub threads_outdated: i64,
+    /// Four-bucket breakdown matching the dashboard row's `ThreadsSummary`
+    /// (ADR 0012). The buckets are disjoint over the full thread set including
+    /// outdated; `threads_total` equals their sum. The conversation surface
+    /// mounts the dashboard `ThreadsBar` against these so its bar renders
+    /// identically to the row's.
+    pub threads_unresolved_involved: i64,
+    pub threads_unresolved_uninvolved: i64,
+    pub threads_resolved_involved: i64,
+    pub threads_resolved_uninvolved: i64,
     /// Oldest `review_threads.created_at` among unresolved threads (outdated
     /// or not, per ADR 0012). `None` when there are zero unresolved threads.
     pub oldest_unresolved_at: Option<i64>,
