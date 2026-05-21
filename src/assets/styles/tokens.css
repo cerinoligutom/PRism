@@ -50,6 +50,13 @@
   --accent-bg:     oklch(0.32 calc(var(--accent-c) * 0.4) var(--accent-h) / 0.25);
   --accent-fg:     oklch(0.18 0.04 var(--accent-h));
   --focus-ring:    oklch(0.72 var(--accent-c) var(--accent-h) / 0.5);
+  /* Row-level tint for `needs_attention = 1` PRs. The artboard's literal
+   * (oklch(0.2 0.02 320 / 0.18)) carries the brand hue at low chroma so the
+   * accent dot still reads against the row. Mirrored to OKLCH-via-token here
+   * so the light theme can override it without inlining values in the row
+   * stylesheet. See `docs/contracts/triage-ux.md` + ADR 0015. */
+  --attention-tint:       oklch(0.2 0.02 var(--accent-h) / 0.18);
+  --attention-tint-hover: oklch(0.22 0.03 var(--accent-h) / 0.25);
 
   /* ────── Semantic / status ────── */
   --success:    oklch(0.74 0.16 145);
@@ -147,6 +154,8 @@
   --accent-bg:     oklch(0.95 calc(var(--accent-c) * 0.3) var(--accent-h));
   --accent-fg:     #ffffff;
   --focus-ring:    oklch(0.55 var(--accent-c) var(--accent-h) / 0.4);
+  --attention-tint:       oklch(0.97 0.03 var(--accent-h) / 0.7);
+  --attention-tint-hover: oklch(0.95 0.04 var(--accent-h) / 0.85);
 
   --success:    oklch(0.5  0.16 145);
   --success-bg: oklch(0.94 0.05 145);

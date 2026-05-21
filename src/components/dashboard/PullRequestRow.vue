@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
 import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
@@ -29,6 +36,9 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   open: [pullRequest: DashboardPullRequest];
+  /** M4 row action — viewer asked to flip this PR back to unread. The parent
+   * invokes `mark_pr_unread` and reloads; the dot returns on the next paint. */
+  "mark-unread": [pullRequest: DashboardPullRequest];
 }>();
 
 type RowStrip =
@@ -138,6 +148,10 @@ function onKey(event: KeyboardEvent): void {
 function openOnGitHub(event: MouseEvent): void {
   event.stopPropagation();
   void openUrl(props.pullRequest.url);
+}
+
+function onMarkUnread(): void {
+  emit("mark-unread", props.pullRequest);
 }
 </script>
 
@@ -272,7 +286,45 @@ function openOnGitHub(event: MouseEvent): void {
       </button>
     </PRismTooltip>
 
-    <div class="pr-row__kebab" aria-hidden="true">⋯</div>
+    <DropdownMenuRoot>
+      <DropdownMenuTrigger as-child>
+        <button
+          type="button"
+          class="pr-row__kebab"
+          aria-label="Pull request actions"
+          @click.stop
+          @keydown.stop
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <circle cx="3" cy="8" r="1.4" />
+            <circle cx="8" cy="8" r="1.4" />
+            <circle cx="13" cy="8" r="1.4" />
+          </svg>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuPortal>
+        <DropdownMenuContent
+          class="pr-row__menu"
+          align="end"
+          :side-offset="4"
+          @click.stop
+        >
+          <DropdownMenuItem
+            class="pr-row__menu-item"
+            :disabled="unread"
+            @select="onMarkUnread"
+          >
+            Mark unread
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenuPortal>
+    </DropdownMenuRoot>
   </div>
 </template>
 
@@ -311,12 +363,11 @@ function openOnGitHub(event: MouseEvent): void {
 }
 
 .pr-row--attention {
-  background: var(--accent-bg);
+  background: var(--attention-tint);
 }
 
 .pr-row--attention:hover {
-  background: var(--accent-bg);
-  filter: brightness(1.08);
+  background: var(--attention-tint-hover);
 }
 
 .pr-row__strip {
@@ -515,7 +566,13 @@ function openOnGitHub(event: MouseEvent): void {
   width: 24px;
   height: 24px;
   border-radius: var(--r-2);
+  background: transparent;
+  border: 0;
+  padding: 0;
   cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s;
 }
 
 .pr-row:hover .pr-row__kebab {
@@ -525,5 +582,59 @@ function openOnGitHub(event: MouseEvent): void {
 .pr-row__kebab:hover {
   background: var(--bg-3);
   color: var(--text);
+}
+
+.pr-row__kebab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  color: var(--text);
+}
+
+.pr-row__kebab[data-state="open"] {
+  background: var(--bg-3);
+  color: var(--text);
+}
+</style>
+
+<!--
+  Dropdown menu content is teleported to `document.body` via Reka's
+  `DropdownMenuPortal`. Scoped styles can't follow the teleport, so the menu
+  rules live in an unscoped block alongside the row. Matches the same pattern
+  used by `FilterChipsBar.vue`'s tooltip body and `ReviewerStack.vue`'s
+  overflow row.
+-->
+<style>
+.pr-row__menu {
+  min-width: 160px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-2);
+  padding: 4px;
+  box-shadow: var(--shadow-2);
+  z-index: 50;
+}
+
+.pr-row__menu-item {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-12);
+  color: var(--text);
+  border-radius: var(--r-1);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.pr-row__menu-item[data-highlighted] {
+  background: var(--bg-4);
+  color: var(--text-strong);
+}
+
+.pr-row__menu-item[data-disabled] {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+  pointer-events: none;
 }
 </style>
