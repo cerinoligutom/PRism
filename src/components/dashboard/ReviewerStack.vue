@@ -14,6 +14,10 @@ const props = withDefaults(defineProps<Props>(), {
   max: 4,
 });
 
+/** Cap on rows rendered inside the overflow tooltip; remainder collapses
+ * into a muted "+M more" footer so the chip stays readable for huge PRs. */
+const OVERFLOW_TOOLTIP_CAP = 12;
+
 const visible = computed<readonly ReviewerEntry[]>(() =>
   props.reviewers.slice(0, props.max),
 );
@@ -24,8 +28,12 @@ const hidden = computed<readonly ReviewerEntry[]>(() =>
 
 const overflow = computed<number>(() => hidden.value.length);
 
-const overflowTooltip = computed<string>(() =>
-  hidden.value.map((r) => titleFor(r)).join("\n"),
+const hiddenReviewers = computed<readonly ReviewerEntry[]>(() =>
+  hidden.value.slice(0, OVERFLOW_TOOLTIP_CAP),
+);
+
+const moreCount = computed<number>(
+  () => overflow.value - hiddenReviewers.value.length,
 );
 
 const approvedCount = computed<number>(
@@ -63,6 +71,20 @@ function titleFor(reviewer: ReviewerEntry): string {
       return `${reviewer.login} pending`;
   }
 }
+
+function statusLabel(state: ReviewerState): string {
+  switch (state) {
+    case "approved":
+      return "Approved";
+    case "changes-requested":
+      return "Changes";
+    case "commented":
+      return "Commented";
+    case "pending":
+    default:
+      return "Pending";
+  }
+}
 </script>
 
 <template>
@@ -88,12 +110,36 @@ function titleFor(reviewer: ReviewerEntry): string {
         ]"
       />
     </PRismTooltip>
-    <PRismTooltip
-      v-if="overflow > 0"
-      :text="overflowTooltip"
-      :as-child="true"
-    >
+    <PRismTooltip v-if="overflow > 0" :as-child="true">
       <span class="reviewer-stack__overflow">+{{ overflow }}</span>
+      <template #content>
+        <ul class="reviewer-stack__tooltip-list" style="max-width: 360px">
+          <li
+            v-for="reviewer in hiddenReviewers"
+            :key="reviewer.login"
+            class="reviewer-stack__tooltip-row"
+          >
+            <PRismAvatar
+              :login="reviewer.login"
+              :avatar-url="reviewer.avatar_url"
+              size="sm"
+              :title="null"
+            />
+            <span class="reviewer-stack__tooltip-login">{{ reviewer.login }}</span>
+            <span
+              :class="[
+                'reviewer-stack__tooltip-status',
+                `reviewer-stack__tooltip-status--${reviewer.state}`,
+              ]"
+            >
+              {{ statusLabel(reviewer.state) }}
+            </span>
+          </li>
+          <li v-if="moreCount > 0" class="reviewer-stack__tooltip-footer">
+            +{{ moreCount }} more {{ moreCount === 1 ? "reviewer" : "reviewers" }} - open PR for full list
+          </li>
+        </ul>
+      </template>
     </PRismTooltip>
     <span class="reviewer-stack__summary">
       <span v-if="changesCount > 0" class="reviewer-stack__summary-changes">{{ changesCount }}</span>
@@ -170,4 +216,79 @@ function titleFor(reviewer: ReviewerEntry): string {
 .reviewer-stack__summary-ok { color: var(--success); }
 .reviewer-stack__summary-changes { color: var(--danger); }
 .reviewer-stack__summary-total { color: var(--text-faint); }
+</style>
+
+<!--
+  Tooltip-list styles are global (not scoped) because Reka's TooltipPortal
+  teleports the rendered slot content to `document.body`, and Vue's scoped
+  `data-v-*` selectors don't follow it across the portal. Matches the same
+  pattern used by `PRismTooltip` itself.
+-->
+<style>
+.reviewer-stack__tooltip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reviewer-stack__tooltip-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-11);
+  color: var(--text);
+}
+
+.reviewer-stack__tooltip-login {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewer-stack__tooltip-status {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: var(--r-1);
+  font-size: var(--fs-9);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.2px;
+  flex: 0 0 auto;
+}
+
+.reviewer-stack__tooltip-status--approved {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.reviewer-stack__tooltip-status--changes-requested {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.reviewer-stack__tooltip-status--commented {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.reviewer-stack__tooltip-status--pending {
+  background: var(--bg-4);
+  color: var(--text-faint);
+}
+
+.reviewer-stack__tooltip-footer {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-1);
+  font-size: var(--fs-10);
+  color: var(--text-faint);
+  font-style: italic;
+}
 </style>
