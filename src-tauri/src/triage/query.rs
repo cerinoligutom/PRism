@@ -90,7 +90,12 @@ pub fn mark_unread(
 /// Recompute the `pull_request_viewer_relations.needs_attention` boolean for
 /// one `(account_id, pull_request_id)` pair using the four ADR-0015 signals:
 ///
-/// 1. Viewer authored the PR AND `threads_unresolved_involved > 0`.
+/// 1. Viewer authored the PR AND at least one unresolved thread is involved
+///    by the viewer (a `review_comments` row authored by the viewer's
+///    account login on an unresolved `review_threads` row). Per ADR 0016
+///    the involvement test reads `review_threads` / `review_comments`
+///    directly instead of the retired `pr.threads_unresolved_involved`
+///    column.
 /// 2. Viewer is in `requested_reviewers` for the PR (presence implies pending;
 ///    the table never stores submitted reviews - those flow through
 ///    `reviews`).
@@ -113,9 +118,16 @@ pub fn recompute_needs_attention(
                         SELECT 1
                           FROM pull_requests pr
                           JOIN accounts a ON a.id = rel.account_id
+                          JOIN review_threads t ON t.pull_request_id = pr.id
                          WHERE pr.id = rel.pull_request_id
                            AND pr.author_login = a.login
-                           AND pr.threads_unresolved_involved > 0
+                           AND t.is_resolved = 0
+                           AND EXISTS (
+                               SELECT 1 FROM review_comments c
+                                JOIN accounts a2 ON a2.login = c.author_login
+                                WHERE c.review_thread_id = t.id
+                                  AND a2.id = rel.account_id
+                           )
                     )
                     OR EXISTS (
                         SELECT 1
@@ -150,11 +162,16 @@ pub fn recompute_needs_attention(
 /// The `Stale` predicate hard-codes the 7-day window pinned in the contract
 /// (`604800` seconds); the value lives in one place so a future revision only
 /// edits this string.
+///
+/// `UnresolvedThreads` reads `review_threads` directly (ADR 0016) since the
+/// `pr.threads_*` columns are no longer maintained. The predicate is
+/// account-independent: any unresolved thread on the PR is enough.
 pub fn chip_predicate(chip: ChipKey) -> &'static str {
     match chip {
         ChipKey::NeedsAttention => "rel.needs_attention = 1",
         ChipKey::UnresolvedThreads => {
-            "(pr.threads_unresolved_involved + pr.threads_unresolved_uninvolved) > 0"
+            "EXISTS (SELECT 1 FROM review_threads t \
+                      WHERE t.pull_request_id = pr.id AND t.is_resolved = 0)"
         }
         ChipKey::CiFailing => "pr.ci_state IN ('FAILURE', 'ERROR')",
         ChipKey::Stale => "(strftime('%s','now') - pr.updated_at) > 604800",
@@ -285,11 +302,16 @@ mod tests {
         conn
     }
 
+    /// Seed one account / repo / PR / relation row. When
+    /// `unresolved_involved_thread` is true the fixture also inserts one
+    /// unresolved `review_threads` row with a `review_comments` row authored
+    /// by the viewer - so the ADR-0016 query-time involvement check finds the
+    /// viewer involved on an unresolved thread.
     fn seed_account_repo_pr(
         conn: &Connection,
         viewer_login: &str,
         author_login: &str,
-        threads_unresolved_involved: i64,
+        unresolved_involved_thread: bool,
         review_decision: Option<&str>,
     ) {
         conn.execute_batch(&format!(
@@ -299,10 +321,9 @@ mod tests {
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
-                 created_at, updated_at, base_ref, head_ref,
-                 threads_unresolved_involved, review_decision)
+                 created_at, updated_at, base_ref, head_ref, review_decision)
                 VALUES (100, 10, 1, 't', 'open', 0, '{author_login}',
-                        0, 0, 'main', 'feat', {threads_unresolved_involved},
+                        0, 0, 'main', 'feat',
                         {review_decision_sql});
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
@@ -314,6 +335,17 @@ mod tests {
             }
         ))
         .unwrap();
+        if unresolved_involved_thread {
+            conn.execute_batch(&format!(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (5001, 100, 0, 0, 'RT_seed');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES (6001, 5001, '{viewer_login}', 'note', 1);"
+            ))
+            .unwrap();
+        }
     }
 
     fn read_needs_attention(conn: &Connection) -> i64 {
@@ -329,7 +361,7 @@ mod tests {
     #[test]
     fn signal_one_authored_with_unresolved_involved_threads() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", 1, None);
+        seed_account_repo_pr(&conn, "alice", "alice", true, None);
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
@@ -337,7 +369,7 @@ mod tests {
     #[test]
     fn signal_one_no_fire_when_not_author() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 1, None);
+        seed_account_repo_pr(&conn, "alice", "bob", true, None);
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
@@ -345,7 +377,7 @@ mod tests {
     #[test]
     fn signal_two_pending_requested_reviewer() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 0, None);
+        seed_account_repo_pr(&conn, "alice", "bob", false, None);
         conn.execute(
             "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
                 VALUES (100, 'alice', 'user')",
@@ -359,7 +391,7 @@ mod tests {
     #[test]
     fn signal_two_no_fire_for_other_reviewers() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 0, None);
+        seed_account_repo_pr(&conn, "alice", "bob", false, None);
         conn.execute(
             "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
                 VALUES (100, 'carol', 'user')",
@@ -373,7 +405,7 @@ mod tests {
     #[test]
     fn signal_three_unread_mentions() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 0, None);
+        seed_account_repo_pr(&conn, "alice", "bob", false, None);
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET mentioned_count_unread = 2
@@ -388,7 +420,7 @@ mod tests {
     #[test]
     fn signal_four_changes_requested_on_authored_pr() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", 0, Some("CHANGES_REQUESTED"));
+        seed_account_repo_pr(&conn, "alice", "alice", false, Some("CHANGES_REQUESTED"));
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
@@ -396,7 +428,7 @@ mod tests {
     #[test]
     fn signal_four_no_fire_when_not_author() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 0, Some("CHANGES_REQUESTED"));
+        seed_account_repo_pr(&conn, "alice", "bob", false, Some("CHANGES_REQUESTED"));
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
@@ -404,7 +436,7 @@ mod tests {
     #[test]
     fn negative_no_signals_clears_flag() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", 0, None);
+        seed_account_repo_pr(&conn, "alice", "bob", false, None);
         // Pre-set the flag so the recompute has to actively clear it.
         conn.execute(
             "UPDATE pull_request_viewer_relations
@@ -420,7 +452,7 @@ mod tests {
     #[test]
     fn combined_signals_one_and_three_still_fire() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", 1, None);
+        seed_account_repo_pr(&conn, "alice", "alice", true, None);
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET mentioned_count_unread = 3
@@ -464,7 +496,9 @@ mod tests {
 
     /// Seed a Watching-view fixture covering each chip predicate exactly once.
     /// PR 600 is drafts-only, 601 is ci-failing, 602 is stale, 603 has
-    /// unresolved threads, 604 has needs_attention precomputed.
+    /// unresolved threads (seeded via `review_threads` since ADR 0016 retired
+    /// the pre-aggregated `pr.threads_*` columns), 604 has needs_attention
+    /// precomputed.
     fn seed_chip_count_fixture(conn: &Connection) {
         conn.execute_batch(
             r#"
@@ -476,14 +510,15 @@ mod tests {
 
             INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
-                 created_at, updated_at, base_ref, head_ref,
-                 threads_unresolved_involved, threads_unresolved_uninvolved,
-                 ci_state) VALUES
-                (600, 10, 1, 'd',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', 0, 0, NULL),
-                (601, 10, 2, 'ci', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 0, 0, 'FAILURE'),
-                (602, 10, 3, 'st', 'open', 0, 'bob', 0, strftime('%s','now') - 800000, 'main', 'c', 0, 0, NULL),
-                (603, 10, 4, 'th', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'd', 1, 1, NULL),
-                (604, 10, 5, 'a',  'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'e', 0, 0, NULL);
+                 created_at, updated_at, base_ref, head_ref, ci_state) VALUES
+                (600, 10, 1, 'd',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', NULL),
+                (601, 10, 2, 'ci', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 'FAILURE'),
+                (602, 10, 3, 'st', 'open', 0, 'bob', 0, strftime('%s','now') - 800000, 'main', 'c', NULL),
+                (603, 10, 4, 'th', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'd', NULL),
+                (604, 10, 5, 'a',  'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'e', NULL);
+
+            INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (700, 603, 0, 0, 'RT_603');
 
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,

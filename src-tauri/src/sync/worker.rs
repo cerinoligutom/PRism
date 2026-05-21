@@ -1265,60 +1265,22 @@ pub fn write_pr_updates(
     // a populated row with a null on a partial payload.
     write_user_avatars(&tx, detail, events)?;
 
-    // Threads rollup (ADR 0012, four-bucket redesign). Recomputed from the
-    // just-written `review_threads` / `review_comments` rows for the active
-    // account so the dashboard row + conversation surface bars render
-    // identical four-segment slicing without sub-aggregating. Mirrors the M2
-    // `ci_*` pattern; see `docs/contracts/conversation-depth.md` "Dashboard
-    // rollup" and ADRs 0010 + 0012. Runs unconditionally — even when `detail`
-    // is `None` the rollup stays consistent with the existing thread rows.
-    //
-    // `involvement_check` is the (resolved x involved) discriminator: a thread
-    // counts as involved when at least one comment on it is authored by the
-    // active account's login. Outdated threads sort into whichever bucket
-    // matches their (resolved x involved) state — they're no longer carved
-    // out of the denominator.
-    tx.execute(
-        "WITH involvement AS (
-             SELECT t.id,
-                    t.is_resolved,
-                    EXISTS (
-                        SELECT 1 FROM review_comments c
-                         JOIN accounts a ON a.login = c.author_login
-                         WHERE c.review_thread_id = t.id
-                           AND a.id = ?2
-                    ) AS is_involved
-               FROM review_threads t
-              WHERE t.pull_request_id = ?1
-         )
-         UPDATE pull_requests
-            SET threads_total = (SELECT COUNT(*) FROM involvement),
-                threads_unresolved_involved = (
-                    SELECT COUNT(*) FROM involvement
-                     WHERE is_resolved = 0 AND is_involved = 1
-                ),
-                threads_unresolved_uninvolved = (
-                    SELECT COUNT(*) FROM involvement
-                     WHERE is_resolved = 0 AND is_involved = 0
-                ),
-                threads_resolved_involved = (
-                    SELECT COUNT(*) FROM involvement
-                     WHERE is_resolved = 1 AND is_involved = 1
-                ),
-                threads_resolved_uninvolved = (
-                    SELECT COUNT(*) FROM involvement
-                     WHERE is_resolved = 1 AND is_involved = 0
-                )
-          WHERE id = ?1",
-        params![pr_id, account_id as i64],
-    )?;
+    // ADR 0016 retired the per-cycle threads rollup UPDATE that lived here.
+    // The four `pull_requests.threads_*` columns are no longer written or
+    // read; the dashboard query (`src-tauri/src/dashboard/query.rs`) computes
+    // the same buckets at read time scoped to the in-scope account set. The
+    // legacy columns stay on the schema (SQLite column-drop is non-trivial);
+    // a future `chore` migration removes them. Removing the UPDATE saves one
+    // SQL statement per PR per cycle.
 
     // Triage scan + needs_attention recompute (M4-B, ADR 0015 / issue #146).
     // Runs after every other write in this transaction so the recompute sees
-    // the freshest threads rollup, requested-reviewers set, and review-decision.
-    // A missing relation row (PR not discovered for the active account) is a
-    // valid no-op: every UPDATE here matches by (account_id, pull_request_id)
-    // and the dashboard query LEFT JOINs the relations table.
+    // the freshest threads (read directly from `review_threads` /
+    // `review_comments` per ADR 0016), requested-reviewers set, and
+    // review-decision. A missing relation row (PR not discovered for the
+    // active account) is a valid no-op: every UPDATE here matches by
+    // (account_id, pull_request_id) and the dashboard query LEFT JOINs the
+    // relations table.
     scan_mentions_and_recompute_attention(&tx, account_id, pr_id)?;
 
     tx.commit()
@@ -1458,6 +1420,12 @@ fn scan_mentions_and_recompute_attention(
     // PR's host, so the EXISTS subqueries only need to verify `pr.author_login
     // = ?3` and `rr.login = ?3` (login string equality) against PR rows on
     // the matching host - captured by the `pr_host_acc.host = ?4` join below.
+    //
+    // Signal #1 (`threads_unresolved_involved > 0` on an authored PR) reads
+    // `review_threads` + `review_comments` directly per ADR 0016 - the
+    // pre-aggregated column went away with the dashboard rollup. The
+    // involvement test scopes by `a.id = ?1` (the active account), matching
+    // the dashboard query's single-account semantics.
     tx.execute(
         "UPDATE pull_request_viewer_relations
             SET needs_attention = CASE WHEN (
@@ -1465,10 +1433,17 @@ fn scan_mentions_and_recompute_attention(
                     SELECT 1 FROM pull_requests pr
                      JOIN repos r ON r.id = pr.repo_id
                      JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+                     JOIN review_threads t ON t.pull_request_id = pr.id
                      WHERE pr.id = ?2
                        AND pr.author_login = ?3
                        AND pr_host_acc.host = ?4
-                       AND pr.threads_unresolved_involved > 0
+                       AND t.is_resolved = 0
+                       AND EXISTS (
+                           SELECT 1 FROM review_comments c
+                            JOIN accounts a ON a.login = c.author_login
+                            WHERE c.review_thread_id = t.id
+                              AND a.id = ?1
+                       )
                 )
                 OR EXISTS (
                     SELECT 1 FROM requested_reviewers rr
@@ -3160,216 +3135,12 @@ mod tests {
         assert_eq!(rows[1].4, "");
     }
 
-    // ===== threads rollup tests (ADR 0012, four-bucket redesign) =====
-    //
-    // Each test seeds `review_threads` (and `review_comments` where the
-    // involvement join is exercised) directly, then asserts the
-    // `pull_requests.threads_*` columns after `write_pr_updates` runs. We
-    // populate the threads via direct INSERT — M3-A owns the upsert path that
-    // would otherwise create them. The active account's login is `me`.
-
-    /// Read the five rollup columns: total + the four (resolved x involved)
-    /// buckets in declaration order.
-    fn read_threads_rollup(db: &DbHandle, pr_id: i64) -> (i64, i64, i64, i64, i64) {
-        let conn = db.lock().unwrap();
-        conn.query_row(
-            "SELECT threads_total,
-                    threads_unresolved_involved,
-                    threads_unresolved_uninvolved,
-                    threads_resolved_involved,
-                    threads_resolved_uninvolved
-                FROM pull_requests WHERE id = ?1",
-            params![pr_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn write_pr_updates_recomputes_threads_total_from_review_threads() {
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        // Three threads. All uninvolved (no review_comments by 'me').
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES
-                    (1001, 100, 0, 0, 'RT_1'),
-                    (1002, 100, 0, 0, 'RT_2'),
-                    (1003, 100, 1, 0, 'RT_3');",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-
-        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
-        assert_eq!(total, 3, "threads_total counts every row");
-        assert_eq!(ui, 0);
-        assert_eq!(uu, 2, "two unresolved + uninvolved");
-        assert_eq!(ri, 0);
-        assert_eq!(ru, 1, "one resolved + uninvolved");
-        assert_eq!(ui + uu + ri + ru, total, "buckets partition total");
-    }
-
-    #[test]
-    fn write_pr_updates_counts_outdated_threads_in_the_denominator() {
-        // ADR 0012: outdated threads now sort into one of the four buckets
-        // by their own (resolved x involved) flags. They no longer carve
-        // themselves out of the bar denominator.
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        // Three threads: 1 unresolved active, 1 unresolved + outdated, 1
-        // resolved + outdated.
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES
-                    (1001, 100, 0, 0, 'RT_a'),
-                    (1002, 100, 0, 1, 'RT_b'),
-                    (1003, 100, 1, 1, 'RT_c');",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-
-        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
-        assert_eq!(total, 3, "outdated rows still counted in total");
-        assert_eq!(ui, 0);
-        assert_eq!(
-            uu, 2,
-            "two unresolved (one active + one outdated-unresolved)"
-        );
-        assert_eq!(ri, 0);
-        assert_eq!(ru, 1, "one resolved-and-outdated");
-    }
-
-    #[test]
-    fn write_pr_updates_threads_involved_join_uses_active_account() {
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        // Two threads: thread 1 has a comment by 'me'; thread 2 only by 'them'.
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES
-                    (1001, 100, 0, 0, 'RT_x'),
-                    (1002, 100, 0, 0, 'RT_y');
-                 INSERT INTO review_comments
-                    (id, review_thread_id, author_login, body, created_at)
-                    VALUES
-                    (2001, 1001, 'me',   'hi',   10),
-                    (2002, 1001, 'me',   'more', 20),
-                    (2003, 1002, 'them', 'x',    30);",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-
-        let (total, ui, uu, ri, ru) = read_threads_rollup(&db, pr_id);
-        assert_eq!(total, 2);
-        assert_eq!(
-            ui, 1,
-            "thread 1 unresolved + involved (two 'me' comments collapse to one row)"
-        );
-        assert_eq!(uu, 1, "thread 2 unresolved + uninvolved");
-        assert_eq!(ri, 0);
-        assert_eq!(ru, 0);
-    }
-
-    #[test]
-    fn write_pr_updates_threads_rollup_reflects_resolution_change() {
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES (1001, 100, 0, 0, 'RT_q');",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, _, uu_before, _, ru_before) = read_threads_rollup(&db, pr_id);
-        assert_eq!(uu_before, 1);
-        assert_eq!(ru_before, 0);
-
-        db.lock()
-            .unwrap()
-            .execute(
-                "UPDATE review_threads SET is_resolved = 1 WHERE id = 1001",
-                [],
-            )
-            .unwrap();
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, _, uu_after, _, ru_after) = read_threads_rollup(&db, pr_id);
-        assert_eq!(uu_after, 0, "unresolved bucket empties on resolution");
-        assert_eq!(ru_after, 1, "thread migrates to resolved-uninvolved");
-    }
-
-    #[test]
-    fn write_pr_updates_threads_rollup_scopes_involved_to_active_account() {
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        // A second account ('other') has a comment on thread 1002. Running
-        // the rollup under account 1 should mark only thread 1001 involved;
-        // running it under account 2 should mark only thread 1002 involved.
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO accounts (id, label, host, login, created_at)
-                    VALUES (2, 'b', 'github.com', 'other', 0);
-                 INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES
-                    (1001, 100, 0, 0, 'RT_m'),
-                    (1002, 100, 0, 0, 'RT_o');
-                 INSERT INTO review_comments
-                    (id, review_thread_id, author_login, body, created_at)
-                    VALUES
-                    (2001, 1001, 'me',    'a', 1),
-                    (2002, 1002, 'other', 'b', 2);",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (_, ui_me, uu_me, _, _) = read_threads_rollup(&db, pr_id);
-        assert_eq!(ui_me, 1, "scoped to account 1 ('me')");
-        assert_eq!(uu_me, 1);
-
-        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
-        let (_, ui_other, uu_other, _, _) = read_threads_rollup(&db, pr_id);
-        assert_eq!(ui_other, 1, "rewritten under account 2 ('other')");
-        assert_eq!(uu_other, 1);
-    }
-
-    #[test]
-    fn write_pr_updates_threads_rollup_runs_when_detail_is_none() {
-        // Even without a fresh detail payload, the rollup must keep the
-        // columns in sync with the current `review_threads` rows (e.g. after
-        // a partial fetch where only the timeline came back).
-        let (db, repo_id, pr_id) = seed_db_with_pr();
-
-        db.lock()
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES (1001, 100, 0, 0, 'RT_z');",
-            )
-            .unwrap();
-
-        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
-        let (total, _, uu, _, _) = read_threads_rollup(&db, pr_id);
-        assert_eq!(total, 1);
-        assert_eq!(uu, 1);
-    }
+    // ADR 0016 retired the worker's threads rollup UPDATE; the four
+    // `threads_*` columns are no longer written or read. The dashboard
+    // query computes the buckets at read time; coverage lives in
+    // `src-tauri/tests/dashboard_query.rs` and
+    // `src-tauri/src/dashboard/query.rs`. The legacy column tests that
+    // sat here have been removed alongside the UPDATE.
 
     // ===== M4-B: mention scan + needs_attention recompute (ADR 0015) =====
     //
@@ -3909,8 +3680,9 @@ mod tests {
         // PR sits on github.com (account 1's host); author_login matches both
         // accounts' login string but the identity is only account 1's. Seed
         // an unresolved + involved thread via a `me`-authored comment so the
-        // threads rollup writes `threads_unresolved_involved = 1` under
-        // either account (the rollup itself uses a login-only join).
+        // query-time involvement test would otherwise mark the thread as
+        // involved for account 2 too (the EXISTS join is login-only). The
+        // host-aware guard around signal #1 must reject the match.
         db.lock()
             .unwrap()
             .execute_batch(

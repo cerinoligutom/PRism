@@ -200,12 +200,13 @@ struct ThreadCounts {
     outdated: i64,
 }
 
-/// Four-bucket breakdown sourced from the pre-aggregated `pull_requests` rollup
-/// columns the sync worker writes per ADR 0012. Reading from the same source
-/// the dashboard row reads keeps the conversation surface's bar visually
-/// identical to the row's bar - both consume the same numbers rather than
-/// re-bucketing client-side from the per-thread state (which can disagree when
-/// outdated threads are mis-classified). See issue #102.
+/// Four-bucket breakdown computed at query time from `review_threads` and
+/// `review_comments` (ADR 0016). The involvement test unions across every
+/// tracked account so the bar matches the dashboard's unified-view shape; a
+/// PR visible from any of the user's identities reads with the union's
+/// involvement state. The dashboard's single-account path is also a subset
+/// of this set, so the conversation bar stays consistent with the row bar
+/// the user clicked through from. See issue #102.
 #[derive(Debug, Clone, Copy)]
 struct ThreadBuckets {
     unresolved_involved: i64,
@@ -219,12 +220,33 @@ fn thread_buckets(
     pull_request_id: i64,
 ) -> Result<ThreadBuckets, rusqlite::Error> {
     conn.query_row(
-        "SELECT COALESCE(threads_unresolved_involved, 0),
-                COALESCE(threads_unresolved_uninvolved, 0),
-                COALESCE(threads_resolved_involved, 0),
-                COALESCE(threads_resolved_uninvolved, 0)
-           FROM pull_requests
-          WHERE id = ?1",
+        "SELECT
+            COALESCE(SUM(CASE WHEN t.is_resolved = 0
+                               AND EXISTS (SELECT 1 FROM review_comments c
+                                            JOIN accounts a ON a.login = c.author_login
+                                            WHERE c.review_thread_id = t.id
+                                              AND a.id IN (SELECT id FROM accounts))
+                              THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN t.is_resolved = 0
+                               AND NOT EXISTS (SELECT 1 FROM review_comments c
+                                                JOIN accounts a ON a.login = c.author_login
+                                                WHERE c.review_thread_id = t.id
+                                                  AND a.id IN (SELECT id FROM accounts))
+                              THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN t.is_resolved = 1
+                               AND EXISTS (SELECT 1 FROM review_comments c
+                                            JOIN accounts a ON a.login = c.author_login
+                                            WHERE c.review_thread_id = t.id
+                                              AND a.id IN (SELECT id FROM accounts))
+                              THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN t.is_resolved = 1
+                               AND NOT EXISTS (SELECT 1 FROM review_comments c
+                                                JOIN accounts a ON a.login = c.author_login
+                                                WHERE c.review_thread_id = t.id
+                                                  AND a.id IN (SELECT id FROM accounts))
+                              THEN 1 ELSE 0 END), 0)
+           FROM review_threads t
+          WHERE t.pull_request_id = ?1",
         params![pull_request_id],
         |row| {
             Ok(ThreadBuckets {

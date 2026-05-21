@@ -128,12 +128,14 @@ mod tests {
 
     /// Seeds a baseline (account, repo, PR, relation row) fixture used by
     /// every test below. `author_login` controls which signals fire on
-    /// recompute; defaults flip none.
+    /// recompute; defaults flip none. `unresolved_involved_threads` is the
+    /// number of unresolved threads with a viewer-authored comment to seed -
+    /// each one drives ADR-0016's query-time involvement test.
     fn seed(
         db: &DbHandle,
         author_login: &str,
         pr_updated_at: i64,
-        threads_unresolved_involved: i64,
+        unresolved_involved_threads: i64,
         review_decision: Option<&str>,
     ) {
         let conn = db.lock().unwrap();
@@ -144,11 +146,9 @@ mod tests {
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
-                 created_at, updated_at, base_ref, head_ref,
-                 threads_unresolved_involved, review_decision)
+                 created_at, updated_at, base_ref, head_ref, review_decision)
                 VALUES (100, 10, 1, 't', 'open', 0, '{author_login}',
                         0, {pr_updated_at}, 'main', 'feat',
-                        {threads_unresolved_involved},
                         {review_decision_sql});
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
@@ -160,6 +160,19 @@ mod tests {
             }
         ))
         .unwrap();
+        for i in 0..unresolved_involved_threads {
+            let thread_id = 5000 + i;
+            let comment_id = 6000 + i;
+            conn.execute_batch(&format!(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES ({thread_id}, 100, 0, 0, 'RT_seed_{i}');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES ({comment_id}, {thread_id}, 'alice', 'note', 1);"
+            ))
+            .unwrap();
+        }
     }
 
     /// Helper: read the four triage columns for the test fixture's row.
@@ -344,12 +357,12 @@ mod tests {
         // After mark_pr_read, signal 1 keeps needs_attention = 1.
         let (_, _, _, before) = read_triage(&db);
         assert_eq!(before, 1);
-        // Flip the threads counter to zero so the recompute can clear.
+        // Resolve every seeded thread so the recompute's signal-1 EXISTS
+        // misses and the only-thread-driven attention can clear.
         {
             let conn = db.lock().unwrap();
             conn.execute(
-                "UPDATE pull_requests SET threads_unresolved_involved = 0
-                  WHERE id = 100",
+                "UPDATE review_threads SET is_resolved = 1 WHERE pull_request_id = 100",
                 [],
             )
             .unwrap();
