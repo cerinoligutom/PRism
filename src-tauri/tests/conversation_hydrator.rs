@@ -74,6 +74,100 @@ async fn client_against(server: &MockServer) -> GitHubClient {
 }
 
 #[tokio::test]
+async fn hydrator_auto_marks_pr_read_after_persisting() {
+    // M4-A acceptance: opening the drawer auto-marks the PR read for the
+    // active account. The hook fires after the hydration transaction
+    // commits and writes through the shared `triage::query::mark_read`
+    // helper.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrComments"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(PR_COMMENTS_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let db = fresh_db();
+    seed_pr_with_thread(&db);
+    // Pre-seed a stale relations row so the auto-mark exercises the UPSERT
+    // path's UPDATE branch (rather than the INSERT branch).
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, mentioned_count_unread)
+                VALUES (1, 100, 1, 0, 0, 0, 7)",
+            [],
+        )
+        .unwrap();
+
+    let client = client_against(&server).await;
+    commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("hydrator");
+
+    let conn = db.lock().unwrap();
+    let (read_at, mentioned): (Option<i64>, i64) = conn
+        .query_row(
+            "SELECT read_at, mentioned_count_unread
+               FROM pull_request_viewer_relations
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(read_at.is_some(), "auto-mark should set read_at");
+    assert_eq!(mentioned, 0, "auto-mark should reset mention counter");
+}
+
+#[tokio::test]
+async fn hydrator_auto_mark_is_idempotent_across_reopens() {
+    // Repeated drawer opens must not break anything. The mention counter
+    // stays at zero (the sync scanner is the only thing that bumps it).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(PR_COMMENTS_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let db = fresh_db();
+    seed_pr_with_thread(&db);
+    let client = client_against(&server).await;
+
+    commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("first open");
+    commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("second open");
+
+    let conn = db.lock().unwrap();
+    let (read_at, mentioned, rows): (Option<i64>, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT read_at FROM pull_request_viewer_relations
+                      WHERE account_id = 1 AND pull_request_id = 100),
+                    (SELECT mentioned_count_unread FROM pull_request_viewer_relations
+                      WHERE account_id = 1 AND pull_request_id = 100),
+                    (SELECT COUNT(*) FROM pull_request_viewer_relations
+                      WHERE account_id = 1 AND pull_request_id = 100)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(read_at.is_some());
+    assert_eq!(mentioned, 0);
+    assert_eq!(rows, 1, "second open must not duplicate the relations row");
+}
+
+#[tokio::test]
 async fn hydrator_round_trip_persists_comments_and_issue_comments() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

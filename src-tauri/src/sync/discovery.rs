@@ -299,15 +299,37 @@ fn upsert_viewer_relation(
 
     // OR-combine the flag bits on conflict so a PR that shows up in multiple
     // queries (e.g. authored + involves) ends with all matching flags set.
+    //
+    // The four triage columns (read_at, read_pr_updated_at,
+    // mentioned_count_unread, needs_attention) and the mention-scan
+    // watermark belong to the M4 read-state surface (ADR 0015). They
+    // survive every discovery pass:
+    //
+    //  * The INSERT path leans on the migration-0010 defaults
+    //    (NULL / 0 / 0 / 0) since this clause runs on the first discovery
+    //    of a (account, PR) pair, before any open or scan.
+    //  * The UPDATE path omits them so existing values (set by
+    //    `mark_pr_read`, `mark_pr_unread`, the conversation auto-mark hook,
+    //    and the M4-B sync-cycle mention scanner) are preserved verbatim.
+    //
+    // The explicit `pull_request_viewer_relations.x` references in each
+    // UPDATE row guard against accidental clobbering if a future edit adds
+    // the triage columns to the INSERT list - the COALESCE pattern
+    // (`COALESCE(excluded.x, pull_request_viewer_relations.x)`) is the
+    // contract-mandated shape (`docs/contracts/triage-ux.md`,
+    // "Sync cycle changes" + "File ownership map" / Wave 2-A).
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
              is_involved, last_seen_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
-            is_authored = is_authored | excluded.is_authored,
-            is_review_requested = is_review_requested | excluded.is_review_requested,
-            is_involved = is_involved | excluded.is_involved,
+            is_authored = pull_request_viewer_relations.is_authored
+                          | excluded.is_authored,
+            is_review_requested = pull_request_viewer_relations.is_review_requested
+                                  | excluded.is_review_requested,
+            is_involved = pull_request_viewer_relations.is_involved
+                          | excluded.is_involved,
             last_seen_at = excluded.last_seen_at",
         params![
             account_id as i64,
@@ -474,6 +496,73 @@ mod tests {
         assert_eq!(authored, 1);
         assert_eq!(requested, 0);
         assert_eq!(involved, 1);
+    }
+
+    #[test]
+    fn upsert_viewer_relation_preserves_triage_columns_across_cycles() {
+        // M4 / ADR 0015: the four triage columns (read_at, read_pr_updated_at,
+        // mentioned_count_unread, needs_attention) plus mention_scan_watermark_at
+        // must survive every discovery pass. Mark-read writes set the values
+        // outside the discovery cycle; the next cycle's UPSERT must not blank
+        // them.
+        let (_dir, db) = fresh_db();
+        let pr = make_pr(410, 3, 81, "owner");
+        upsert_repo(&db, 1, &pr).unwrap();
+        let pr_id = upsert_pull_request(&db, 81, &pr).unwrap();
+        upsert_viewer_relation(&db, 1, pr_id, DiscoveryRelation::Authored, 1000).unwrap();
+
+        // Simulate the auto-mark-on-open path writing the triage columns.
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE pull_request_viewer_relations
+                    SET read_at = 1_500,
+                        read_pr_updated_at = 1_400,
+                        mentioned_count_unread = 3,
+                        mention_scan_watermark_at = 1_500,
+                        needs_attention = 1
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+            )
+            .unwrap();
+
+        // Next cycle's discovery upserts the same (account, PR) pair.
+        upsert_viewer_relation(&db, 1, pr_id, DiscoveryRelation::Involves, 2000).unwrap();
+
+        let (read_at, read_updated, mentioned, watermark, attention, last_seen): (
+            Option<i64>,
+            Option<i64>,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT read_at, read_pr_updated_at, mentioned_count_unread,
+                        mention_scan_watermark_at, needs_attention, last_seen_at
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(read_at, Some(1_500), "read_at preserved across cycle");
+        assert_eq!(read_updated, Some(1_400), "read_pr_updated_at preserved");
+        assert_eq!(mentioned, 3, "mentioned_count_unread preserved");
+        assert_eq!(watermark, 1_500, "mention_scan_watermark_at preserved");
+        assert_eq!(attention, 1, "needs_attention preserved");
+        assert_eq!(last_seen, 2000, "last_seen_at advanced as expected");
     }
 
     #[test]
