@@ -169,9 +169,10 @@ const budgetLabel = computed<string | null>(() => {
       {{ budgetLabel }}
     </span>
     <span class="status-bar__spacer" />
-    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span>
-    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
-    <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
+    <!-- Hidden until polish stage wires real keyboard shortcuts. See #134. -->
+    <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span> -->
+    <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span> -->
+    <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span> -->
 
     <Teleport to="body">
       <SyncActivityPanel :open="panelOpen" :anchor-rect="anchorRect" @close="closePanel" />
