@@ -29,6 +29,14 @@ use crate::triage::types::ChipKey;
 
 /// SQL fragment that selects every column the row projection needs, joined to
 /// `repos` and `accounts`. Each view prepends its own FROM clause to this body.
+///
+/// The trailing `rel.*` projections (M4-C) read the active account's triage
+/// state. Relation-backed views (Authored / Assigned / Watching) already JOIN
+/// `pull_request_viewer_relations rel` so the columns flow directly. The Team
+/// view adds a LEFT JOIN on the same alias - scoped to the active account when
+/// one is provided, an inert `ON 0` join otherwise - so the SELECT keeps a
+/// stable shape across every view. See `docs/contracts/triage-ux.md`
+/// ("Read-state derivation") and ADR 0015.
 const PR_PROJECTION_COLUMNS: &str = "
     pr.id,
     pr.number,
@@ -59,7 +67,14 @@ const PR_PROJECTION_COLUMNS: &str = "
     r.owner,
     r.name,
     a.id,
-    a.host
+    a.host,
+    CASE
+        WHEN rel.read_at IS NULL THEN 1
+        WHEN pr.updated_at > COALESCE(rel.read_pr_updated_at, 0) THEN 1
+        ELSE 0
+    END AS unread,
+    COALESCE(rel.needs_attention, 0) AS needs_attention,
+    COALESCE(rel.mentioned_count_unread, 0) AS mentioned_count_unread
 ";
 
 /// Common projection: PR + repo + account, ordered by the requested sort.
@@ -115,12 +130,6 @@ fn chip_where_clause(active_chips: &[ChipKey]) -> String {
     clause
 }
 
-/// True when any active chip or the chosen sort needs `rel.*` in scope.
-/// Drives the Team view's LEFT JOIN gating.
-fn needs_relation_join(sort: DashboardSort, active_chips: &[ChipKey]) -> bool {
-    matches!(sort, DashboardSort::NeedsMe) || active_chips.contains(&ChipKey::NeedsAttention)
-}
-
 /// Build the per-view SQL + parameter vector for [`list_dashboard_pull_requests`].
 ///
 /// `active_chips` is the chip-filter set; empty means "no chip filter". The
@@ -172,10 +181,14 @@ fn relation_view_query(
     (build_sql(&from_and_where, &chip_clause, sort), params)
 }
 
-/// Team view: PRs in repos opted into team tracking. The relation table is
-/// LEFT JOINed when the sort or any active chip needs `rel.*` in scope
-/// (`NeedsMe` sort or the `Needs my attention` chip); otherwise the JOIN is
-/// omitted to keep the planner shape identical to M2.
+/// Team view: PRs in repos opted into team tracking. The relation row is read
+/// account-scoped via a LEFT JOIN so the triage projections (`unread`,
+/// `needs_attention`, `mentioned_count_unread`) reflect the active account.
+/// Without an account filter (the union case) the join short-circuits via
+/// `ON 0` so the SQL keeps a stable shape and the COALESCE defaults trip.
+/// The LEFT JOIN is unconditional because `PR_PROJECTION_COLUMNS` reads
+/// `rel.*` for every row; the M4-D chip / sort gating folded into this path
+/// because the projection requires `rel` in scope regardless.
 fn team_view_query(
     sort: DashboardSort,
     account_id: Option<i64>,
@@ -187,28 +200,20 @@ fn team_view_query(
          JOIN accounts a ON a.id = r.account_id
          LEFT JOIN users author_u ON author_u.login = pr.author_login",
     );
-    if needs_relation_join(sort, active_chips) {
-        // Key the LEFT JOIN on the active account when one is filtered;
-        // otherwise key on the repo's owning account so the JOIN still
-        // resolves to at most one row per PR (no cardinality blow-up) and
-        // `rel.needs_attention` reads the owning-account's flag.
-        let on_clause = if account_id.is_some() {
-            "rel.account_id = ?1"
-        } else {
-            "rel.account_id = r.account_id"
-        };
-        from_and_where.push_str(&format!(
-            "
-         LEFT JOIN pull_request_viewer_relations rel
-            ON rel.pull_request_id = pr.id
-           AND {on_clause}"
-        ));
-    }
-    from_and_where.push_str(" WHERE r.is_team_tracked = 1");
     let mut params: Vec<i64> = Vec::new();
     if let Some(id) = account_id {
-        from_and_where.push_str(" AND r.account_id = ?1");
+        from_and_where.push_str(
+            " LEFT JOIN pull_request_viewer_relations rel
+                 ON rel.pull_request_id = pr.id AND rel.account_id = ?1
+              WHERE r.is_team_tracked = 1
+                AND r.account_id = ?1",
+        );
         params.push(id);
+    } else {
+        from_and_where.push_str(
+            " LEFT JOIN pull_request_viewer_relations rel ON 0
+              WHERE r.is_team_tracked = 1",
+        );
     }
     let chip_clause = chip_where_clause(active_chips);
     (build_sql(&from_and_where, &chip_clause, sort), params)
@@ -286,6 +291,15 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     let account_id: i64 = row.get(28)?;
     let account_host: String = row.get(29)?;
 
+    // M4-C: triage projections from `pull_request_viewer_relations rel`.
+    // `unread` is computed in SQL via CASE; COALESCE handles missing relation
+    // rows (Team-view union case) by defaulting to false / 0. See ADR 0015
+    // ("Read-state storage") and `docs/contracts/triage-ux.md`
+    // ("Read-state derivation").
+    let unread: i64 = row.get(30)?;
+    let needs_attention: i64 = row.get(31)?;
+    let mentioned_count_unread: i64 = row.get(32)?;
+
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");
 
@@ -317,15 +331,9 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
             name: repo_name,
         },
         account_id,
-        // M4 contract PR (M4-0) widens the struct so the new triage fields
-        // are part of the wire shape from Wave 1. Wave 3-D fills in the
-        // matching SELECT projections + joins against
-        // `pull_request_viewer_relations` and flips these to read from the
-        // row. Until then, the dashboard surfaces zeros / falses so the
-        // existing behaviour is preserved. See ADR 0015.
-        unread: false,
-        needs_attention: false,
-        mentioned_count_unread: 0,
+        unread: unread != 0,
+        needs_attention: needs_attention != 0,
+        mentioned_count_unread,
     })
 }
 
@@ -556,15 +564,38 @@ mod tests {
     }
 
     #[test]
-    fn team_query_does_not_join_relations_when_unused() {
+    fn team_query_uses_repo_team_flag() {
         let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1), &[]);
-        assert!(
-            !sql.contains("pull_request_viewer_relations"),
-            "team query must not touch relations when sort + chips don't need it; SQL: {sql}"
-        );
         assert!(
             sql.contains("r.is_team_tracked = 1"),
             "team query missing repo flag; SQL: {sql}"
+        );
+    }
+
+    /// M4-C: Team view LEFT JOINs the relations table so the triage projections
+    /// (`unread`, `needs_attention`, `mentioned_count_unread`) reflect the
+    /// active account. With no account scope the join short-circuits via
+    /// `ON 0` so the COALESCE defaults trip.
+    #[test]
+    fn team_query_left_joins_relations_when_account_scoped() {
+        let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1), &[]);
+        assert!(
+            sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
+            "team query must LEFT JOIN relations when account-scoped; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("rel.account_id = ?1"),
+            "team query relation join must filter on account; SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn team_query_short_circuits_relation_join_without_account() {
+        let (sql, params) = view_query(DashboardView::Team, DashboardSort::Updated, None, &[]);
+        assert!(params.is_empty());
+        assert!(
+            sql.contains("LEFT JOIN pull_request_viewer_relations rel ON 0"),
+            "team query without account must short-circuit the relation join; SQL: {sql}"
         );
     }
 
@@ -615,6 +646,30 @@ mod tests {
         );
         assert_eq!(params, vec![42]);
         assert!(sql.contains("rel.account_id ="), "SQL: {sql}");
+    }
+
+    /// M4-C: the SELECT projects three triage columns derived from the
+    /// `pull_request_viewer_relations rel` alias.
+    #[test]
+    fn projection_includes_triage_columns() {
+        let (sql, _) = view_query(
+            DashboardView::Authored,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
+        assert!(
+            sql.contains("AS unread"),
+            "expected unread column in projection; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(rel.needs_attention, 0) AS needs_attention"),
+            "expected needs_attention column; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(rel.mentioned_count_unread, 0) AS mentioned_count_unread"),
+            "expected mentioned_count_unread column; SQL: {sql}"
+        );
     }
 
     #[test]

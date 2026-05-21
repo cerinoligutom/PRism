@@ -11,4 +11,4 @@ pub mod commands;
 pub mod query;
 pub mod types;
 
-pub use types::{ChipKey, FilterChipCounts};
+pub use types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};

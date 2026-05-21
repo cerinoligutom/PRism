@@ -6,6 +6,9 @@
 //! scanner ever bumps it). Both recompute `needs_attention` inside the same
 //! transaction via [`crate::triage::query::recompute_needs_attention`].
 //!
+//! Wave 2-C adds `list_sidebar_attention_counts` - the per-view COUNT(*)
+//! that drives the sidebar nav's `.has-attention` boost.
+//!
 //! Wave 2-D fills in `list_filter_chip_counts`. See
 //! `docs/contracts/triage-ux.md` ("Tauri command surface") for the contract.
 
@@ -14,7 +17,7 @@ use tauri::State;
 use crate::dashboard::DashboardView;
 use crate::db::DbHandle;
 use crate::triage::query;
-use crate::triage::types::FilterChipCounts;
+use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 
 /// Mark a PR as read for the given account. Sets
 /// `pull_request_viewer_relations.read_at` to the current Unix timestamp,
@@ -92,6 +95,23 @@ pub fn list_filter_chip_counts(
     let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     query::list_filter_chip_counts(&conn, view, account_id)
         .map_err(|e| format!("list_filter_chip_counts: {e}"))
+}
+
+/// Count PRs flagged `needs_attention = 1` for the active account, bucketed
+/// by the four dashboard views. The sidebar nav uses these to boost the
+/// count chip with the existing `.has-attention` class when any matching PR
+/// is outstanding. Re-fetched on view change and on sync completion events.
+///
+/// Synchronous because the underlying query is a single `SELECT` over the
+/// partial index `idx_pr_viewer_relations_attention` - no network round-trip.
+#[tauri::command]
+pub fn list_sidebar_attention_counts(
+    account_id: i64,
+    db: State<'_, DbHandle>,
+) -> Result<SidebarAttentionCounts, String> {
+    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    query::count_sidebar_attention(&conn, account_id)
+        .map_err(|e| format!("list_sidebar_attention_counts: {e}"))
 }
 
 #[cfg(test)]

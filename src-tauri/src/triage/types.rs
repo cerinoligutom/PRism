@@ -46,3 +46,20 @@ pub struct FilterChipCounts {
     pub stale: i64,
     pub drafts: i64,
 }
+
+/// Per-view counts of PRs flagged `needs_attention = 1` for the active
+/// account. The sidebar nav uses these to boost the count chip with the
+/// existing `.has-attention` class when any matching PR is outstanding in
+/// that view. Mirrors the four `DashboardView` variants.
+///
+/// The Team view's count is account-scoped through the same join the
+/// dashboard query uses: only PRs the active account has a relation row for
+/// contribute (because `needs_attention` is per-account). The Team view's
+/// repo-tracking flag still gates which PRs are eligible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SidebarAttentionCounts {
+    pub authored: i64,
+    pub assigned: i64,
+    pub watching: i64,
+    pub team: i64,
+}

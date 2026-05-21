@@ -13,11 +13,15 @@
 //! [`crate::triage::commands::list_filter_chip_counts`]. The five counts share
 //! the same view-scoped FROM clause; each chip's predicate is documented in
 //! [`crate::triage::types::ChipKey`].
+//!
+//! Wave 2-C extends this module with [`count_sidebar_attention`], the
+//! per-view COUNT(*) that backs the sidebar count-chip `.has-attention`
+//! boost.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::dashboard::DashboardView;
-use crate::triage::types::{ChipKey, FilterChipCounts};
+use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
 
 /// Persist the read-state flip for one `(account_id, pull_request_id)` pair.
 /// UPSERTs the relation row, sets `read_at` + `mention_scan_watermark_at` to
@@ -223,6 +227,51 @@ pub fn list_filter_chip_counts(
         stale: count_chip(conn, view, account_id, ChipKey::Stale)?,
         drafts: count_chip(conn, view, account_id, ChipKey::Drafts)?,
     })
+}
+
+/// Count PRs whose `pull_request_viewer_relations.needs_attention = 1` for
+/// the given account, bucketed by the four dashboard views. The partial
+/// index `idx_pr_viewer_relations_attention` keeps the per-account scan to
+/// the attention rows; the per-view buckets then gate by the matching
+/// relation flag or, for Team, the repo's `is_team_tracked = 1` AND
+/// `account_id = ?` predicates the dashboard Team view uses.
+///
+/// The Team count is account-scoped because `needs_attention` is itself a
+/// per-account signal: even though the Team view's row set comes from
+/// `is_team_tracked` repos rather than relation flags, the attention column
+/// is only meaningful for the active account. The repo-owner predicate
+/// matches the Team view's `r.account_id = ?` filter so the badge can't
+/// over-count cross-account relation rows.
+pub fn count_sidebar_attention(
+    conn: &Connection,
+    account_id: i64,
+) -> Result<SidebarAttentionCounts, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            SUM(CASE WHEN rel.is_authored = 1         THEN 1 ELSE 0 END) AS authored,
+            SUM(CASE WHEN rel.is_review_requested = 1 THEN 1 ELSE 0 END) AS assigned,
+            SUM(CASE WHEN rel.is_involved = 1         THEN 1 ELSE 0 END) AS watching,
+            SUM(CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM pull_requests pr
+                          JOIN repos r ON r.id = pr.repo_id
+                         WHERE pr.id = rel.pull_request_id
+                           AND r.is_team_tracked = 1
+                           AND r.account_id = ?1
+                    ) THEN 1 ELSE 0 END) AS team
+           FROM pull_request_viewer_relations rel
+          WHERE rel.account_id = ?1
+            AND rel.needs_attention = 1",
+    )?;
+    let counts = stmt.query_row(params![account_id], |row| {
+        Ok(SidebarAttentionCounts {
+            authored: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+            assigned: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            watching: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            team: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+        })
+    })?;
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -449,6 +498,38 @@ mod tests {
         .unwrap();
     }
 
+    /// Shared fixture for the sidebar count helper: one account (alice), three
+    /// repos (one team-tracked), four PRs covering each view-flag combo.
+    /// `needs_attention` is toggled in each test as needed.
+    fn seed_sidebar_fixture(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+                (10, 1, 'alice', 'web', 'public', 0),
+                (20, 1, 'alice', 'api', 'public', 1);
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'a', 'open', 0, 'alice', 0, 1, 'main', 'feat'),
+                (200, 10, 2, 'b', 'open', 0, 'bob',   0, 1, 'main', 'feat'),
+                (300, 10, 3, 'c', 'open', 0, 'carol', 0, 1, 'main', 'feat'),
+                (400, 20, 1, 'd', 'open', 0, 'dave',  0, 1, 'main', 'feat');
+             -- PR 100: authored
+             -- PR 200: assigned (review-requested)
+             -- PR 300: watching (involved only)
+             -- PR 400: in a team-tracked repo, no direct flags
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at) VALUES
+                (1, 100, 1, 0, 0, 0),
+                (1, 200, 0, 1, 0, 0),
+                (1, 300, 0, 0, 1, 0),
+                (1, 400, 0, 0, 0, 0);",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn list_filter_chip_counts_projects_one_per_chip() {
         let conn = fresh_db();
@@ -585,5 +666,130 @@ mod tests {
         assert_eq!(counts.drafts, 1);
         assert_eq!(counts.ci_failing, 1);
         assert_eq!(counts.needs_attention, 1);
+    }
+
+    // ===== sidebar attention tests (M4-C) =====
+
+    #[test]
+    fn count_sidebar_attention_zero_when_no_rows_flagged() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        assert_eq!(counts, SidebarAttentionCounts::default());
+    }
+
+    #[test]
+    fn count_sidebar_attention_groups_by_view_flag() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        // Flip every relation's needs_attention so each bucket sees one row.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations SET needs_attention = 1
+              WHERE account_id = 1",
+            [],
+        )
+        .unwrap();
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        // PR 100 fires Authored. PR 200 fires Assigned. PR 300 fires Watching.
+        // PR 400 has no view flag (none of authored/assigned/involved) but
+        // does sit in a team-tracked repo, so Team alone fires for it.
+        // PRs 100/200/300 sit in repo 10 (not team-tracked) so Team counts 1.
+        assert_eq!(counts.authored, 1);
+        assert_eq!(counts.assigned, 1);
+        assert_eq!(counts.watching, 1);
+        assert_eq!(counts.team, 1);
+    }
+
+    /// A PR that fires both Authored and Watching contributes to both
+    /// buckets so the chip never under-counts an active signal.
+    #[test]
+    fn count_sidebar_attention_overlapping_flags_double_count() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET is_involved = 1, needs_attention = 1
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        assert_eq!(counts.authored, 1);
+        assert_eq!(counts.watching, 1);
+        assert_eq!(counts.assigned, 0);
+    }
+
+    /// Only the active account's flagged rows are counted; another account's
+    /// attention rows must not leak across.
+    #[test]
+    fn count_sidebar_attention_scopes_per_account() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'b', 'github.com', 'bob', 0);
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention)
+                VALUES (2, 100, 1, 0, 0, 0, 1),
+                       (2, 200, 1, 0, 0, 0, 1);",
+        )
+        .unwrap();
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        // Alice's own relations all carry needs_attention = 0 by default.
+        assert_eq!(counts, SidebarAttentionCounts::default());
+        let bob_counts = count_sidebar_attention(&conn, 2).unwrap();
+        assert_eq!(bob_counts.authored, 2);
+    }
+
+    #[test]
+    fn count_sidebar_attention_team_requires_team_tracked_repo() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET needs_attention = 1
+              WHERE account_id = 1 AND pull_request_id IN (100, 200, 300)",
+            [],
+        )
+        .unwrap();
+        // PRs 100/200/300 sit in repo 10 (not team-tracked). The Team bucket
+        // must remain at zero because none of the attention-flagged PRs live
+        // in a team-tracked repo.
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        assert_eq!(counts.team, 0);
+    }
+
+    /// The Team bucket must mirror the dashboard Team view's
+    /// `r.account_id = ?` predicate so a relation row owned by account 1
+    /// on a team-tracked repo owned by account 2 doesn't over-count.
+    #[test]
+    fn count_sidebar_attention_team_requires_repo_owner_matches_active_account() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        // Seed account 2 + a team-tracked repo it owns, plus a PR in that
+        // repo. Then attach a relation row from account 1's perspective with
+        // needs_attention = 1. The dashboard Team view scoped to account 1
+        // would NOT show this PR (repo owner is 2), so the count must agree.
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'b', 'github.com', 'bob', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked)
+                VALUES (30, 2, 'bob', 'cli', 'public', 1);
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (500, 30, 1, 'e', 'open', 0, 'bob', 0, 1, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention)
+                VALUES (1, 500, 0, 0, 1, 0, 1);",
+        )
+        .unwrap();
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        // Watching catches PR 500 (alice is involved). Team must not, because
+        // repo 30 is owned by account 2.
+        assert_eq!(counts.watching, 1);
+        assert_eq!(counts.team, 0);
     }
 }

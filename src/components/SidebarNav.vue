@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
+import { useAccountsStore } from "@/stores/accounts";
 import { useDashboardStore, type DashboardView } from "@/stores/dashboard";
 
 // PRism brand mark — the logo carries refraction lines in semantic colours.
 // Kept inline so the strokes inherit `currentColor` from the surrounding nav.
 
 const dashboard = useDashboardStore();
+const accountsStore = useAccountsStore();
 
 interface NavLink {
   readonly view: DashboardView;
@@ -20,6 +25,101 @@ const links: readonly NavLink[] = [
   { view: "watching", to: "/dashboard/watching", label: "Watching" },
   { view: "team", to: "/dashboard/team", label: "Team" },
 ];
+
+interface SidebarAttentionCounts {
+  readonly authored: number;
+  readonly assigned: number;
+  readonly watching: number;
+  readonly team: number;
+}
+
+interface SyncStatusEvent {
+  readonly account_id: number;
+  readonly phase: string;
+}
+
+const SYNC_STATUS_EVENT = "sync://status";
+
+// Per-view attention totals: PRs whose `needs_attention = 1` for the
+// account(s) currently in scope. Aggregated across every tracked account when
+// no account filter is active so the badge mirrors what the dashboard list
+// shows. See `docs/contracts/triage-ux.md` and ADR 0015.
+const attention = ref<SidebarAttentionCounts>({
+  authored: 0,
+  assigned: 0,
+  watching: 0,
+  team: 0,
+});
+
+let statusUnlisten: UnlistenFn | null = null;
+
+const hasAttention = computed<Record<DashboardView, boolean>>(() => ({
+  authored: attention.value.authored > 0,
+  assigned: attention.value.assigned > 0,
+  watching: attention.value.watching > 0,
+  team: attention.value.team > 0,
+}));
+
+async function refreshAttention(): Promise<void> {
+  // Account scope mirrors the dashboard's `accountFilter`. `null` (the union
+  // case) sums across every tracked account so the badge stays accurate
+  // before the user has narrowed to one. The Rust command is per-account so
+  // we fan out and accumulate client-side.
+  const filter = dashboard.accountFilter;
+  const ids =
+    filter === null
+      ? accountsStore.accounts.map((a) => a.id)
+      : [filter];
+  if (ids.length === 0) {
+    attention.value = { authored: 0, assigned: 0, watching: 0, team: 0 };
+    return;
+  }
+  try {
+    const results = await Promise.all(
+      ids.map((accountId) =>
+        invoke<SidebarAttentionCounts>("list_sidebar_attention_counts", {
+          accountId,
+        }),
+      ),
+    );
+    attention.value = results.reduce<SidebarAttentionCounts>(
+      (acc, next) => ({
+        authored: acc.authored + next.authored,
+        assigned: acc.assigned + next.assigned,
+        watching: acc.watching + next.watching,
+        team: acc.team + next.team,
+      }),
+      { authored: 0, assigned: 0, watching: 0, team: 0 },
+    );
+  } catch {
+    // Counts are advisory - on failure the badge falls back to the unstyled
+    // count chip without taking the panel down.
+    attention.value = { authored: 0, assigned: 0, watching: 0, team: 0 };
+  }
+}
+
+watch(() => dashboard.view, () => void refreshAttention());
+watch(() => dashboard.accountFilter, () => void refreshAttention());
+watch(
+  () => accountsStore.accounts.length,
+  () => void refreshAttention(),
+);
+
+onMounted(async () => {
+  await refreshAttention();
+  statusUnlisten = await listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
+    if (event.payload.phase === "synced") {
+      void refreshAttention();
+    }
+  });
+});
+
+onBeforeUnmount(() => {
+  if (statusUnlisten !== null) {
+    statusUnlisten();
+    statusUnlisten = null;
+  }
+});
 </script>
 
 <template>
@@ -62,7 +162,10 @@ const links: readonly NavLink[] = [
           </template>
         </span>
         {{ link.label }}
-        <span class="count">{{ dashboard.counts[link.view] }}</span>
+        <span
+          class="count"
+          :class="{ 'has-attention': hasAttention[link.view] }"
+        >{{ dashboard.counts[link.view] }}</span>
       </RouterLink>
     </nav>
 
