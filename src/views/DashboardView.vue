@@ -11,9 +11,11 @@ import SortSelector from "@/components/dashboard/SortSelector.vue";
 import FilterChipsBar from "@/components/dashboard/FilterChipsBar.vue";
 import DashboardSearch from "@/components/dashboard/DashboardSearch.vue";
 import FilteredEmptyState from "@/components/dashboard/FilteredEmptyState.vue";
+import AccountPicker from "@/components/dashboard/AccountPicker.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
+import { useAppearanceStore } from "@/stores/appearance";
 import {
   useDashboardStore,
   type DashboardGroup,
@@ -28,6 +30,7 @@ const route = useRoute();
 const router = useRouter();
 const dashboard = useDashboardStore();
 const accounts = useAccountsStore();
+const appearance = useAppearanceStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
 
@@ -135,6 +138,39 @@ function onMarkUnread(pr: DashboardPullRequest): void {
   void dashboard.markPullRequestUnread(pr.id, pr.account_id);
 }
 
+function onAccountScopeUpdate(value: number | null): void {
+  // Mirror the choice into the persisted appearance store, then drive the
+  // dashboard's reactive filter. `setAccountFilter` is a no-op when unchanged
+  // and triggers `load()` otherwise, so chip counts + rows reload off the
+  // existing watch chain.
+  appearance.setAccountScope(value);
+  dashboard.setAccountFilter(value);
+}
+
+/**
+ * Resolve the persisted scope against the live account set. A stale id whose
+ * account was removed since the last session falls back to unified so the
+ * first load doesn't query a non-existent account. Called once, before the
+ * first `dashboard.load()` fires, to keep the initial fetch aligned with the
+ * UI's reported scope.
+ */
+function restorePersistedScope(): void {
+  const persisted = appearance.accountScope;
+  if (persisted === null) {
+    dashboard.accountFilter = null;
+    return;
+  }
+  const stillExists = accounts.accounts.some((a) => a.id === persisted);
+  if (stillExists) {
+    dashboard.accountFilter = persisted;
+    return;
+  }
+  // Reconcile a stale persisted id - clear it so the next persist cycle
+  // doesn't carry the dangling reference forward.
+  appearance.setAccountScope(null);
+  dashboard.accountFilter = null;
+}
+
 onMounted(async () => {
   await accounts.refresh();
   await dashboard.bind();
@@ -144,6 +180,7 @@ onMounted(async () => {
     // matches the store default.
     dashboard.view = next;
   }
+  restorePersistedScope();
   await dashboard.load();
 });
 
@@ -194,6 +231,15 @@ watch(() => route.meta?.dashboardView, () => {
       </div>
 
       <div class="dashboard__chips-row">
+        <template v-if="hasAccounts">
+          <span class="dashboard__chips-label">SCOPE</span>
+          <AccountPicker
+            :accounts="accounts.accounts"
+            :model-value="dashboard.accountFilter"
+            @update:model-value="onAccountScopeUpdate"
+          />
+          <span class="dashboard__chips-sep" aria-hidden="true" />
+        </template>
         <FilterChipsBar
           :counts="dashboard.chipCounts"
           :active="(dashboard.activeChips as ReadonlySet<ChipKey>)"
