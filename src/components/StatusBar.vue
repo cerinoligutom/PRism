@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
+import { formatDuration } from "@/lib/format";
 
 const sync = useSyncStore();
 const accounts = useAccountsStore();
@@ -53,13 +54,13 @@ const accountsLabel = computed<string | null>(() => {
 const lastSyncedLabel = computed<string | null>(() => {
   const secs = sync.secondsSinceLastSync;
   if (secs === null) return null;
-  return `Synced ${formatRelative(secs)} ago`;
+  return `Synced ${formatDuration(secs)} ago`;
 });
 
 const nextSyncLabel = computed<string | null>(() => {
   const secs = sync.secondsUntilNextSync;
   if (secs === null) return null;
-  return `next in ${formatRelative(secs)}`;
+  return `next in ${formatDuration(secs)}`;
 });
 
 const budgetLabel = computed<string | null>(() => {
@@ -69,14 +70,6 @@ const budgetLabel = computed<string | null>(() => {
   const limit = sync.rateLimit;
   return limit === null ? `API budget · ${used}%` : `API budget · ${used}% / ${limit}/hr`;
 });
-
-function formatRelative(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h`;
-}
 </script>
 
 <template>
