@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { RouterLink } from "vue-router";
 
@@ -17,6 +17,12 @@ interface ReauthRequiredPayload {
 const expiredAccountIds = ref<Set<number>>(new Set());
 let unlistenReauth: UnlistenFn | null = null;
 
+// Tracks per-account `<img>` load failures (404 / stale URL / offline) so the
+// initials swatch takes over on the next render. Keyed on `account.id` rather
+// than URL so a refreshed avatar via the next sync cycle resets cleanly when
+// the row is re-rendered.
+const imageFailures = reactive<Set<number>>(new Set());
+
 const expiredAccounts = computed(() =>
   accountsStore.accounts.filter((a) => expiredAccountIds.value.has(a.id))
 );
@@ -26,11 +32,23 @@ const sublabel = computed(() => {
   return `${n} ACCOUNT${n === 1 ? "" : "S"}`;
 });
 
-function avatarClass(id: number): string {
+function paletteClass(id: number): string {
   // Cycle the seeded palette swatches from primitives.css so each account
-  // gets a stable but visually distinct mark.
+  // gets a stable but visually distinct mark when the real avatar is absent.
   const slot = ((id - 1) % 9) + 1;
-  return `avatar account-card__avatar av-${slot}`;
+  return `av-${slot}`;
+}
+
+function showAvatarImage(account: Account): boolean {
+  return (
+    typeof account.avatar_url === "string"
+    && account.avatar_url.length > 0
+    && !imageFailures.has(account.id)
+  );
+}
+
+function onAvatarError(account: Account): void {
+  imageFailures.add(account.id);
 }
 
 function initials(account: Account): string {
@@ -161,7 +179,21 @@ onUnmounted(() => {
           class="account-card"
           :class="{ 'account-card--expired': expiredAccountIds.has(account.id) }"
         >
-          <span :class="avatarClass(account.id)">{{ initials(account) }}</span>
+          <span
+            class="avatar account-card__avatar"
+            :class="[showAvatarImage(account) ? 'account-card__avatar--image' : paletteClass(account.id)]"
+          >
+            <img
+              v-if="showAvatarImage(account)"
+              :src="account.avatar_url ?? undefined"
+              :alt="account.login || account.label"
+              class="account-card__avatar-img"
+              loading="lazy"
+              decoding="async"
+              @error="onAvatarError(account)"
+            />
+            <template v-else>{{ initials(account) }}</template>
+          </span>
           <div class="account-card__info">
             <div class="account-card__label">
               {{ account.label || account.login }}
@@ -382,6 +414,23 @@ onUnmounted(() => {
   height: 36px;
   font-size: var(--fs-12);
   border-radius: 8px;
+}
+
+/* Real GitHub avatar layered on top of the .avatar primitive. Container loses
+ * the palette colour but keeps the same box so swapping image <-> initials
+ * doesn't move surrounding content. The padding reset lets the <img> reach
+ * the rounded edge; `overflow: hidden` clips it to the border-radius. */
+.account-card__avatar--image {
+  background: var(--bg-4);
+  padding: 0;
+  overflow: hidden;
+}
+
+.account-card__avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .account-card__label {

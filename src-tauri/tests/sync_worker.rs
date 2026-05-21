@@ -166,6 +166,7 @@ fn seed_account(h: &Harness, id: u64, login: &str) -> Account {
         login: login.into(),
         scopes: vec!["repo".into()],
         expires_at: None,
+        avatar_url: None,
     };
     h.accounts.upsert(account.clone()).unwrap();
     account
