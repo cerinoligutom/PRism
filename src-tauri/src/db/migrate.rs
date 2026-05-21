@@ -18,6 +18,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0006_users_table.sql"),
     include_str!("../../migrations/0007_review_thread_url.sql"),
     include_str!("../../migrations/0008_comment_urls.sql"),
+    include_str!("../../migrations/0009_comment_body_html.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct

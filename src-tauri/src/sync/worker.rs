@@ -1620,16 +1620,21 @@ fn write_reviews(
         let submitted_at = review.submitted_at.as_deref().and_then(rfc3339_to_unix);
 
         // Same partial-index conflict target shape as review_threads.
+        // `body_html` is COALESCEd so a payload that omits the field doesn't
+        // blank a previously-populated row (ADR 0014, issue #138). The same
+        // protection applies for `body` already today.
         tx.execute(
             "INSERT INTO reviews
-                (pull_request_id, node_id, reviewer_login, state, submitted_at, body)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (pull_request_id, node_id, reviewer_login, state, submitted_at,
+                 body, body_html)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
                 pull_request_id = excluded.pull_request_id,
                 reviewer_login = excluded.reviewer_login,
                 state = excluded.state,
                 submitted_at = excluded.submitted_at,
-                body = excluded.body",
+                body = excluded.body,
+                body_html = COALESCE(excluded.body_html, reviews.body_html)",
             params![
                 pr_id,
                 review.id,
@@ -1637,6 +1642,7 @@ fn write_reviews(
                 review.state,
                 submitted_at,
                 review.body,
+                review.body_html,
             ],
         )?;
 
@@ -2692,6 +2698,7 @@ mod tests {
                         id: "PRR_keep".into(),
                         state: "APPROVED".into(),
                         body: Some("LGTM".into()),
+                        body_html: None,
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
                         author: Some(Actor::new("alice")),
                     },
@@ -2699,6 +2706,7 @@ mod tests {
                         id: "PRR_drop".into(),
                         state: "COMMENTED".into(),
                         body: None,
+                        body_html: None,
                         submitted_at: Some("2026-05-18T13:00:00Z".into()),
                         author: Some(Actor::new("bob")),
                     },
@@ -2744,6 +2752,7 @@ mod tests {
                     id: "PRR_keep".into(),
                     state: "APPROVED".into(),
                     body: Some("LGTM".into()),
+                    body_html: None,
                     submitted_at: Some("2026-05-18T12:00:00Z".into()),
                     author: Some(Actor::new("alice")),
                 }],
@@ -2834,6 +2843,7 @@ mod tests {
                         id: "PRR_a".into(),
                         state: "APPROVED".into(),
                         body: Some("LGTM".into()),
+                        body_html: None,
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
                         author: Some(Actor::new("alice")),
                     },
@@ -2841,6 +2851,7 @@ mod tests {
                         id: "PRR_b".into(),
                         state: "COMMENTED".into(),
                         body: None,
+                        body_html: None,
                         submitted_at: None,
                         author: None,
                     },

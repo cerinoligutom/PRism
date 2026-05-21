@@ -92,6 +92,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           id
           state
           body
+          bodyHTML
           submittedAt
           author { login avatarUrl }
         }
@@ -169,6 +170,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
               databaseId
               author { login avatarUrl }
               body
+              bodyHTML
               bodyText
               createdAt
               path
@@ -186,6 +188,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
           databaseId
           author { login }
           body
+          bodyHTML
           bodyText
           createdAt
         }
@@ -417,6 +420,12 @@ pub struct PullRequestReviewNode {
     pub state: String,
     #[serde(default)]
     pub body: Option<String>,
+    /// Pre-rendered HTML from GitHub for the review summary body. Persisted
+    /// to `reviews.body_html` and rendered through `PRismMarkdown` on the
+    /// conversation surface. `None` for legacy fixtures and for queries that
+    /// don't request `bodyHTML`. See ADR 0014 and issue #138.
+    #[serde(default, rename = "bodyHTML")]
+    pub body_html: Option<String>,
     #[serde(default)]
     pub submitted_at: Option<String>,
     #[serde(default)]
@@ -516,6 +525,11 @@ pub struct ReviewCommentNode {
     #[serde(default)]
     pub author: Option<Actor>,
     pub body: String,
+    /// Pre-rendered HTML from GitHub for the comment body. Persisted to
+    /// `review_comments.body_html` and rendered through `PRismMarkdown`. See
+    /// ADR 0014 and issue #138. `None` for legacy fixtures.
+    #[serde(default, rename = "bodyHTML")]
+    pub body_html: Option<String>,
     pub body_text: String,
     pub created_at: String,
     #[serde(default)]
@@ -550,6 +564,11 @@ pub struct IssueCommentNode {
     #[serde(default)]
     pub author: Option<Actor>,
     pub body: String,
+    /// Pre-rendered HTML from GitHub for the issue-comment body. Persisted to
+    /// `issue_comments.body_html` for parity with review comments. See ADR
+    /// 0014 and issue #138.
+    #[serde(default, rename = "bodyHTML")]
+    pub body_html: Option<String>,
     pub body_text: String,
     pub created_at: String,
 }
@@ -1140,6 +1159,113 @@ mod tests {
             pr.issue_comments.page_info.end_cursor.as_deref(),
             Some("c1")
         );
+    }
+
+    #[test]
+    fn pr_detail_query_selects_body_html_on_reviews() {
+        // ADR 0014 / issue #138: pre-rendered HTML for review summary bodies.
+        let reviews_block = PR_DETAIL_QUERY
+            .split("reviews(first: 30)")
+            .nth(1)
+            .expect("query carries reviews(first: 30)");
+        assert!(
+            reviews_block.contains("bodyHTML"),
+            "reviews selection must request bodyHTML"
+        );
+    }
+
+    #[test]
+    fn pr_comments_query_selects_body_html_on_review_and_issue_comments() {
+        // bodyHTML appears in both the per-thread comments selection and the
+        // PR-level issueComments selection so the lazy hydrator can persist
+        // GitHub's pre-rendered HTML alongside the markdown body.
+        assert_eq!(
+            PR_COMMENTS_QUERY.matches("bodyHTML").count(),
+            2,
+            "PR_COMMENTS_QUERY should select bodyHTML on both review + issue comments"
+        );
+    }
+
+    #[test]
+    fn pull_request_review_node_deserialises_with_body_html() {
+        let json = serde_json::json!({
+            "id": "PRR_1",
+            "state": "COMMENTED",
+            "body": "**lgtm**",
+            "bodyHTML": "<p><strong>lgtm</strong></p>",
+            "submittedAt": "2026-05-19T12:00:00Z",
+            "author": { "login": "alice" }
+        });
+        let review: PullRequestReviewNode = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            review.body_html.as_deref(),
+            Some("<p><strong>lgtm</strong></p>")
+        );
+    }
+
+    #[test]
+    fn pull_request_review_node_deserialises_with_missing_body_html_as_none() {
+        let json = serde_json::json!({
+            "id": "PRR_legacy",
+            "state": "APPROVED",
+            "author": { "login": "alice" }
+        });
+        let review: PullRequestReviewNode = serde_json::from_value(json).unwrap();
+        assert!(review.body_html.is_none());
+    }
+
+    #[test]
+    fn review_comment_node_deserialises_with_body_html() {
+        let json = serde_json::json!({
+            "id": "PRRC_1",
+            "databaseId": 4242,
+            "author": { "login": "alice" },
+            "body": "`hi`",
+            "bodyHTML": "<p><code>hi</code></p>",
+            "bodyText": "hi",
+            "createdAt": "2026-05-19T10:00:00Z"
+        });
+        let comment: ReviewCommentNode = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.body_html.as_deref(), Some("<p><code>hi</code></p>"));
+    }
+
+    #[test]
+    fn review_comment_node_deserialises_with_missing_body_html_as_none() {
+        let json = serde_json::json!({
+            "id": "PRRC_legacy",
+            "body": "plain",
+            "bodyText": "plain",
+            "createdAt": "2026-05-19T10:00:00Z"
+        });
+        let comment: ReviewCommentNode = serde_json::from_value(json).unwrap();
+        assert!(comment.body_html.is_none());
+    }
+
+    #[test]
+    fn issue_comment_node_deserialises_with_body_html() {
+        let json = serde_json::json!({
+            "id": "IC_1",
+            "databaseId": 9001,
+            "author": { "login": "bob" },
+            "body": "looks good",
+            "bodyHTML": "<p>looks good</p>",
+            "bodyText": "looks good",
+            "createdAt": "2026-05-19T11:00:00Z"
+        });
+        let comment: IssueCommentNode = serde_json::from_value(json).unwrap();
+        assert_eq!(comment.body_html.as_deref(), Some("<p>looks good</p>"));
+    }
+
+    #[test]
+    fn issue_comment_node_deserialises_with_missing_body_html_as_none() {
+        let json = serde_json::json!({
+            "id": "IC_legacy",
+            "body": "plain",
+            "bodyText": "plain",
+            "createdAt": "2026-05-19T11:00:00Z"
+        });
+        let comment: IssueCommentNode = serde_json::from_value(json).unwrap();
+        assert!(comment.body_html.is_none());
     }
 
     #[test]

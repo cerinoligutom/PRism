@@ -929,6 +929,40 @@ Writes never store NULL avatar URLs; a partial payload (e.g. an older fixture mi
 
 Frontend: a `PRismAvatar` primitive at `src/components/ui/PRismAvatar.vue` renders `<img src=avatarUrl>` when the URL is present and falls back to the existing initials-in-coloured-circle pattern (`initials(login)` + `avatarSeed(login)` from `src/lib/format.ts`) on null URL or `<img>` onerror. Every existing avatar call site (dashboard row author, reviewer stack, threads list head comment, reviews tab, status-timeline tab actor) routes through it.
 
+## Markdown rendering (ADR 0014)
+
+Layered on top of the DTO above (after the avatar cache): expanded thread comments and review summary bodies render GitHub's pre-rendered HTML through a single `PRismMarkdown` primitive. The lazy hydrator and the sync cycle pull `bodyHTML` alongside the existing `body` field; DOMPurify sanitises before render and Shiki re-highlights fenced code blocks against `github-light` / `github-dark` (dual-theme inline CSS variables so theme switches don't require re-highlighting).
+
+Migration `0009_comment_body_html.sql` adds three TEXT columns:
+
+- `review_comments.body_html`
+- `issue_comments.body_html`
+- `reviews.body_html`
+
+Each is NULL on legacy rows; the next sync / lazy-hydrator cycle populates the column. The writers `COALESCE(excluded.body_html, ...)` so a partial payload that omits the field doesn't blank a previously-populated row.
+
+GraphQL extensions in `src-tauri/src/github/graphql/queries.rs`:
+
+- `PR_DETAIL_QUERY` selects `bodyHTML` on `reviews.nodes`.
+- `PR_COMMENTS_QUERY` selects `bodyHTML` on both `reviewThreads.nodes.comments.nodes` and `issueComments.nodes`.
+
+Deserialiser structs (`PullRequestReviewNode`, `ReviewCommentNode`, `IssueCommentNode`) each gain `body_html: Option<String>` with `#[serde(default, rename = "bodyHTML")]`; missing-field fixtures default to `None`.
+
+Read-side DTOs that surface a markdown body grow a `body_html: Option<String>` sibling: `conversation::ThreadComment`, `conversation::IssueComment`, `conversation::PullRequestReview`. The TypeScript mirror in `src/types/conversation.ts` follows the same shape (`body_html: string | null`). The thread head-comment snapshot (`ThreadHeadComment`) intentionally stays plain text - the snippet preview's 2-line clamp doesn't survive rich rendering.
+
+Frontend primitive at `src/components/ui/PRismMarkdown.vue` renders three branches:
+
+1. `html` populated -> sanitise + `v-html`, then walk `<pre><code class="language-*">` blocks and highlight via Shiki's `getSingletonHighlighter`. Anchor clicks delegate through `openUrl` from `@tauri-apps/plugin-opener`; relative URLs resolve against `https://github.com`.
+2. `html` empty + `fallback` populated -> render the fallback as `white-space: pre-wrap` plain text (matches the previous `.thread-comment__text` / `.review-card__text` behaviour).
+3. Both empty -> the `empty` slot renders (default: italic muted "No content.").
+
+Call sites swapped to the primitive:
+
+- `src/components/conversation/ThreadsList.vue` - expanded thread comment body (`<PRismMarkdown :html="comment.body_html" :fallback="comment.body" />`).
+- `src/components/conversation/ReviewsTab.vue` - review summary body (`<PRismMarkdown :html="entry.review.body_html" :fallback="entry.bodyTrimmed" />`).
+
+The Tauri CSP `img-src` directive expands to allow `*.githubusercontent.com` and `github.com` so user-content images and emoji shortcode assets render. See ADR 0014 for the full options trade-off.
+
 ## ADR cross-references
 
 - ADR [0004](../adr/0004-sync-polling-with-etag.md) — polling cadence and rate budget; the extended `PR_DETAIL_QUERY` still fits within the existing envelope.
@@ -937,3 +971,4 @@ Frontend: a `PRismAvatar` primitive at `src/components/ui/PRismAvatar.vue` rende
 - ADR [0010](../adr/0010-conversation-depth-storage.md) — records the thread-ID storage choice, the original three-column rollup decision (now superseded by 0012), and the lazy-hydrate-on-detail-open strategy.
 - ADR [0012](../adr/0012-threads-bar-four-state-and-outdated-counted.md) — four-bucket bar redesign and outdated-counted-normally policy. Supersedes ADR 0010's implicit "outdated excluded from the bar" stance and replaces the v4 `threads_unresolved` / `threads_involved` columns with the four `threads_(un)resolved_(un)involved` columns.
 - ADR [0013](../adr/0013-user-avatars-cache.md) — the `users` table layered on top of this contract.
+- ADR [0014](../adr/0014-comment-markdown-rendering.md) — comment markdown rendering via GitHub `bodyHTML` + Shiki, layered on the lazy-hydrator + DTO shape this contract pins.

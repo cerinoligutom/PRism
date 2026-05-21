@@ -21,6 +21,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0011](0011-cancel-inline-pr-detail-surface.md) | Cancel inline expansion as a third PR detail surface | Accepted | [#88](https://github.com/cerinoligutom/PRism/issues/88) |
 | [0012](0012-threads-bar-four-state-and-outdated-counted.md) | Threads-bar four-state redesign and outdated counted in the denominator | Accepted | [#98](https://github.com/cerinoligutom/PRism/issues/98) |
 | [0013](0013-user-avatars-cache.md) | User avatar caching via a `users` table | Accepted | [#99](https://github.com/cerinoligutom/PRism/issues/99) |
+| [0014](0014-comment-markdown-rendering.md) | Comment markdown rendering via GitHub `bodyHTML` + Shiki client highlighting | Accepted | [#138](https://github.com/cerinoligutom/PRism/issues/138) |
 
 ## Statuses
 

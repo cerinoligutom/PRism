@@ -19,6 +19,7 @@ import { router } from "./router";
 import { useAppearanceStore } from "./stores/appearance";
 
 import "./assets/styles/main.css";
+import "./assets/styles/markdown.css";
 
 const app = createApp(App);
 const pinia = createPinia();

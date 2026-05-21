@@ -519,6 +519,7 @@ fn make_comment(id: &str, db_id: i64, login: &str, created_at: &str) -> ReviewCo
         database_id: Some(db_id),
         author: Some(Actor::new(login)),
         body: format!("body of {id}"),
+        body_html: None,
         body_text: format!("body of {id}"),
         created_at: created_at.into(),
         path: Some("f.rs".into()),
@@ -535,6 +536,7 @@ fn make_issue(id: &str, db_id: i64, login: &str) -> IssueCommentNode {
         database_id: Some(db_id),
         author: Some(Actor::new(login)),
         body: format!("issue body {id}"),
+        body_html: None,
         body_text: format!("issue body {id}"),
         created_at: "2026-05-19T13:00:00Z".into(),
     }

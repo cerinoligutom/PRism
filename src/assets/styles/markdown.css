@@ -1,0 +1,248 @@
+/* PRism markdown — adapted from github-markdown-css (MIT). Scoped under
+ * `.prism-markdown` so it only paints content rendered through
+ * `PRismMarkdown`. Every value lands through the existing design tokens
+ * (`--text`, `--bg-3`, `--accent`, `--border-1`, ...) so light/dark theme
+ * toggles propagate without extra wiring.
+ *
+ * Covers: paragraphs, headings (h1-h6), inline + block code, blockquotes,
+ * lists (ul/ol), task-list checkboxes, tables, horizontal rules, links,
+ * emphasis, strong, del. Footnotes / mermaid / kbd / image alignment are
+ * out of scope until a real comment surfaces the gap.
+ *
+ * Shiki code-block highlighting layers on top: `defaultColor: false` emits
+ * inline `--shiki-light` / `--shiki-dark` CSS variables that resolve via
+ * `[data-theme]` on `<html>`. The pre / code styling here matches the
+ * Shiki output's wrapping but doesn't double up on colour.
+ */
+
+.prism-markdown {
+  /* Reset margins so the host caller's gap stack stays intact. */
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  line-height: var(--lh-body);
+  color: var(--text);
+  word-wrap: break-word;
+}
+
+.prism-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.prism-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.prism-markdown p {
+  margin: 0 0 var(--s-3);
+}
+
+/* Headings — six levels, scaled down from GitHub's defaults to match the
+ * dashboard's information-dense card type-scale. */
+.prism-markdown h1,
+.prism-markdown h2,
+.prism-markdown h3,
+.prism-markdown h4,
+.prism-markdown h5,
+.prism-markdown h6 {
+  margin: var(--s-4) 0 var(--s-3);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  color: var(--text-strong);
+}
+
+.prism-markdown h1 { font-size: var(--fs-20); }
+.prism-markdown h2 { font-size: var(--fs-16); }
+.prism-markdown h3 { font-size: var(--fs-14); }
+.prism-markdown h4 { font-size: var(--fs-13); }
+.prism-markdown h5 { font-size: var(--fs-12); }
+.prism-markdown h6 {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}
+
+.prism-markdown h1,
+.prism-markdown h2 {
+  border-bottom: 1px solid var(--border-1);
+  padding-bottom: var(--s-1);
+}
+
+/* Links — match the in-app accent. The wrapping `PRismMarkdown` intercepts
+ * clicks and routes them through `openUrl` for native browser handoff. */
+.prism-markdown a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.prism-markdown a:hover {
+  text-decoration: underline;
+}
+
+/* Inline + block code. Elevation runs drawer (bg-2) -> inline pill (bg-3)
+ * -> fenced block (bg-4) so each step is tonally distinguishable. */
+.prism-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-3);
+  color: var(--text);
+  padding: 1px 5px;
+  border-radius: var(--r-1);
+}
+
+.prism-markdown pre {
+  margin: 0 0 var(--s-3);
+  padding: var(--s-3);
+  background: var(--bg-4);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  overflow-x: auto;
+  font-size: var(--fs-11);
+  line-height: var(--lh-snug);
+}
+
+.prism-markdown pre code {
+  /* Inside a fenced block the pill background / padding are noise. */
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+  display: block;
+}
+
+/* Shiki output: surface light/dark themes via CSS vars per
+ * `defaultColor: false`. The `[data-theme]` on <html> picks one. */
+.prism-markdown .shiki,
+.prism-markdown .shiki span {
+  color: var(--shiki-light);
+  background: transparent;
+}
+
+:root[data-theme="dark"] .prism-markdown .shiki,
+:root[data-theme="dark"] .prism-markdown .shiki span {
+  color: var(--shiki-dark);
+}
+
+.prism-markdown .shiki {
+  background: var(--bg-2);
+}
+
+/* Blockquote — left rule + muted text. Nested quotes inherit the rule. */
+.prism-markdown blockquote {
+  margin: 0 0 var(--s-3);
+  padding: 0 var(--s-3);
+  border-left: 3px solid var(--border-2);
+  color: var(--text-mute);
+}
+
+.prism-markdown blockquote > :first-child { margin-top: 0; }
+.prism-markdown blockquote > :last-child { margin-bottom: 0; }
+
+/* Lists. Padding-left covers both ordered + unordered markers; task-list
+ * items zero out the marker so the checkbox stands in. */
+.prism-markdown ul,
+.prism-markdown ol {
+  margin: 0 0 var(--s-3);
+  padding-left: var(--s-5);
+}
+
+.prism-markdown li + li {
+  margin-top: 2px;
+}
+
+.prism-markdown li > p {
+  margin-bottom: var(--s-2);
+}
+
+.prism-markdown ul.contains-task-list,
+.prism-markdown ol.contains-task-list {
+  padding-left: var(--s-4);
+}
+
+.prism-markdown .task-list-item {
+  list-style: none;
+}
+
+.prism-markdown .task-list-item input[type="checkbox"] {
+  margin-right: var(--s-2);
+  vertical-align: middle;
+}
+
+/* Tables — bordered, alternating rows, monospace cells stay aligned. */
+.prism-markdown table {
+  margin: 0 0 var(--s-3);
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+  font-size: var(--fs-11);
+}
+
+.prism-markdown th,
+.prism-markdown td {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-1);
+  text-align: left;
+}
+
+.prism-markdown th {
+  background: var(--bg-2);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.prism-markdown tr:nth-child(2n) td {
+  background: var(--bg-2);
+}
+
+/* Horizontal rule. */
+.prism-markdown hr {
+  height: 1px;
+  margin: var(--s-4) 0;
+  padding: 0;
+  background: var(--border-1);
+  border: 0;
+}
+
+/* Emphasis variants. `del` for `~~strike~~`. */
+.prism-markdown em { font-style: italic; }
+.prism-markdown strong { font-weight: 600; color: var(--text-strong); }
+.prism-markdown del { text-decoration: line-through; color: var(--text-faint); }
+
+/* `g-emoji` is GitHub's custom element for emoji shortcodes; render inline. */
+.prism-markdown g-emoji {
+  display: inline-block;
+  font-style: normal;
+  line-height: 1;
+  vertical-align: -0.075em;
+}
+
+.prism-markdown g-emoji img {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.1em;
+}
+
+/* Inline images shrink to fit; markdown post-processing strips alignment. */
+.prism-markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-1);
+}
+
+/* Empty-state placeholder rendered when both html and fallback are missing. */
+.prism-markdown__empty {
+  display: block;
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--fs-12);
+}
+
+/* Plain-text fallback for legacy rows with no `body_html`. Preserves
+ * line breaks like the previous `<p>` had with white-space: pre-wrap. */
+.prism-markdown__fallback {
+  display: block;
+  margin: 0;
+  font-size: var(--fs-12);
+  line-height: var(--lh-body);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

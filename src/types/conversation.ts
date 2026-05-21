@@ -96,6 +96,10 @@ export interface PullRequestReview {
   /** `APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING`. */
   readonly state: string;
   readonly body: string | null;
+  /** Pre-rendered HTML from GitHub for the review summary body. Rendered via
+   * `PRismMarkdown`; falls back to plain `body` when `null` (legacy rows).
+   * See ADR 0014 and issue #138. */
+  readonly body_html: string | null;
   /** Unix seconds. */
   readonly submitted_at: number | null;
 }
@@ -107,6 +111,10 @@ export interface ThreadComment {
   /** GitHub avatar URL for `author_login`; see ADR 0013. */
   readonly avatar_url: string | null;
   readonly body: string;
+  /** Pre-rendered HTML from GitHub for the comment body. Rendered via
+   * `PRismMarkdown`; falls back to plain `body` when `null` (legacy rows).
+   * See ADR 0014 and issue #138. */
+  readonly body_html: string | null;
   /** Unix seconds. */
   readonly created_at: number;
   readonly line: number | null;
@@ -124,6 +132,9 @@ export interface IssueComment {
   /** GitHub avatar URL for `author_login`; see ADR 0013. */
   readonly avatar_url: string | null;
   readonly body: string;
+  /** Pre-rendered HTML from GitHub for the issue-comment body. Captured for
+   * parity; not yet rendered on the conversation surface. See ADR 0014. */
+  readonly body_html: string | null;
   /** Unix seconds. */
   readonly created_at: number;
   /** GitHub permalink for the issue comment. Captured for parity; not yet
