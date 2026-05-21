@@ -126,15 +126,22 @@ export interface DashboardPullRequest {
   readonly threads: ThreadsSummary | null;
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
-  readonly account_id: number;
+  /** Tracked accounts with a relation to this PR. Sorted ascending. Length
+   * 1 in the single-account-filter path; 1..N in the unified path; empty
+   * for Team-view PRs in the unified path that have no relation rows. See
+   * ADR 0016 ("Dashboard row shape - option 1"). */
+  readonly account_ids: readonly number[];
   /** True when the viewer hasn't opened this PR since its last upstream
-   * update. Drives the unread dot on the dashboard row. See ADR 0015 and
+   * update. In unified mode `unread` reads as true when any in-scope
+   * account is unread (MAX merge). See ADR 0015 and
    * `docs/contracts/triage-ux.md` ("Read-state derivation"). */
   readonly unread: boolean;
-  /** Precomputed "needs my attention" composite flag for the active account.
-   * See ADR 0015 ("Composite formula"). */
+  /** Precomputed "needs my attention" composite flag. In unified mode
+   * merges via MAX across relation owners. See ADR 0015
+   * ("Composite formula"). */
   readonly needs_attention: boolean;
-  /** Mentions of the viewer login seen since the last read. Reset to zero
-   * by `mark_pr_read`. See ADR 0015 ("Mention detection"). */
+  /** Mentions of the viewer login seen since the last read. Summed across
+   * relation owners in unified mode. Reset to zero by `mark_pr_read`.
+   * See ADR 0015 ("Mention detection"). */
   readonly mentioned_count_unread: number;
 }

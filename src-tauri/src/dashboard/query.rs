@@ -10,11 +10,17 @@
 //! - Team reads `repos.is_team_tracked = 1` directly; the relations table is
 //!   not touched because the Team relationship is a repo property.
 //!
-//! `account_id = None` returns the union across every account. For the three
-//! relation-backed views that means one row per (account, PR) the relation
-//! exists for: a PR authored by account A and review-requested for account B
-//! shows up once under each. For Team it means every team-tracked repo,
-//! grouped by the repo's owning account.
+//! `account_id = None` returns the dedupe-and-merge union across every
+//! account (ADR 0016). The relation-backed views GROUP BY `pr.id` so a PR
+//! authored by account A and review-requested for account B surfaces as one
+//! row whose triage signals are merged (`unread = MAX`,
+//! `needs_attention = MAX`, `mentioned_count_unread = SUM`) and whose
+//! `account_ids` carries every relation owner. The Team view's union path
+//! keeps the same GROUP BY but joins relations without an account scope so
+//! every relation row a PR has feeds the aggregations; PRs in team-tracked
+//! repos with no relation rows still surface (the Team filter is the repo's
+//! `is_team_tracked = 1`, not the relations table) with an empty
+//! `account_ids` and the default triage values.
 //!
 //! ## Threads rollup
 //!
@@ -25,6 +31,15 @@
 //! union no longer flickers with whichever account synced last. The legacy
 //! columns stay on the schema (SQLite column-drop is non-trivial) and are no
 //! longer written or read.
+//!
+//! ## Failure isolation in the union path
+//!
+//! The relation join in the union path is a LEFT JOIN with no account
+//! predicate. A failing account whose relation rows got pruned mid-cycle does
+//! not drop PRs another account also sees. The merge aggregates over zero or
+//! more relation rows per PR; an empty `account_ids` slot is the visible
+//! signal that a PR surfaced via the Team-view path (or that every relation
+//! row for the PR was pruned in the most recent cycle).
 
 use std::collections::HashMap;
 
@@ -37,8 +52,9 @@ use crate::dashboard::types::{
 use crate::triage::query as triage_query;
 use crate::triage::types::ChipKey;
 
-/// SQL fragment that selects every column the row projection needs, joined to
-/// `repos` and `accounts`. Each view prepends its own FROM clause to this body.
+/// SQL fragment that selects every column the row projection needs in the
+/// single-account-scoped path. Joined to `repos` and `accounts`; each view
+/// prepends its own FROM clause to this body.
 ///
 /// The trailing `rel.*` projections (M4-C) read the active account's triage
 /// state. Relation-backed views (Authored / Assigned / Watching) already JOIN
@@ -81,7 +97,7 @@ const PR_PROJECTION_COLUMNS: &str = "
     r.id,
     r.owner,
     r.name,
-    a.id,
+    CAST(a.id AS TEXT) AS account_ids,
     a.host,
     CASE
         WHEN rel.read_at IS NULL THEN 1
@@ -91,6 +107,66 @@ const PR_PROJECTION_COLUMNS: &str = "
     COALESCE(rel.needs_attention, 0) AS needs_attention,
     COALESCE(rel.mentioned_count_unread, 0) AS mentioned_count_unread
 ";
+
+/// Unified-mode projection. Adds the per-relation merge aggregations
+/// (`MAX(unread)`, `MAX(needs_attention)`, `SUM(mentioned_count_unread)`) and
+/// the comma-separated `account_ids` marker. `host` is read from the repo's
+/// owning account (`acc_repo`) because the repo, not the relation, anchors
+/// the PR to exactly one host; the URL builder needs the right host for
+/// `https://{host}/...` regardless of which accounts have relations. The
+/// projection only touches columns the GROUP BY tolerates: every non-aggregated
+/// reference is `pr.*`, `r.*`, `acc_repo.host`, or a `tb.*` column from a
+/// subquery that already GROUPs by `pull_request_id`.
+const PR_PROJECTION_COLUMNS_UNION: &str = "
+    pr.id,
+    pr.number,
+    pr.title,
+    pr.state,
+    pr.draft,
+    pr.mergeable,
+    pr.review_decision,
+    pr.author_login,
+    author_u.avatar_url AS author_avatar_url,
+    pr.base_ref,
+    pr.head_ref,
+    pr.created_at,
+    pr.updated_at,
+    pr.latest_status_change_at,
+    pr.additions,
+    pr.deletions,
+    pr.changed_files,
+    pr.ci_state,
+    pr.ci_total,
+    pr.ci_passing,
+    COALESCE(tb.total, 0) AS threads_total,
+    COALESCE(tb.unresolved_involved, 0) AS threads_unresolved_involved,
+    COALESCE(tb.unresolved_uninvolved, 0) AS threads_unresolved_uninvolved,
+    COALESCE(tb.resolved_involved, 0) AS threads_resolved_involved,
+    COALESCE(tb.resolved_uninvolved, 0) AS threads_resolved_uninvolved,
+    r.id,
+    r.owner,
+    r.name,
+    COALESCE(GROUP_CONCAT(DISTINCT rel.account_id ORDER BY rel.account_id), '')
+        AS account_ids,
+    acc_repo.host,
+    MAX(CASE
+            WHEN rel.read_at IS NULL THEN 1
+            WHEN pr.updated_at > COALESCE(rel.read_pr_updated_at, 0) THEN 1
+            ELSE 0
+        END) AS unread,
+    MAX(COALESCE(rel.needs_attention, 0)) AS needs_attention,
+    SUM(COALESCE(rel.mentioned_count_unread, 0)) AS mentioned_count_unread
+";
+
+/// Whether the query runs the single-account-scoped projection or the
+/// unified-mode dedupe-and-merge path. Single-account keeps the SQL
+/// byte-identical to before this ticket; union mode adds `GROUP BY pr.id`
+/// and the triage merge aggregations.
+#[derive(Clone, Copy)]
+enum QueryShape {
+    SingleAccount,
+    Union,
+}
 
 /// Common projection: PR + repo + account, ordered by the requested sort.
 /// `from_and_where` substitutes in the view-specific JOIN and WHERE clauses.
@@ -103,7 +179,18 @@ const PR_PROJECTION_COLUMNS: &str = "
 /// `NeedsMe` references `rel.needs_attention`; the caller must ensure `rel`
 /// is in scope (either via the relation-view JOIN or via a LEFT JOIN against
 /// `pull_request_viewer_relations` in the Team view path).
-fn build_sql(from_and_where: &str, chip_clause: &str, sort: DashboardSort) -> String {
+///
+/// `QueryShape::Union` swaps the projection for the merged-aggregation one
+/// and appends `GROUP BY pr.id` before the chip clause. The chip predicates
+/// run before the GROUP BY so the merge only sees rows the chips already
+/// admitted, matching the single-account behaviour where the chip filters
+/// rows directly.
+fn build_sql(
+    from_and_where: &str,
+    chip_clause: &str,
+    sort: DashboardSort,
+    shape: QueryShape,
+) -> String {
     let order_by = match sort {
         DashboardSort::Updated => {
             "ORDER BY COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, pr.id DESC"
@@ -112,18 +199,45 @@ fn build_sql(from_and_where: &str, chip_clause: &str, sort: DashboardSort) -> St
         DashboardSort::NeedsMe => {
             // `COALESCE` keeps the column NULL-safe for the Team view path,
             // where the LEFT JOIN against `pull_request_viewer_relations`
-            // misses when the active account has no relation row.
-            "ORDER BY COALESCE(rel.needs_attention, 0) DESC, \
+            // misses when the active account has no relation row. The union
+            // path's MAX over the relation rows is non-NULL when any row
+            // matched and `COALESCE(NULL, 0) = 0` when none did, so the same
+            // expression works for both shapes.
+            "ORDER BY COALESCE(MAX(rel.needs_attention), 0) DESC, \
                       COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, \
                       pr.id DESC"
         }
     };
-    format!(
-        "SELECT {PR_PROJECTION_COLUMNS}
-         {from_and_where}
-         {chip_clause}
-         {order_by}"
-    )
+    match shape {
+        QueryShape::SingleAccount => {
+            // The single-account ORDER BY references `rel.needs_attention`
+            // directly (no aggregation). The constant string above wraps it
+            // in `MAX(...)` for symmetry with the union path; the planner
+            // still drives off the relation row in the absence of a GROUP BY
+            // and the result is byte-identical.
+            let order_by_single = match sort {
+                DashboardSort::NeedsMe => {
+                    "ORDER BY COALESCE(rel.needs_attention, 0) DESC, \
+                              COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, \
+                              pr.id DESC"
+                }
+                _ => order_by,
+            };
+            format!(
+                "SELECT {PR_PROJECTION_COLUMNS}
+                 {from_and_where}
+                 {chip_clause}
+                 {order_by_single}"
+            )
+        }
+        QueryShape::Union => format!(
+            "SELECT {PR_PROJECTION_COLUMNS_UNION}
+             {from_and_where}
+             {chip_clause}
+             GROUP BY pr.id
+             {order_by}"
+        ),
+    }
 }
 
 /// Bucket projection (ADR 0016) that LEFT JOINs the outer PR row. Computes
@@ -243,6 +357,22 @@ fn thread_buckets_in_scope_predicate(account_id: Option<i64>) -> &'static str {
 /// Watching). `flag_column` must be one of `is_authored`,
 /// `is_review_requested`, `is_involved`. Never user-supplied, so safe to
 /// interpolate.
+///
+/// Two shapes here, gated on `account_id`:
+///
+/// 1. **Single-account (`Some(id)`).** One row per `(account, PR)` relation:
+///    the FROM hangs off `pull_request_viewer_relations` with the matching
+///    flag and the active account predicate. Projection reads the relation's
+///    triage columns verbatim. Same as the pre-ADR-0016 behaviour.
+/// 2. **Unified (`None`).** GROUP BY `pr.id`. The view-flag predicate stays a
+///    WHERE on the relation row's `is_*` column so we only count PRs at
+///    least one tracked account has the view-typed relation to. The triage
+///    columns are merged via `MAX` / `SUM` over every relation row the
+///    GROUP BY folds together (regardless of which `is_*` flags those rows
+///    set), so an unread mention on a Watching relation rolls into the
+///    unread tally for a PR that surfaces here via its Authored relation.
+///    The relation join stays inside the FROM (no LEFT JOIN needed) because
+///    the view-filter EXISTS guarantees at least one relation row per PR.
 fn relation_view_query(
     flag_column: &str,
     sort: DashboardSort,
@@ -250,62 +380,107 @@ fn relation_view_query(
     active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
     let thread_buckets = thread_buckets_subquery(thread_buckets_in_scope_predicate(account_id));
-    let mut from_and_where = format!(
-        "FROM pull_request_viewer_relations rel
-         JOIN pull_requests pr ON pr.id = rel.pull_request_id
-         JOIN repos r ON r.id = pr.repo_id
-         JOIN accounts a ON a.id = rel.account_id
-         LEFT JOIN users author_u ON author_u.login = pr.author_login
-         {thread_buckets}
-         WHERE rel.{flag_column} = 1"
-    );
-    let mut params: Vec<i64> = Vec::new();
-    if let Some(id) = account_id {
-        from_and_where.push_str(" AND rel.account_id = ?1");
-        params.push(id);
-    }
     let chip_clause = chip_where_clause(active_chips);
-    (build_sql(&from_and_where, &chip_clause, sort), params)
+    match account_id {
+        Some(id) => {
+            let from_and_where = format!(
+                "FROM pull_request_viewer_relations rel
+                 JOIN pull_requests pr ON pr.id = rel.pull_request_id
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts a ON a.id = rel.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 {thread_buckets}
+                 WHERE rel.{flag_column} = 1
+                   AND rel.account_id = ?1"
+            );
+            (
+                build_sql(
+                    &from_and_where,
+                    &chip_clause,
+                    sort,
+                    QueryShape::SingleAccount,
+                ),
+                vec![id],
+            )
+        }
+        None => {
+            let from_and_where = format!(
+                "FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts acc_repo ON acc_repo.id = r.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 LEFT JOIN pull_request_viewer_relations rel
+                   ON rel.pull_request_id = pr.id
+                 {thread_buckets}
+                 WHERE EXISTS (
+                    SELECT 1 FROM pull_request_viewer_relations rel_filter
+                     WHERE rel_filter.pull_request_id = pr.id
+                       AND rel_filter.{flag_column} = 1
+                 )"
+            );
+            (
+                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union),
+                Vec::new(),
+            )
+        }
+    }
 }
 
 /// Team view: PRs in repos opted into team tracking. The relation row is read
 /// account-scoped via a LEFT JOIN so the triage projections (`unread`,
 /// `needs_attention`, `mentioned_count_unread`) reflect the active account.
-/// Without an account filter (the union case) the join short-circuits via
-/// `ON 0` so the SQL keeps a stable shape and the COALESCE defaults trip.
-/// The LEFT JOIN is unconditional because `PR_PROJECTION_COLUMNS` reads
-/// `rel.*` for every row; the M4-D chip / sort gating folded into this path
-/// because the projection requires `rel` in scope regardless.
+/// Without an account filter (the union case) the LEFT JOIN drops the
+/// per-account predicate so every relation row for the PR feeds the merge
+/// aggregations; PRs in team-tracked repos with no relation rows still
+/// surface (the view filter is `repos.is_team_tracked = 1`, not the
+/// relations table) with `account_ids = []` and the default triage values.
 fn team_view_query(
     sort: DashboardSort,
     account_id: Option<i64>,
     active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
     let thread_buckets = thread_buckets_subquery(thread_buckets_in_scope_predicate(account_id));
-    let mut from_and_where = format!(
-        "FROM pull_requests pr
-         JOIN repos r ON r.id = pr.repo_id
-         JOIN accounts a ON a.id = r.account_id
-         LEFT JOIN users author_u ON author_u.login = pr.author_login
-         {thread_buckets}"
-    );
-    let mut params: Vec<i64> = Vec::new();
-    if let Some(id) = account_id {
-        from_and_where.push_str(
-            " LEFT JOIN pull_request_viewer_relations rel
-                 ON rel.pull_request_id = pr.id AND rel.account_id = ?1
-              WHERE r.is_team_tracked = 1
-                AND r.account_id = ?1",
-        );
-        params.push(id);
-    } else {
-        from_and_where.push_str(
-            " LEFT JOIN pull_request_viewer_relations rel ON 0
-              WHERE r.is_team_tracked = 1",
-        );
-    }
     let chip_clause = chip_where_clause(active_chips);
-    (build_sql(&from_and_where, &chip_clause, sort), params)
+    match account_id {
+        Some(id) => {
+            let from_and_where = format!(
+                "FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts a ON a.id = r.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 {thread_buckets}
+                 LEFT JOIN pull_request_viewer_relations rel
+                     ON rel.pull_request_id = pr.id AND rel.account_id = ?1
+                  WHERE r.is_team_tracked = 1
+                    AND r.account_id = ?1"
+            );
+            (
+                build_sql(
+                    &from_and_where,
+                    &chip_clause,
+                    sort,
+                    QueryShape::SingleAccount,
+                ),
+                vec![id],
+            )
+        }
+        None => {
+            let from_and_where = format!(
+                "FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts acc_repo ON acc_repo.id = r.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 LEFT JOIN pull_request_viewer_relations rel
+                     ON rel.pull_request_id = pr.id
+                 {thread_buckets}
+                  WHERE r.is_team_tracked = 1"
+            );
+            (
+                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union),
+                Vec::new(),
+            )
+        }
+    }
 }
 
 /// Execute the per-view list query against `conn` and project each row into a
@@ -379,7 +554,13 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     let repo_id: i64 = row.get(25)?;
     let repo_owner: String = row.get(26)?;
     let repo_name: String = row.get(27)?;
-    let account_id: i64 = row.get(28)?;
+    // Column 28 carries `account_ids` as a CSV string:
+    // - single-account path: `CAST(a.id AS TEXT)` -> exactly one id, e.g. "1".
+    // - union path: `GROUP_CONCAT(DISTINCT rel.account_id ORDER BY ...)` ->
+    //   a sorted, comma-joined list. Empty when no relation row was joined
+    //   (Team-view PR with no relations).
+    let account_ids_csv: String = row.get(28)?;
+    let account_ids = parse_account_ids_csv(&account_ids_csv);
     let account_host: String = row.get(29)?;
 
     // M4-C: triage projections from `pull_request_viewer_relations rel`.
@@ -387,9 +568,19 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     // rows (Team-view union case) by defaulting to false / 0. See ADR 0015
     // ("Read-state storage") and `docs/contracts/triage-ux.md`
     // ("Read-state derivation").
+    //
+    // In the unified path the column carries `MAX(...)` / `SUM(...)` over
+    // every relation row the GROUP BY folded together, so the same scalar
+    // read works for both shapes. When no relation joined, MAX returns NULL
+    // and Option<i64> would surface that; the outer COALESCE in the SQL
+    // pins the default to 0 either way.
     let unread: i64 = row.get(30)?;
     let needs_attention: i64 = row.get(31)?;
-    let mentioned_count_unread: i64 = row.get(32)?;
+    // SUM in SQLite returns NULL when every aggregated row is NULL (i.e. no
+    // relation joined). The outer COALESCE keeps the column non-NULL in the
+    // single-account path; the union path needs the Option<i64> read because
+    // `SUM(COALESCE(..., 0))` over zero rows still returns NULL.
+    let mentioned_count_unread: i64 = row.get::<_, Option<i64>>(32)?.unwrap_or(0);
 
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");
@@ -421,37 +612,64 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
             owner: repo_owner,
             name: repo_name,
         },
-        account_id,
+        account_ids,
         unread: unread != 0,
         needs_attention: needs_attention != 0,
         mentioned_count_unread,
     })
 }
 
+/// Parse the comma-separated `account_ids` projection into a sorted vector.
+/// Empty input -> empty vector (Team-view PR with no relations).
+/// Non-numeric tokens are dropped silently; the projection only ever emits
+/// integer ids so a parse failure indicates a SQL composition bug rather than
+/// a runtime data shape we should propagate. The list is already sorted in
+/// the union path via `GROUP_CONCAT(... ORDER BY rel.account_id)`; the sort
+/// here is defensive for the single-account path's single-id case and any
+/// future caller that doesn't pre-sort.
+fn parse_account_ids_csv(csv: &str) -> Vec<i64> {
+    if csv.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<i64> = csv
+        .split(',')
+        .filter_map(|s| s.parse::<i64>().ok())
+        .collect();
+    out.sort_unstable();
+    out
+}
+
 /// Reviewer entries for one PR: one row per unique reviewer login, picking the
 /// latest submitted review per login (with a state-priority tie-break), then
 /// filling in pending entries for requested reviewers who have never
 /// submitted. The viewer marker `is_you` is true when the reviewer's identity
-/// `(login, host)` matches the row's projected account `(login, host)` _and_
-/// that account lives on the PR's owning host. Rows whose latest state doesn't
-/// map to a [`ReviewerState`] (e.g. `DISMISSED`) are dropped; a login dropped
-/// this way does not re-appear as `Pending` from `requested_reviewers` because
-/// the login still counts as having a submitted review.
+/// `(login, host)` matches any of the row's `account_ids` -> `(login, host)`
+/// pairs _and_ the matched account lives on the PR's owning host. Rows whose
+/// latest state doesn't map to a [`ReviewerState`] (e.g. `DISMISSED`) are
+/// dropped; a login dropped this way does not re-appear as `Pending` from
+/// `requested_reviewers` because the login still counts as having a submitted
+/// review.
 ///
 /// Cross-host isolation (issue #169): GitHub logins are unique per host, not
 /// globally. Two accounts can share login `ada` on github.com and on a GHE
-/// host, but they are different identities. The lookup therefore keys on
-/// `account_id -> (login, host)` and compares against the PR's owning host
-/// (fetched per call from `repos -> accounts`). If the projected account's
-/// host doesn't match the PR's host, `is_you` stays false regardless of any
-/// login string coincidence.
+/// host, but they are different identities. The lookup keys on
+/// `account_id -> (login, host)` and the `is_you` test compares against the
+/// PR's owning host (fetched per call from `repos -> accounts`). If none of
+/// the row's in-scope account identities sits on the PR's host, `is_you`
+/// stays false regardless of any login string coincidence.
+///
+/// In the unified path `pr.account_ids` carries every relation owner the
+/// GROUP BY folded together; the `is_you` scan tests the reviewer against
+/// the union of those identities. A reviewer logged in as account B's login
+/// (but not account A's) still flips `is_you` if account B has a relation row
+/// for this PR and shares the PR's host.
 fn hydrate_reviewers(
     conn: &Connection,
     prs: &mut [DashboardPullRequest],
 ) -> Result<(), rusqlite::Error> {
-    // account_id -> (login, host). Lookup keyed by the row's projected
-    // account_id; `host` is carried so the cross-host `is_you` guard below
-    // can compare it against the PR's owning host.
+    // account_id -> (login, host). Lookup keyed by the row's `account_ids`;
+    // `host` is carried so the cross-host `is_you` guard below can compare it
+    // against the PR's owning host.
     let mut account_identities: HashMap<i64, (String, String)> = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT id, login, host FROM accounts")?;
@@ -600,14 +818,26 @@ fn hydrate_reviewers(
     // Attach to the parent PR rows and compute `is_you`. The marker requires
     // both a login string match and a host match against the PR's owning host
     // (issue #169 - same login on different hosts is a different identity).
+    // In the unified path `pr.account_ids` carries every in-scope account
+    // for this row; the scan tests against the union of their identities.
     for pr in prs.iter_mut() {
         if let Some(mut entries) = reviewers_by_pr.remove(&pr.id) {
-            if let Some((viewer_login, viewer_host)) = account_identities.get(&pr.account_id) {
-                let pr_host = pr_owner_host_by_pr.get(&pr.id);
-                let host_matches = pr_host.is_some_and(|h| h == viewer_host);
-                for entry in entries.iter_mut() {
-                    entry.is_you = host_matches && entry.login == *viewer_login;
-                }
+            let pr_host = pr_owner_host_by_pr.get(&pr.id);
+            // Collect the (login, host) pairs that share the PR's host; these
+            // are the identities a reviewer's login can match to flip `is_you`.
+            // Other in-scope accounts (on different hosts) can't match: their
+            // login is a different identity even if the string coincides.
+            let viewer_logins_on_pr_host: Vec<&str> = pr
+                .account_ids
+                .iter()
+                .filter_map(|id| account_identities.get(id))
+                .filter(|(_, viewer_host)| pr_host.is_some_and(|h| h == viewer_host))
+                .map(|(login, _)| login.as_str())
+                .collect();
+            for entry in entries.iter_mut() {
+                entry.is_you = viewer_logins_on_pr_host
+                    .iter()
+                    .any(|login| *login == entry.login);
             }
             pr.reviewers = entries;
         }
@@ -718,12 +948,26 @@ mod tests {
     }
 
     #[test]
-    fn team_query_short_circuits_relation_join_without_account() {
+    fn team_query_union_left_joins_relations_without_account_predicate() {
+        // ADR 0016: the union path keeps the LEFT JOIN to feed the merge
+        // aggregations, but drops the `rel.account_id = ?1` predicate so every
+        // relation row for the PR contributes. PRs in team-tracked repos
+        // without any relation rows still surface (view filter is on
+        // `repos.is_team_tracked = 1`); the merge aggregates over zero
+        // relation rows and defaults the triage columns via COALESCE.
         let (sql, params) = view_query(DashboardView::Team, DashboardSort::Updated, None, &[]);
         assert!(params.is_empty());
         assert!(
-            sql.contains("LEFT JOIN pull_request_viewer_relations rel ON 0"),
-            "team query without account must short-circuit the relation join; SQL: {sql}"
+            sql.contains("LEFT JOIN pull_request_viewer_relations rel\n                     ON rel.pull_request_id = pr.id"),
+            "team union path must LEFT JOIN relations without an account filter; SQL: {sql}"
+        );
+        assert!(
+            !sql.contains("LEFT JOIN pull_request_viewer_relations rel ON 0"),
+            "team union path must not short-circuit the relation join; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY pr.id"),
+            "team union path must dedupe via GROUP BY pr.id; SQL: {sql}"
         );
     }
 

@@ -19,61 +19,120 @@ use crate::db::DbHandle;
 use crate::triage::query;
 use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 
-/// Mark a PR as read for the given account. Sets
-/// `pull_request_viewer_relations.read_at` to the current Unix timestamp,
-/// captures `pull_requests.updated_at` into `read_pr_updated_at`, resets
-/// `mentioned_count_unread` to zero, and pushes
-/// `mention_scan_watermark_at` to the current timestamp so future sync
-/// cycles only count comments newer than the open.
+/// Mark a PR as read.
 ///
-/// The composite `needs_attention` flag is recomputed against the new
-/// state inside the same transaction so the next dashboard read reflects
-/// the open.
+/// `account_id = Some(id)` flips the read state for that single relation;
+/// `account_id = None` (ADR 0016, unified mode) fans the flip out across every
+/// existing relation owner for the PR. Each per-account write is independent:
+/// a per-account failure during the fan-out logs and continues so partial
+/// progress persists, matching ADR 0016's mark-read option 1.
 ///
-/// Idempotent: re-marking an already-read PR is a no-op apart from
-/// refreshing the timestamps. UPSERTs the relation row so the call works
-/// for PRs the viewer has reached the detail surface for without a prior
-/// discovery pass writing a row.
+/// In single-account mode the existing semantics hold: the relation row is
+/// UPSERTed (so a PR the viewer reached without a prior discovery pass still
+/// flips read). In multi-account mode the fan-out only writes to existing
+/// relation rows - upserting against arbitrary accounts would manufacture
+/// rows the sync cycle never validated.
+///
+/// The composite `needs_attention` flag is recomputed for each touched
+/// `(account, PR)` pair inside the same transaction.
 #[tauri::command]
 pub fn mark_pr_read(
     pull_request_id: i64,
-    account_id: i64,
+    account_id: Option<i64>,
     db: State<'_, DbHandle>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
-    query::mark_read(&tx, account_id, pull_request_id).map_err(|e| format!("mark read: {e}"))?;
-    query::recompute_needs_attention(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("recompute needs_attention: {e}"))?;
+    match account_id {
+        Some(id) => {
+            query::mark_read(&tx, id, pull_request_id).map_err(|e| format!("mark read: {e}"))?;
+            query::recompute_needs_attention(&tx, id, pull_request_id)
+                .map_err(|e| format!("recompute needs_attention: {e}"))?;
+        }
+        None => {
+            apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
+                query::mark_read(tx, acct, pull_request_id)?;
+                query::recompute_needs_attention(tx, acct, pull_request_id)
+            })
+            .map_err(|e| format!("mark read multi: {e}"))?;
+        }
+    }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
     Ok(())
 }
 
-/// Flip a PR back to unread for the given account. Clears
-/// `read_at` and `read_pr_updated_at` so the derived `unread` projection
-/// returns true. `mentioned_count_unread` is _not_ rewritten - the next
-/// sync cycle re-counts comments past the existing
-/// `mention_scan_watermark_at` if any matched.
+/// Flip a PR back to unread.
 ///
-/// Recomputes `needs_attention` synchronously so the dashboard reflects
-/// the flip without waiting for the next sync cycle.
+/// `account_id = Some(id)` clears the read watermark on that single relation;
+/// `account_id = None` fans the clear out across every existing relation
+/// owner. Per-account writes are independent so a partial failure doesn't roll
+/// back successes (ADR 0016 mark-read option 1).
 ///
-/// No-op when the relation row doesn't exist; the contract is "Team-view
-/// PRs never get a row" and marking such a PR unread is not a meaningful
+/// `mentioned_count_unread` is _not_ rewritten - the next sync cycle re-counts
+/// comments past the existing `mention_scan_watermark_at` if any matched.
+/// Recomputes `needs_attention` synchronously for each touched pair.
+///
+/// No-op when the relation row doesn't exist; the contract is "Team-view PRs
+/// never get a row" and marking such a PR unread is not a meaningful
 /// operation.
 #[tauri::command]
 pub fn mark_pr_unread(
     pull_request_id: i64,
-    account_id: i64,
+    account_id: Option<i64>,
     db: State<'_, DbHandle>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
-    query::mark_unread(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("mark unread: {e}"))?;
-    query::recompute_needs_attention(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("recompute needs_attention: {e}"))?;
+    match account_id {
+        Some(id) => {
+            query::mark_unread(&tx, id, pull_request_id)
+                .map_err(|e| format!("mark unread: {e}"))?;
+            query::recompute_needs_attention(&tx, id, pull_request_id)
+                .map_err(|e| format!("recompute needs_attention: {e}"))?;
+        }
+        None => {
+            apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
+                query::mark_unread(tx, acct, pull_request_id)?;
+                query::recompute_needs_attention(tx, acct, pull_request_id)
+            })
+            .map_err(|e| format!("mark unread multi: {e}"))?;
+        }
+    }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    Ok(())
+}
+
+/// Iterate every account_id that has a relation row for `pull_request_id` and
+/// invoke `op` once per account. Per-account failures are logged and skipped
+/// (ADR 0016: "partial failures must not roll back successful per-account
+/// writes"). Returns `Ok(())` even if every per-account write fails - the
+/// outer transaction commits successful rows and surfaces nothing to the
+/// frontend. The next sync cycle reconciles.
+fn apply_to_all_relation_owners<F>(
+    tx: &rusqlite::Transaction<'_>,
+    pull_request_id: i64,
+    mut op: F,
+) -> Result<(), rusqlite::Error>
+where
+    F: FnMut(&rusqlite::Transaction<'_>, i64) -> Result<(), rusqlite::Error>,
+{
+    let mut stmt = tx.prepare(
+        "SELECT account_id FROM pull_request_viewer_relations
+          WHERE pull_request_id = ?1
+          ORDER BY account_id",
+    )?;
+    let account_ids: Vec<i64> = stmt
+        .query_map([pull_request_id], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    for account_id in account_ids {
+        if let Err(err) = op(tx, account_id) {
+            eprintln!(
+                "per-account triage write failed (pr={pull_request_id}, \
+                 account={account_id}): {err}"
+            );
+        }
+    }
     Ok(())
 }
 
