@@ -126,6 +126,10 @@ pub struct PullRequestReview {
     /// `COMMENTED`, `DISMISSED`, `PENDING`.
     pub state: String,
     pub body: Option<String>,
+    /// Pre-rendered HTML from GitHub for the review summary body. Surfaced
+    /// to the frontend's `PRismMarkdown` primitive; falls back to `body` as
+    /// plain text when `None` (legacy rows). See ADR 0014 and issue #138.
+    pub body_html: Option<String>,
     pub submitted_at: Option<i64>,
 }
 
@@ -140,6 +144,10 @@ pub struct ThreadComment {
     /// at query time. See ADR 0013.
     pub avatar_url: Option<String>,
     pub body: String,
+    /// Pre-rendered HTML from GitHub for the comment body. Surfaced to the
+    /// frontend's `PRismMarkdown` primitive; falls back to `body` as plain
+    /// text when `None` (legacy rows). See ADR 0014 and issue #138.
+    pub body_html: Option<String>,
     pub created_at: i64,
     pub line: Option<i64>,
     pub side: Option<String>,
@@ -159,6 +167,10 @@ pub struct IssueComment {
     /// at query time. See ADR 0013.
     pub avatar_url: Option<String>,
     pub body: String,
+    /// Pre-rendered HTML from GitHub for the issue-comment body. Surfaced for
+    /// parity with thread comments; issue comments aren't rendered on the
+    /// conversation surface today. See ADR 0014 and issue #138.
+    pub body_html: Option<String>,
     pub created_at: i64,
     /// GitHub permalink for the issue comment. Captured for parity; issue
     /// comments aren't yet rendered on the conversation surface (M3

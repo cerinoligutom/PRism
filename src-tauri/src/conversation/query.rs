@@ -346,7 +346,7 @@ pub fn list_thread_comments(
 ) -> Result<Vec<ThreadComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.review_thread_id, c.author_login, u.avatar_url,
-                c.body, c.created_at, c.line, c.side, c.url
+                c.body, c.body_html, c.created_at, c.line, c.side, c.url
            FROM review_comments c
            JOIN review_threads t ON t.id = c.review_thread_id
            LEFT JOIN users u ON u.login = c.author_login
@@ -360,10 +360,11 @@ pub fn list_thread_comments(
             author_login: row.get(2)?,
             avatar_url: row.get(3)?,
             body: row.get(4)?,
-            created_at: row.get(5)?,
-            line: row.get(6)?,
-            side: row.get(7)?,
-            url: row.get(8)?,
+            body_html: row.get(5)?,
+            created_at: row.get(6)?,
+            line: row.get(7)?,
+            side: row.get(8)?,
+            url: row.get(9)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -374,7 +375,8 @@ pub fn list_issue_comments(
     pull_request_id: i64,
 ) -> Result<Vec<IssueComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT ic.id, ic.author_login, u.avatar_url, ic.body, ic.created_at, ic.url
+        "SELECT ic.id, ic.author_login, u.avatar_url, ic.body, ic.body_html,
+                ic.created_at, ic.url
            FROM issue_comments ic
            LEFT JOIN users u ON u.login = ic.author_login
           WHERE ic.pull_request_id = ?1
@@ -386,8 +388,9 @@ pub fn list_issue_comments(
             author_login: row.get(1)?,
             avatar_url: row.get(2)?,
             body: row.get(3)?,
-            created_at: row.get(4)?,
-            url: row.get(5)?,
+            body_html: row.get(4)?,
+            created_at: row.get(5)?,
+            url: row.get(6)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -399,7 +402,7 @@ pub fn list_reviews(
 ) -> Result<Vec<PullRequestReview>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT r.id, r.node_id, r.reviewer_login, u.avatar_url,
-                r.state, r.body, r.submitted_at
+                r.state, r.body, r.body_html, r.submitted_at
            FROM reviews r
            LEFT JOIN users u ON u.login = r.reviewer_login
           WHERE r.pull_request_id = ?1
@@ -414,7 +417,8 @@ pub fn list_reviews(
             avatar_url: row.get(3)?,
             state: row.get(4)?,
             body: row.get(5)?,
-            submitted_at: row.get(6)?,
+            body_html: row.get(6)?,
+            submitted_at: row.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()

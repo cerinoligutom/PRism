@@ -5,6 +5,7 @@ import type { PullRequestReview } from "@/types/conversation";
 
 import { EM_DASH } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 
 interface Props {
@@ -87,12 +88,15 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
           />
           <span v-else class="review-card__time">{{ EM_DASH }}</span>
         </div>
-        <p v-if="entry.bodyTrimmed !== ''" class="review-card__text">
-          {{ entry.bodyTrimmed }}
-        </p>
-        <p v-else class="review-card__text review-card__text--empty">
-          No review summary.
-        </p>
+        <PRismMarkdown
+          :html="entry.review.body_html"
+          :fallback="entry.bodyTrimmed"
+          class="review-card__text"
+        >
+          <template #empty>
+            <span class="review-card__text--empty">No review summary.</span>
+          </template>
+        </PRismMarkdown>
       </div>
     </article>
   </div>

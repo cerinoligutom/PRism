@@ -319,12 +319,13 @@ fn upsert_review_comment(
     // predicate. The hydrator always writes a non-null `node_id`.
     // `COALESCE(excluded.url, ...)` keeps a previously-persisted url if a
     // later payload happens to omit it (defensive parity with the worker's
-    // thread-level url preservation).
+    // thread-level url preservation). Same protection applies to
+    // `body_html` (ADR 0014, issue #138).
     tx.execute(
         "INSERT INTO review_comments
             (review_thread_id, author_login, body, created_at, node_id,
-             database_id, line, side, url)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             database_id, line, side, url, body_html)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
             review_thread_id = excluded.review_thread_id,
             author_login     = excluded.author_login,
@@ -333,7 +334,8 @@ fn upsert_review_comment(
             database_id      = excluded.database_id,
             line             = excluded.line,
             side             = excluded.side,
-            url              = COALESCE(excluded.url, review_comments.url)",
+            url              = COALESCE(excluded.url, review_comments.url),
+            body_html        = COALESCE(excluded.body_html, review_comments.body_html)",
         params![
             thread_id,
             author,
@@ -344,6 +346,7 @@ fn upsert_review_comment(
             comment.line,
             comment.side,
             comment.url,
+            comment.body_html,
         ],
     )?;
     Ok(())
@@ -365,15 +368,17 @@ fn upsert_issue_comment(
     }
     tx.execute(
         "INSERT INTO issue_comments
-            (pull_request_id, author_login, body, created_at, node_id, database_id, url)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            (pull_request_id, author_login, body, created_at, node_id,
+             database_id, url, body_html)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
             pull_request_id = excluded.pull_request_id,
             author_login    = excluded.author_login,
             body            = excluded.body,
             created_at      = excluded.created_at,
             database_id     = excluded.database_id,
-            url             = COALESCE(excluded.url, issue_comments.url)",
+            url             = COALESCE(excluded.url, issue_comments.url),
+            body_html       = COALESCE(excluded.body_html, issue_comments.body_html)",
         params![
             pull_request_id,
             author,
@@ -382,6 +387,7 @@ fn upsert_issue_comment(
             comment.id,
             comment.database_id,
             comment.url,
+            comment.body_html,
         ],
     )?;
     Ok(())
@@ -532,6 +538,7 @@ mod tests {
             database_id: Some(db),
             author: Some(Actor::new(login)),
             body: body.into(),
+            body_html: None,
             body_text: body.into(),
             created_at: "2026-05-19T10:00:00Z".into(),
             path: None,

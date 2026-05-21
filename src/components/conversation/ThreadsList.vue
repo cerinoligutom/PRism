@@ -10,6 +10,7 @@ import type {
 
 import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
@@ -314,7 +315,11 @@ async function openCommentOnGitHub(
                     </button>
                   </PRismTooltip>
                 </div>
-                <p class="thread-comment__text">{{ comment.body }}</p>
+                <PRismMarkdown
+                  :html="comment.body_html"
+                  :fallback="comment.body"
+                  class="thread-comment__text"
+                />
               </div>
             </div>
           </div>
