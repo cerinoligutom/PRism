@@ -145,10 +145,16 @@ where
 /// caller passes the active `DashboardView` + `account_id`. Returns
 /// `FilterChipCounts` with one i64 per chip - see the type doc for the
 /// per-chip predicate definitions.
+///
+/// `account_id = Some(id)` keeps the single-account behaviour byte-identical
+/// to before ADR 0016. `account_id = None` (the unified default) fans the
+/// counts across every tracked account and dedupes by PR id so a PR matched
+/// via two accounts contributes one to each chip it triggers - mirroring the
+/// dashboard query's union-mode `GROUP BY pr.id` row shape.
 #[tauri::command]
 pub fn list_filter_chip_counts(
     view: DashboardView,
-    account_id: i64,
+    account_id: Option<i64>,
     db: State<'_, DbHandle>,
 ) -> Result<FilterChipCounts, String> {
     let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;

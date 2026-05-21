@@ -18,7 +18,7 @@
 //! per-view COUNT(*) that backs the sidebar count-chip `.has-attention`
 //! boost.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::dashboard::DashboardView;
 use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
@@ -183,28 +183,45 @@ pub fn chip_predicate(chip: ChipKey) -> &'static str {
 /// `pull_requests` with the account's relation row so every chip predicate
 /// (including `rel.needs_attention = 1`) can reference `rel.*` uniformly.
 ///
-/// Authored / Assigned / Watching gate on the matching relation flag; the
-/// LEFT JOIN inside the team variant lets `rel.needs_attention` resolve to
-/// NULL (which the count predicate then ignores) when the active account has
-/// no relation row for a Team-view PR.
-fn chip_count_from_clause(view: DashboardView) -> &'static str {
-    match view {
-        DashboardView::Authored => {
+/// Single-account (`Some(id)`):
+/// Authored / Assigned / Watching gate on the matching relation flag against
+/// the active account; the LEFT JOIN inside the team variant lets
+/// `rel.needs_attention` resolve to NULL (which the count predicate then
+/// ignores) when the active account has no relation row for a Team-view PR.
+///
+/// Unified (`None`) (ADR 0016, issue #171):
+/// Mirrors the dashboard query's union-mode FROM shape so the chip-count and
+/// the chip-filtered dashboard list see the same row set. The view filter for
+/// Authored / Assigned / Watching becomes an EXISTS sub-query (matching any
+/// tracked account's relation row); Team stays gated on `r.is_team_tracked`.
+/// The relation is brought in via LEFT JOIN _without_ an account predicate so
+/// `rel.needs_attention` resolves against every relation owner, mirroring the
+/// dashboard query's `MAX(needs_attention)` semantics. The chip predicate is
+/// applied after this join, and the caller wraps the SELECT in
+/// `COUNT(DISTINCT pr.id)` so a PR matched via two relation rows still counts
+/// as one.
+///
+/// The single-account path uses `?1` for the account id; the union path takes
+/// no parameters. The caller binds the matching length-0 or length-1 vector
+/// when running the prepared statement.
+fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'static str {
+    match (view, account_id) {
+        (DashboardView::Authored, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
              WHERE rel.is_authored = 1 AND rel.account_id = ?1"
         }
-        DashboardView::Assigned => {
+        (DashboardView::Assigned, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
              WHERE rel.is_review_requested = 1 AND rel.account_id = ?1"
         }
-        DashboardView::Watching => {
+        (DashboardView::Watching, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
              WHERE rel.is_involved = 1 AND rel.account_id = ?1"
         }
-        DashboardView::Team => {
+        (DashboardView::Team, Some(_)) => {
             "FROM pull_requests pr
              JOIN repos r ON r.id = pr.repo_id
              LEFT JOIN pull_request_viewer_relations rel
@@ -212,30 +229,87 @@ fn chip_count_from_clause(view: DashboardView) -> &'static str {
                AND rel.account_id = ?1
              WHERE r.is_team_tracked = 1 AND r.account_id = ?1"
         }
+        (DashboardView::Authored, None) => {
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+             WHERE EXISTS (
+                SELECT 1 FROM pull_request_viewer_relations rel_filter
+                 WHERE rel_filter.pull_request_id = pr.id
+                   AND rel_filter.is_authored = 1
+             )"
+        }
+        (DashboardView::Assigned, None) => {
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+             WHERE EXISTS (
+                SELECT 1 FROM pull_request_viewer_relations rel_filter
+                 WHERE rel_filter.pull_request_id = pr.id
+                   AND rel_filter.is_review_requested = 1
+             )"
+        }
+        (DashboardView::Watching, None) => {
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+             WHERE EXISTS (
+                SELECT 1 FROM pull_request_viewer_relations rel_filter
+                 WHERE rel_filter.pull_request_id = pr.id
+                   AND rel_filter.is_involved = 1
+             )"
+        }
+        (DashboardView::Team, None) => {
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+             WHERE r.is_team_tracked = 1"
+        }
     }
 }
 
 /// Run one chip's count SELECT against the view-scoped FROM clause.
+///
+/// Single-account uses `COUNT(*)` because the FROM has at most one relation
+/// row per PR (the active account's), so per-row counts and per-PR counts
+/// agree byte-identical with the pre-#171 behaviour.
+///
+/// The unified path LEFT JOINs every relation row for the PR, so a PR matched
+/// by two accounts can produce two rows. `COUNT(DISTINCT pr.id)` collapses
+/// those back to one, matching the dashboard query's union-path `GROUP BY
+/// pr.id` row count.
 fn count_chip(
     conn: &Connection,
     view: DashboardView,
-    account_id: i64,
+    account_id: Option<i64>,
     chip: ChipKey,
 ) -> Result<i64, rusqlite::Error> {
-    let from_and_where = chip_count_from_clause(view);
+    let from_and_where = chip_count_from_clause(view, account_id);
     let predicate = chip_predicate(chip);
-    let sql = format!("SELECT COUNT(*) {from_and_where} AND {predicate}");
-    conn.query_row(&sql, params![account_id], |row| row.get(0))
+    let projection = if account_id.is_some() {
+        "COUNT(*)"
+    } else {
+        "COUNT(DISTINCT pr.id)"
+    };
+    let sql = format!("SELECT {projection} {from_and_where} AND {predicate}");
+    let params: Vec<i64> = account_id.map_or_else(Vec::new, |id| vec![id]);
+    conn.query_row(&sql, params_from_iter(params.iter()), |row| row.get(0))
 }
 
-/// Project the five chip counts for the active view + account. Each count is
-/// independent of the other chips per the contract's "Counts rule": the
-/// number returned for chip `X` is the count of PRs that would match if `X`
-/// were toggled alone within the view scope.
+/// Project the five chip counts for the active view + account scope. Each
+/// count is independent of the other chips per the contract's "Counts rule":
+/// the number returned for chip `X` is the count of PRs that would match if
+/// `X` were toggled alone within the view scope.
+///
+/// `account_id = Some(id)` keeps the single-account behaviour byte-identical
+/// to before #171. `account_id = None` (ADR 0016 unified default) fans the
+/// count across every tracked account and dedupes by `pr.id` so a PR matched
+/// via two accounts still contributes one to each chip it triggers.
 pub fn list_filter_chip_counts(
     conn: &Connection,
     view: DashboardView,
-    account_id: i64,
+    account_id: Option<i64>,
 ) -> Result<FilterChipCounts, rusqlite::Error> {
     Ok(FilterChipCounts {
         needs_attention: count_chip(conn, view, account_id, ChipKey::NeedsAttention)?,
@@ -570,7 +644,7 @@ mod tests {
         let conn = fresh_db();
         seed_chip_count_fixture(&conn);
 
-        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, Some(1)).unwrap();
         assert_eq!(counts.drafts, 1, "PR 600 is the only draft");
         assert_eq!(counts.ci_failing, 1, "PR 601 is the only CI-failing");
         assert_eq!(counts.stale, 1, "PR 602 is the only stale");
@@ -591,7 +665,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let counts = list_filter_chip_counts(&conn, DashboardView::Authored, 1).unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Authored, Some(1)).unwrap();
         assert_eq!(counts.needs_attention, 0);
         assert_eq!(counts.unresolved_threads, 0);
         assert_eq!(counts.ci_failing, 0);
@@ -629,7 +703,7 @@ mod tests {
         )
         .unwrap();
 
-        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, Some(1)).unwrap();
         assert_eq!(counts.drafts, 2, "PRs 700 + 702 are drafts");
         assert_eq!(counts.ci_failing, 2, "PRs 700 + 701 have failing CI");
     }
@@ -663,8 +737,8 @@ mod tests {
         )
         .unwrap();
 
-        let alice = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
-        let bob = list_filter_chip_counts(&conn, DashboardView::Watching, 2).unwrap();
+        let alice = list_filter_chip_counts(&conn, DashboardView::Watching, Some(1)).unwrap();
+        let bob = list_filter_chip_counts(&conn, DashboardView::Watching, Some(2)).unwrap();
         assert_eq!(alice.drafts, 1);
         assert_eq!(bob.drafts, 1);
     }
@@ -697,10 +771,189 @@ mod tests {
         )
         .unwrap();
 
-        let counts = list_filter_chip_counts(&conn, DashboardView::Team, 1).unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Team, Some(1)).unwrap();
         assert_eq!(counts.drafts, 1);
         assert_eq!(counts.ci_failing, 1);
         assert_eq!(counts.needs_attention, 1);
+    }
+
+    // ===== ADR 0016 union-mode chip counts (issue #171) =====
+    //
+    // Single-account chip counts (Some(id)) stay byte-identical to before
+    // ADR 0016. Unified-mode counts (None) fan out across every tracked
+    // account and dedupe by PR id so a PR matched by two accounts contributes
+    // one to each chip it triggers, mirroring the dashboard query's union-path
+    // `GROUP BY pr.id` row shape.
+
+    /// Shared fixture: PR 100 sits in alice's repo. Alice authored it; bob
+    /// is review-requested on the same PR. Both relation rows carry
+    /// `needs_attention = 1` so the `NeedsAttention` chip predicate matches
+    /// through both accounts - the dedupe test pins that the count says 1.
+    fn seed_two_account_shared_pr_attention_fixture(conn: &Connection) {
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'alice-acct', 'github.com', 'alice', 0),
+                (2, 'bob-acct',   'github.com', 'bob',   0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+                (10, 1, 'alice', 'web', 'public');
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'shared', 'open', 0, 'someone-else',
+                 0, strftime('%s','now'), 'main', 'feat-a');
+
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention) VALUES
+                (1, 100, 1, 0, 0, 0, 1),
+                (2, 100, 0, 1, 0, 0, 1);
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_filter_chip_counts_union_dedupes_needs_attention_across_two_accounts() {
+        // PR 100 carries `needs_attention = 1` on both relation rows. The
+        // unified count must say 1, not 2: the dashboard query's union path
+        // GROUPs by `pr.id` so the chip count has to agree row-for-row.
+        let conn = fresh_db();
+        seed_two_account_shared_pr_attention_fixture(&conn);
+
+        // Authored union path - admits PR 100 via alice's authored relation.
+        let counts = list_filter_chip_counts(&conn, DashboardView::Authored, None).unwrap();
+        assert_eq!(
+            counts.needs_attention, 1,
+            "PR matched via two accounts must contribute 1 to the chip count"
+        );
+
+        // Assigned union path - admits the same PR via bob's review-requested
+        // relation. Same dedupe applies.
+        let counts = list_filter_chip_counts(&conn, DashboardView::Assigned, None).unwrap();
+        assert_eq!(counts.needs_attention, 1);
+    }
+
+    #[test]
+    fn list_filter_chip_counts_single_account_path_unchanged_under_two_account_fixture() {
+        // Regression guard: with the new Option<i64> signature, Some(id) must
+        // count PRs in the active account's view exactly as before #171.
+        // Under the two-account shared fixture, Authored from alice's POV
+        // surfaces PR 100 once (her relation is `is_authored = 1`); Assigned
+        // from alice's POV surfaces zero (her relation is not
+        // review-requested). Both still carry `needs_attention = 1` on
+        // alice's relation row so the chip matches in the Authored view.
+        let conn = fresh_db();
+        seed_two_account_shared_pr_attention_fixture(&conn);
+
+        let alice_authored =
+            list_filter_chip_counts(&conn, DashboardView::Authored, Some(1)).unwrap();
+        assert_eq!(alice_authored.needs_attention, 1);
+
+        let alice_assigned =
+            list_filter_chip_counts(&conn, DashboardView::Assigned, Some(1)).unwrap();
+        assert_eq!(
+            alice_assigned.needs_attention, 0,
+            "alice has no review-requested relation on PR 100"
+        );
+
+        let bob_authored =
+            list_filter_chip_counts(&conn, DashboardView::Authored, Some(2)).unwrap();
+        assert_eq!(
+            bob_authored.needs_attention, 0,
+            "bob has no authored relation on PR 100"
+        );
+
+        let bob_assigned =
+            list_filter_chip_counts(&conn, DashboardView::Assigned, Some(2)).unwrap();
+        assert_eq!(
+            bob_assigned.needs_attention, 1,
+            "bob's review-requested relation carries needs_attention = 1"
+        );
+    }
+
+    #[test]
+    fn list_filter_chip_counts_union_zeros_when_no_accounts_in_scope() {
+        // Empty-in-scope guard: no accounts means no PRs admitted by any
+        // view, so every chip count is zero. The PR table can be non-empty
+        // (orphaned data); the WHERE clauses filter it out via the relation
+        // (Authored / Assigned / Watching) or repo-owner (Team) joins.
+        let conn = fresh_db();
+        // Account-less PR + relation rows that point to a missing account.
+        // The repos table requires an account_id FK; insert a placeholder so
+        // we can attach PRs that nothing else references.
+        conn.execute_batch(
+            r#"
+            -- Empty-in-scope: no rows in `accounts`. We still have a repo /
+            -- PR in the table from a previous sync, but no relations and no
+            -- repo owner means every view filter excludes it.
+            "#,
+        )
+        .unwrap();
+
+        for view in [
+            DashboardView::Authored,
+            DashboardView::Assigned,
+            DashboardView::Watching,
+            DashboardView::Team,
+        ] {
+            let counts = list_filter_chip_counts(&conn, view, None).unwrap();
+            assert_eq!(counts.needs_attention, 0, "{view:?} empty-scope");
+            assert_eq!(counts.unresolved_threads, 0, "{view:?} empty-scope");
+            assert_eq!(counts.ci_failing, 0, "{view:?} empty-scope");
+            assert_eq!(counts.stale, 0, "{view:?} empty-scope");
+            assert_eq!(counts.drafts, 0, "{view:?} empty-scope");
+        }
+    }
+
+    #[test]
+    fn list_filter_chip_counts_union_drafts_dedupes_pr_with_relations_under_two_accounts() {
+        // A draft PR matched by two relation rows must still count once.
+        // The Drafts predicate references `pr.draft` (not `rel.*`) so the
+        // LEFT JOIN multiplies rows; the COUNT DISTINCT collapses them.
+        let conn = fresh_db();
+        seed_two_account_shared_pr_attention_fixture(&conn);
+        conn.execute("UPDATE pull_requests SET draft = 1 WHERE id = 100", [])
+            .unwrap();
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Authored, None).unwrap();
+        assert_eq!(
+            counts.drafts, 1,
+            "draft PR matched via two accounts contributes 1"
+        );
+    }
+
+    #[test]
+    fn list_filter_chip_counts_union_team_view_surfaces_team_repo_pr_without_relations() {
+        // Team view in unified mode shows PRs from any team-tracked repo on
+        // any tracked account, even when the active user has no relation row
+        // for the PR. Mirrors the dashboard query's Team union path.
+        let conn = fresh_db();
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'alice-acct', 'github.com', 'alice', 0),
+                (2, 'bob-acct',   'github.com', 'bob',   0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+                (10, 1, 'alice', 'web', 'public', 1),
+                (20, 2, 'bob',   'cli', 'public', 1);
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'alice-team', 'open', 1, 'someone-else',
+                 0, strftime('%s','now'), 'main', 'feat-a'),
+                (200, 20, 1, 'bob-team',   'open', 1, 'someone-else',
+                 0, strftime('%s','now'), 'main', 'feat-b');
+            "#,
+        )
+        .unwrap();
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Team, None).unwrap();
+        assert_eq!(counts.drafts, 2, "both team-tracked PRs are drafts");
     }
 
     // ===== sidebar attention tests (M4-C) =====
