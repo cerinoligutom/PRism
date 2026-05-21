@@ -15,6 +15,16 @@
 //! exists for: a PR authored by account A and review-requested for account B
 //! shows up once under each. For Team it means every team-tracked repo,
 //! grouped by the repo's owning account.
+//!
+//! ## Threads rollup
+//!
+//! ADR 0016 retires the pre-aggregated `pull_requests.threads_*` columns in
+//! favour of query-time computation. The four buckets are derived inside a
+//! `thread_buckets` LEFT JOIN that GROUPs `review_threads` by PR; the
+//! involvement test scopes against the in-scope account set so a multi-account
+//! union no longer flickers with whichever account synced last. The legacy
+//! columns stay on the schema (SQLite column-drop is non-trivial) and are no
+//! longer written or read.
 
 use std::collections::HashMap;
 
@@ -37,6 +47,11 @@ use crate::triage::types::ChipKey;
 /// one is provided, an inert `ON 0` join otherwise - so the SELECT keeps a
 /// stable shape across every view. See `docs/contracts/triage-ux.md`
 /// ("Read-state derivation") and ADR 0015.
+///
+/// The `tb.*` projections come from the `thread_buckets` subquery that every
+/// view's FROM clause LEFT JOINs (ADR 0016). `COALESCE(tb.total, 0)` keeps the
+/// muted em-dash state working: a PR with no `review_threads` rows misses the
+/// join and reads as zero; `project_pr_row` then emits `threads = None`.
 const PR_PROJECTION_COLUMNS: &str = "
     pr.id,
     pr.number,
@@ -58,11 +73,11 @@ const PR_PROJECTION_COLUMNS: &str = "
     pr.ci_state,
     pr.ci_total,
     pr.ci_passing,
-    pr.threads_total,
-    pr.threads_unresolved_involved,
-    pr.threads_unresolved_uninvolved,
-    pr.threads_resolved_involved,
-    pr.threads_resolved_uninvolved,
+    COALESCE(tb.total, 0) AS threads_total,
+    COALESCE(tb.unresolved_involved, 0) AS threads_unresolved_involved,
+    COALESCE(tb.unresolved_uninvolved, 0) AS threads_unresolved_uninvolved,
+    COALESCE(tb.resolved_involved, 0) AS threads_resolved_involved,
+    COALESCE(tb.resolved_uninvolved, 0) AS threads_resolved_uninvolved,
     r.id,
     r.owner,
     r.name,
@@ -111,6 +126,63 @@ fn build_sql(from_and_where: &str, chip_clause: &str, sort: DashboardSort) -> St
     )
 }
 
+/// Bucket projection (ADR 0016) that LEFT JOINs the outer PR row. Computes
+/// the four `(resolved x involved)` counts plus `total` from `review_threads`
+/// / `review_comments`. The involvement EXISTS scopes against the in-scope
+/// account set: `a.id = ?1` when one account is active, `a.id IN (SELECT id
+/// FROM accounts)` when the view is unioned across every tracked account.
+/// The single-account variant reuses `?1` with the per-view WHERE clauses so
+/// the bound vector stays length-1.
+///
+/// The subquery GROUPs `review_threads` by `pull_request_id` and the outer
+/// `LEFT JOIN ... ON tb.pull_request_id = pr.id` ties it to the row. A PR
+/// with no threads misses the join entirely; the projection's `COALESCE(...,
+/// 0)` then defaults to zero so `project_pr_row` emits `threads = None`.
+///
+/// Host disambiguation is not applied here. The single-account path filters
+/// by `a.id = ?1` so the EXISTS only admits the active account's row even if
+/// another account shares its login on a different host. The union path
+/// admits every tracked account; a login collision among the user's own
+/// identities means at least one of them genuinely authored the comment, so
+/// the involvement signal stays correct. Contrast with
+/// `sync::worker::scan_mentions_and_recompute_attention`, which keys against
+/// `pr.author_login` (a recorded login on the PR's host) and therefore needs
+/// the viewer-host = PR-host guard to avoid cross-host false positives.
+fn thread_buckets_subquery(in_scope_predicate: &str) -> String {
+    format!(
+        "LEFT JOIN (
+            SELECT t.pull_request_id,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN t.is_resolved = 0
+                             AND EXISTS (SELECT 1 FROM review_comments c
+                                          JOIN accounts a ON a.login = c.author_login
+                                         WHERE c.review_thread_id = t.id
+                                           AND {in_scope_predicate})
+                            THEN 1 ELSE 0 END) AS unresolved_involved,
+                   SUM(CASE WHEN t.is_resolved = 0
+                             AND NOT EXISTS (SELECT 1 FROM review_comments c
+                                              JOIN accounts a ON a.login = c.author_login
+                                             WHERE c.review_thread_id = t.id
+                                               AND {in_scope_predicate})
+                            THEN 1 ELSE 0 END) AS unresolved_uninvolved,
+                   SUM(CASE WHEN t.is_resolved = 1
+                             AND EXISTS (SELECT 1 FROM review_comments c
+                                          JOIN accounts a ON a.login = c.author_login
+                                         WHERE c.review_thread_id = t.id
+                                           AND {in_scope_predicate})
+                            THEN 1 ELSE 0 END) AS resolved_involved,
+                   SUM(CASE WHEN t.is_resolved = 1
+                             AND NOT EXISTS (SELECT 1 FROM review_comments c
+                                              JOIN accounts a ON a.login = c.author_login
+                                             WHERE c.review_thread_id = t.id
+                                               AND {in_scope_predicate})
+                            THEN 1 ELSE 0 END) AS resolved_uninvolved
+              FROM review_threads t
+             GROUP BY t.pull_request_id
+         ) tb ON tb.pull_request_id = pr.id"
+    )
+}
+
 /// AND-compose the chip predicates for the active chip set. Returns an empty
 /// string when no chips are active; otherwise returns a leading-` AND `
 /// fragment that drops straight onto the end of the view's WHERE clause.
@@ -154,6 +226,19 @@ fn view_query(
     }
 }
 
+/// In-scope predicate fragment for the threads rollup subquery. Returns the
+/// EXISTS-clause body that scopes the involvement test to the active account
+/// (single-account view) or every tracked account (union view). `?1` is the
+/// account-id parameter shared with the per-view WHERE clauses so the call
+/// site only pushes the value once.
+fn thread_buckets_in_scope_predicate(account_id: Option<i64>) -> &'static str {
+    if account_id.is_some() {
+        "a.id = ?1"
+    } else {
+        "a.id IN (SELECT id FROM accounts)"
+    }
+}
+
 /// Build the SQL for the three relation-backed views (Authored / Assigned /
 /// Watching). `flag_column` must be one of `is_authored`,
 /// `is_review_requested`, `is_involved`. Never user-supplied, so safe to
@@ -164,12 +249,14 @@ fn relation_view_query(
     account_id: Option<i64>,
     active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
+    let thread_buckets = thread_buckets_subquery(thread_buckets_in_scope_predicate(account_id));
     let mut from_and_where = format!(
         "FROM pull_request_viewer_relations rel
          JOIN pull_requests pr ON pr.id = rel.pull_request_id
          JOIN repos r ON r.id = pr.repo_id
          JOIN accounts a ON a.id = rel.account_id
          LEFT JOIN users author_u ON author_u.login = pr.author_login
+         {thread_buckets}
          WHERE rel.{flag_column} = 1"
     );
     let mut params: Vec<i64> = Vec::new();
@@ -194,11 +281,13 @@ fn team_view_query(
     account_id: Option<i64>,
     active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
-    let mut from_and_where = String::from(
+    let thread_buckets = thread_buckets_subquery(thread_buckets_in_scope_predicate(account_id));
+    let mut from_and_where = format!(
         "FROM pull_requests pr
          JOIN repos r ON r.id = pr.repo_id
          JOIN accounts a ON a.id = r.account_id
-         LEFT JOIN users author_u ON author_u.login = pr.author_login",
+         LEFT JOIN users author_u ON author_u.login = pr.author_login
+         {thread_buckets}"
     );
     let mut params: Vec<i64> = Vec::new();
     if let Some(id) = account_id {
@@ -263,11 +352,13 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         passing: ci_passing.unwrap_or(0),
     });
 
-    // The migration sets the threads_* columns to `NOT NULL DEFAULT 0`, so a
-    // freshly-discovered PR before its first enrichment reads as zeros across
-    // the board. Emit `None` for that case so the frontend can render the
-    // muted em-dash state (per the contract's "Dashboard rollup" section)
-    // rather than an all-zeros summary.
+    // ADR 0016: the four bucket counts come from the `thread_buckets`
+    // LEFT JOIN. A PR with no `review_threads` rows misses the join entirely;
+    // `COALESCE(..., 0)` defaults the columns to zero so the contract's
+    // "muted em-dash state" branch trips here. A PR whose buckets are all
+    // zero but threads exist (every row dropped from involvement, impossible
+    // at v1 sizes) reads the same way - acceptable: zero threads renders
+    // nothing.
     let threads_total: i64 = row.get(20)?;
     let threads_unresolved_involved: i64 = row.get(21)?;
     let threads_unresolved_uninvolved: i64 = row.get(22)?;
@@ -774,6 +865,73 @@ mod tests {
         assert!(
             sql.contains("AND (pr.draft = 1)"),
             "chip predicate missing; SQL: {sql}"
+        );
+    }
+
+    // ===== ADR 0016: query-time threads rollup =====
+
+    #[test]
+    fn threads_rollup_uses_subquery_left_join_not_pull_requests_columns() {
+        let (sql, _) = view_query(
+            DashboardView::Authored,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
+        assert!(
+            sql.contains("LEFT JOIN ("),
+            "expected thread_buckets LEFT JOIN subquery; SQL: {sql}"
+        );
+        assert!(
+            !sql.contains("pr.threads_total"),
+            "row projection must not read the legacy column; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(tb.total, 0)"),
+            "expected COALESCE on the subquery's total; SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn threads_rollup_in_scope_uses_active_account_when_filtered() {
+        let (sql, params) = view_query(
+            DashboardView::Watching,
+            DashboardSort::Updated,
+            Some(7),
+            &[],
+        );
+        assert!(
+            sql.contains("a.id = ?1"),
+            "single-account threads in-scope must reuse ?1; SQL: {sql}"
+        );
+        assert!(
+            !sql.contains("a.id IN (SELECT id FROM accounts)"),
+            "single-account path must not union over every account; SQL: {sql}"
+        );
+        assert_eq!(params, vec![7]);
+    }
+
+    #[test]
+    fn threads_rollup_in_scope_unions_every_account_when_unfiltered() {
+        let (sql, params) = view_query(DashboardView::Watching, DashboardSort::Updated, None, &[]);
+        assert!(params.is_empty());
+        assert!(
+            sql.contains("a.id IN (SELECT id FROM accounts)"),
+            "union path must scope the involvement test across every tracked \
+             account; SQL: {sql}"
+        );
+    }
+
+    /// Team view's account-scoped path uses `?1` twice for the relation join.
+    /// The threads rollup reuses the same parameter so the bound vector stays
+    /// length-1.
+    #[test]
+    fn team_query_account_scoped_threads_rollup_reuses_account_parameter() {
+        let (sql, params) = view_query(DashboardView::Team, DashboardSort::Updated, Some(3), &[]);
+        assert_eq!(params, vec![3], "single bound i64 even though ?1 reappears");
+        assert!(
+            sql.contains("a.id = ?1"),
+            "threads rollup must scope by ?1; SQL: {sql}"
         );
     }
 }

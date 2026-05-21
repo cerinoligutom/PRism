@@ -315,20 +315,24 @@ fn stats_total_counts_every_thread_including_outdated() {
 }
 
 #[test]
-fn stats_four_buckets_read_from_rollup_columns() {
-    // Issue #102: the conversation surface mounts the dashboard ThreadsBar
-    // against these four buckets so the bar renders identically to the
-    // dashboard row's. Reading from the pre-aggregated rollup the worker
-    // writes (instead of re-bucketing per-thread on the fly) keeps the two
-    // surfaces consistent by construction.
+fn stats_four_buckets_read_from_review_threads_with_union_involvement() {
+    // ADR 0016: the conversation surface bar is computed at read time from
+    // `review_threads` + `review_comments`, with the involvement test
+    // unioned across every tracked account. The fixture's threads:
+    //   1000 (unresolved): bob + alice commented -> unresolved_involved
+    //   1001 (resolved):   bob commented         -> resolved_involved
+    //   1002 (unresolved): only carol commented  -> unresolved_uninvolved
+    //   1003 (unresolved): only carol commented  -> unresolved_uninvolved
+    // Carol isn't a tracked account, so threads with only carol's comments
+    // count as uninvolved.
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
     let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
     assert_eq!(stats.threads_unresolved_involved, 1);
     assert_eq!(stats.threads_unresolved_uninvolved, 2);
-    assert_eq!(stats.threads_resolved_involved, 0);
-    assert_eq!(stats.threads_resolved_uninvolved, 1);
+    assert_eq!(stats.threads_resolved_involved, 1);
+    assert_eq!(stats.threads_resolved_uninvolved, 0);
     let bucket_sum = stats.threads_unresolved_involved
         + stats.threads_unresolved_uninvolved
         + stats.threads_resolved_involved

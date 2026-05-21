@@ -543,6 +543,7 @@ These belong here so Wave-2 agents don't reinvent them, but they don't constrain
 - **`is_team_tracked` does not retro-fetch closed PRs.** Team-view PRs are discovered going forward only; historical data is out of scope.
 - **CI rollup `passing` count.** `CheckRun` is "passing" when `conclusion == "SUCCESS"`. `StatusContext` is "passing" when `state == "SUCCESS"`. `null` conclusion = in progress (not counted in passing, counted in total).
 - **Frontend opens PR on GitHub on row click.** No internal expanded view in M2 (the dashboard-expanded artboard is M3+). Use `openUrl(pullRequest.url)` from the already-installed `@tauri-apps/plugin-opener` — no new dependency.
+- **Threads rollup is computed at query time** (ADR 0016). The dashboard query LEFT JOINs a `thread_buckets` subquery that GROUPs `review_threads` by `pull_request_id` and computes the four `(resolved x involved)` counts. The involvement test EXISTS-joins `review_comments` against `accounts.login`, scoped to the active account in the single-account path (`a.id = ?1`) and across every tracked account in the union path (`a.id IN (SELECT id FROM accounts)`). The DTO shape is unchanged: `project_pr_row` still emits `threads = None` when the LEFT JOIN misses (no `review_threads` rows for the PR). The legacy `pull_requests.threads_*` columns stay on the schema as dead weight pending a `chore` follow-up.
 
 ## ADR cross-references
 

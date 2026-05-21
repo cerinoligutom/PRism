@@ -27,7 +27,6 @@ use prism_lib::dashboard::types::DashboardPullRequest;
 use prism_lib::dashboard::{DashboardSort, DashboardView, ReviewerEntry, ReviewerState};
 use prism_lib::db::migrate;
 use prism_lib::triage::types::ChipKey;
-use rusqlite::params;
 use rusqlite::Connection;
 
 fn fresh_db() -> Connection {
@@ -471,16 +470,15 @@ fn draft_flag_round_trips_as_bool() {
     assert!(pr_300.is_draft);
 }
 
-// ===== threads rollup projection tests (M3-C) =====
+// ===== threads rollup projection tests (ADR 0016, query-time computation) =====
 
 #[test]
-fn threads_is_none_when_pull_request_has_never_had_a_thread() {
+fn threads_is_none_when_pull_request_has_no_review_threads() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
-    // The fixture's PRs leave `threads_*` at the migration's `DEFAULT 0`, so
-    // every projected row reads `threads = None`. The frontend renders the
-    // muted em-dash state in that case.
+    // The fixture seeds no `review_threads` rows, so the LEFT JOIN misses
+    // for every PR and `COALESCE(tb.total, 0) = 0` trips `threads = None`.
     let rows = list_pull_requests(
         &conn,
         DashboardView::Authored,
@@ -492,19 +490,29 @@ fn threads_is_none_when_pull_request_has_never_had_a_thread() {
 }
 
 #[test]
-fn threads_projects_four_buckets_when_populated() {
+fn threads_buckets_match_single_account_involvement() {
+    // Single-account view (alice). Five threads on PR 100:
+    //   t1: unresolved, alice commented      -> unresolved_involved
+    //   t2: unresolved, alice commented      -> unresolved_involved
+    //   t3: unresolved, only bob commented   -> unresolved_uninvolved
+    //   t4: resolved,   alice commented      -> resolved_involved
+    //   t5: resolved,   no comments at all   -> resolved_uninvolved
     let conn = fresh_db();
     seed_fixture(&conn);
-
-    conn.execute(
-        "UPDATE pull_requests
-            SET threads_total = ?2,
-                threads_unresolved_involved = ?3,
-                threads_unresolved_uninvolved = ?4,
-                threads_resolved_involved = ?5,
-                threads_resolved_uninvolved = ?6
-          WHERE id = ?1",
-        params![100i64, 5i64, 1i64, 2i64, 1i64, 1i64],
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_1'),
+            (1002, 100, 0, 0, 'RT_2'),
+            (1003, 100, 0, 0, 'RT_3'),
+            (1004, 100, 1, 0, 'RT_4'),
+            (1005, 100, 1, 0, 'RT_5');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a', 1),
+            (2002, 1002, 'alice', 'b', 2),
+            (2003, 1003, 'bob',   'c', 3),
+            (2004, 1004, 'alice', 'd', 4);
+        "#,
     )
     .unwrap();
 
@@ -518,9 +526,189 @@ fn threads_projects_four_buckets_when_populated() {
     let pr = rows.iter().find(|r| r.id == 100).unwrap();
     let threads = pr.threads.as_ref().expect("threads populated");
     assert_eq!(threads.total, 5);
-    assert_eq!(threads.unresolved_involved, 1);
-    assert_eq!(threads.unresolved_uninvolved, 2);
+    assert_eq!(threads.unresolved_involved, 2);
+    assert_eq!(threads.unresolved_uninvolved, 1);
     assert_eq!(threads.resolved_involved, 1);
+    assert_eq!(threads.resolved_uninvolved, 1);
+}
+
+#[test]
+fn threads_buckets_union_involvement_across_every_account() {
+    // No account filter (account_id = None): the involvement test admits any
+    // tracked account's login. A thread with a comment by bob is involved
+    // when bob's account is in the in-scope set; same for alice.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_un_1'),
+            (1002, 100, 0, 0, 'RT_un_2'),
+            (1003, 100, 0, 0, 'RT_un_3');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice',   'a', 1),
+            (2002, 1002, 'bob',     'b', 2),
+            (2003, 1003, 'stranger','c', 3);
+        "#,
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Watching, DashboardSort::Updated, None).unwrap();
+    // Watching union: PR 100 surfaces under alice's relation row.
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100 && r.account_id == 1)
+        .unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 3);
+    assert_eq!(
+        threads.unresolved_involved, 2,
+        "union admits both alice and bob; only stranger isn't tracked"
+    );
+    assert_eq!(threads.unresolved_uninvolved, 1, "stranger's thread");
+}
+
+#[test]
+fn threads_buckets_uninvolved_when_no_in_scope_account_matches_comment_author() {
+    // Single-account filter on account 1 (login=alice). The comment is
+    // authored by a name no tracked account uses (e.g. 'stranger'). The
+    // EXISTS subquery in the involvement test misses for every thread, so
+    // every thread counts as uninvolved. This is the practical "empty
+    // in-scope" shape: in_scope contains alice, but no comment author
+    // matches her login - same outcome as zero accounts in scope.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_z1'),
+            (1002, 100, 0, 0, 'RT_z2');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'stranger', 'x', 1),
+            (2002, 1002, 'someone-else', 'y', 2);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 2);
+    assert_eq!(
+        threads.unresolved_involved, 0,
+        "no tracked account authored either thread's comments"
+    );
+    assert_eq!(threads.unresolved_uninvolved, 2);
+}
+
+#[test]
+fn threads_buckets_uninvolved_when_active_account_login_doesnt_match_comment_author() {
+    // Single-account filter on bob. Comment is by alice. Active account
+    // login mismatch -> involvement false; thread counts as uninvolved.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_x');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a', 1);
+        "#,
+    )
+    .unwrap();
+
+    // The fixture's (2, 100) relation flags `is_review_requested = 1` but
+    // not `is_involved`. Promote it so the Watching view returns PR 100
+    // under account 2.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET is_involved = 1
+          WHERE account_id = 2 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(2),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(
+        threads.unresolved_involved, 0,
+        "bob isn't the comment author; involvement misses"
+    );
+    assert_eq!(threads.unresolved_uninvolved, 1);
+}
+
+#[test]
+fn threads_buckets_all_resolved_zeros_the_unresolved_columns() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 1, 0, 'RT_r1'),
+            (1002, 100, 1, 0, 'RT_r2');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a', 1);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 2);
+    assert_eq!(threads.unresolved_involved, 0);
+    assert_eq!(threads.unresolved_uninvolved, 0);
+    assert_eq!(threads.resolved_involved, 1);
+    assert_eq!(threads.resolved_uninvolved, 1);
+}
+
+#[test]
+fn threads_buckets_outdated_threads_still_count_in_their_bucket() {
+    // ADR 0012 preserved: outdated threads sort by (is_resolved, involved)
+    // like any other thread; they're no longer carved out.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 1, 'RT_o1'),
+            (1002, 100, 1, 1, 'RT_o2');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a', 1);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 2, "outdated still in the denominator");
+    assert_eq!(threads.unresolved_involved, 1);
     assert_eq!(threads.resolved_uninvolved, 1);
 }
 
@@ -844,20 +1032,21 @@ fn seed_chip_fixture(conn: &Connection) {
         -- PR 300: draft only.
         -- PR 301: ci_state = FAILURE.
         -- PR 302: stale (old updated_at).
-        -- PR 303: unresolved threads.
+        -- PR 303: unresolved threads (ADR 0016: seeded via review_threads).
         -- PR 304: needs_attention precomputed on the relation row.
         -- PR 305: nothing - control row, matches no chip.
         INSERT INTO pull_requests
             (id, repo_id, number, title, state, draft, author_login,
-             created_at, updated_at, base_ref, head_ref,
-             threads_unresolved_involved, threads_unresolved_uninvolved,
-             ci_state) VALUES
-            (300, 10, 1, 'draft',   'open', 1, 'bob', 0, {fresh_updated_at}, 'main', 'a', 0, 0, NULL),
-            (301, 10, 2, 'ci',      'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'b', 0, 0, 'FAILURE'),
-            (302, 10, 3, 'stale',   'open', 0, 'bob', 0, {stale_updated_at}, 'main', 'c', 0, 0, NULL),
-            (303, 10, 4, 'threads', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'd', 2, 1, NULL),
-            (304, 10, 5, 'attn',    'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'e', 0, 0, NULL),
-            (305, 10, 6, 'control', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'f', 0, 0, NULL);
+             created_at, updated_at, base_ref, head_ref, ci_state) VALUES
+            (300, 10, 1, 'draft',   'open', 1, 'bob', 0, {fresh_updated_at}, 'main', 'a', NULL),
+            (301, 10, 2, 'ci',      'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'b', 'FAILURE'),
+            (302, 10, 3, 'stale',   'open', 0, 'bob', 0, {stale_updated_at}, 'main', 'c', NULL),
+            (303, 10, 4, 'threads', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'd', NULL),
+            (304, 10, 5, 'attn',    'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'e', NULL),
+            (305, 10, 6, 'control', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'f', NULL);
+
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (4000, 303, 0, 0, 'RT_chip_303');
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
