@@ -428,6 +428,7 @@ function openOnGitHub(event: MouseEvent): void {
 }
 .pr-row__lines-files {
   color: var(--text-faint);
+  text-wrap: nowrap;
 }
 
 .pr-row__threads {

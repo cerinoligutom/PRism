@@ -103,21 +103,27 @@ function statusLabel(state: ReviewerState): string {
   <span v-else class="reviewer-stack">
     <PRismTooltip :as-child="true">
       <span class="reviewer-stack__avatars">
-        <PRismAvatar
+        <span
           v-for="(reviewer, index) in visible"
           :key="reviewer.login"
-          :login="reviewer.login"
-          :avatar-url="reviewer.avatar_url"
-          size="sm"
-          :title="null"
-          :class="[
-            'reviewer-stack__avatar',
-            stateClass(reviewer.state),
-            reviewer.is_you && 'reviewer-stack__avatar--you',
-          ]"
+          class="reviewer-stack__avatar-slot"
           :style="{ zIndex: visible.length - index }"
-        />
-        <span v-if="overflow > 0" class="reviewer-stack__overflow">+{{ overflow }}</span>
+        >
+          <PRismAvatar
+            :login="reviewer.login"
+            :avatar-url="reviewer.avatar_url"
+            size="sm"
+            :title="null"
+            :class="[
+              'reviewer-stack__avatar',
+              stateClass(reviewer.state),
+              reviewer.is_you && 'reviewer-stack__avatar--you',
+            ]"
+          />
+        </span>
+        <span v-if="overflow > 0" class="reviewer-stack__overflow-slot">
+          <span class="reviewer-stack__overflow">+{{ overflow }}</span>
+        </span>
       </span>
       <template #content>
         <ul class="reviewer-stack__tooltip-list" style="max-width: 360px">
@@ -193,13 +199,38 @@ function statusLabel(state: ReviewerState): string {
 
 <style scoped>
 .reviewer-stack {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
+  width: 100%;
+  column-gap: 6px;
 }
 
 .reviewer-stack__avatars {
   display: inline-flex;
   align-items: center;
+}
+
+/* Each avatar (and the overflow pill) sits inside a positioned slot so the
+ * per-item z-index actually applies. PRismAvatar has a multi-root template,
+ * so inline `:style` passed to it doesn't fall through to the rendered DOM -
+ * the slot wrapper is what gives us reliable stack-order control. */
+.reviewer-stack__avatar-slot,
+.reviewer-stack__overflow-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Jira-style stacked deck: each slot after the first crowds into the previous
+ * one. The 1.5px border in --bg-1 on the avatar/pill paints the ring-separator. */
+.reviewer-stack__avatar-slot:not(:first-child),
+.reviewer-stack__overflow-slot {
+  margin-left: -6px;
+}
+
+.reviewer-stack__overflow-slot {
+  z-index: 0;
 }
 
 .reviewer-stack--empty {
@@ -212,12 +243,6 @@ function statusLabel(state: ReviewerState): string {
   position: relative;
   border-width: 1.5px;
   border-color: var(--bg-1);
-}
-
-/* Jira-style stacked deck: each avatar (and the overflow pill) crowds into
- * the previous one. The 1.5px border in --bg-1 paints the ring-separator. */
-.reviewer-stack__avatar:not(:first-child) {
-  margin-left: -6px;
 }
 
 /* Reviewer state dot anchored to the bottom-right of each avatar. */
@@ -244,17 +269,15 @@ function statusLabel(state: ReviewerState): string {
 
 /* Locked to the `sm` avatar size (16px) so the pill reads as a peer in the
  * stack: perfect circle at single-digit counts, horizontal capsule at two or
- * three digits, never taller than the avatars it sits beside. */
+ * three digits, never taller than the avatars it sits beside. Stack-order
+ * and overlap are handled by `.reviewer-stack__overflow-slot`. */
 .reviewer-stack__overflow {
-  position: relative;
-  z-index: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   height: 16px;
   min-width: 16px;
-  margin-left: -6px;
   padding: 0 5px;
   border-radius: var(--r-pill);
   background: var(--bg-3);
@@ -266,17 +289,23 @@ function statusLabel(state: ReviewerState): string {
 }
 
 .reviewer-stack__summary {
-  margin-left: 6px;
   font-family: var(--font-mono);
   font-size: var(--fs-11);
   color: var(--text-mute);
   font-variant-numeric: tabular-nums;
-  cursor: default;
 }
 
 .reviewer-stack__summary-ok { color: var(--success); }
 .reviewer-stack__summary-changes { color: var(--danger); }
 .reviewer-stack__summary-total { color: var(--text-faint); }
+
+.reviewer-stack__summary-changes,
+.reviewer-stack__summary-ok,
+.reviewer-stack__summary-total {
+  display: inline-block;
+  min-width: 1.4em;
+  text-align: center;
+}
 </style>
 
 <!--
