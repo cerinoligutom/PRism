@@ -101,9 +101,24 @@ async fn hydrator_round_trip_persists_comments_and_issue_comments() {
     // Two comments persisted under thread 1000.
     assert_eq!(hydrated.thread_comments.len(), 2);
     assert!(hydrated.thread_comments.iter().all(|c| c.thread_id == 1000));
+    // Issue #115: every review comment in the fixture carries a `url`; the
+    // hydrator must persist it through to the DTO.
+    assert_eq!(
+        hydrated.thread_comments[0].url.as_deref(),
+        Some("https://github.com/owner/repo/pull/42#discussion_r4001"),
+    );
+    assert_eq!(
+        hydrated.thread_comments[1].url.as_deref(),
+        Some("https://github.com/owner/repo/pull/42#discussion_r4002"),
+    );
     // One issue comment persisted.
     assert_eq!(hydrated.issue_comments.len(), 1);
     assert_eq!(hydrated.issue_comments[0].author_login, "carol");
+    assert_eq!(
+        hydrated.issue_comments[0].url.as_deref(),
+        Some("https://github.com/owner/repo/pull/42#issuecomment-8001"),
+        "issue comment url persisted (issue #115)",
+    );
     // Review still surfaces in the hydrated response.
     assert_eq!(hydrated.reviews.len(), 1);
     assert_eq!(hydrated.reviews[0].body.as_deref(), Some("lgtm"));

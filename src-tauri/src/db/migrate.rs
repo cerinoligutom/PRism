@@ -17,6 +17,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0005_threads_breakdown.sql"),
     include_str!("../../migrations/0006_users_table.sql"),
     include_str!("../../migrations/0007_review_thread_url.sql"),
+    include_str!("../../migrations/0008_comment_urls.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -266,6 +267,26 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == col),
                 "missing pull_requests column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_url_columns_exist_after_migration_0008() {
+        // Issue #115: the thread permalink is derived from the head comment's
+        // url, and per-comment "Open in GitHub" actions read these columns.
+        let conn = fresh();
+        for (table, column) in [("review_comments", "url"), ("issue_comments", "url")] {
+            let sql = format!("SELECT name FROM pragma_table_info('{table}')");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(
+                names.iter().any(|n| n == column),
+                "missing {table}.{column} column"
             );
         }
     }

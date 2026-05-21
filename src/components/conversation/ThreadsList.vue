@@ -190,6 +190,23 @@ async function openThreadOnGitHub(url: string | null): Promise<void> {
     console.warn("failed to open thread url", err);
   }
 }
+
+async function openCommentOnGitHub(
+  event: Event,
+  url: string | null,
+): Promise<void> {
+  // The comment row is inside the expand toggle's container; without
+  // stopPropagation a click on this button would also fire the row-level
+  // toggle handler and collapse the thread.
+  event.stopPropagation();
+  if (url === null || url.length === 0) return;
+  try {
+    await openUrl(url);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("failed to open comment url", err);
+  }
+}
 </script>
 
 <template>
@@ -287,6 +304,32 @@ async function openThreadOnGitHub(url: string | null): Promise<void> {
                 <div class="thread-comment__meta">
                   <span class="thread-comment__author">{{ comment.author_login }}</span>
                   <span class="thread-comment__ts">{{ formatRelativeAgo(comment.created_at) }}</span>
+                  <PRismTooltip
+                    v-if="comment.url !== null && comment.url.length > 0"
+                    text="Open comment on GitHub"
+                  >
+                    <button
+                      type="button"
+                      class="thread-comment__icon-btn"
+                      aria-label="Open comment on GitHub"
+                      @click="openCommentOnGitHub($event, comment.url)"
+                    >
+                      <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M5 3H3v6h6V7" />
+                        <path d="M7 2h3v3" />
+                        <path d="M6 6l4-4" />
+                      </svg>
+                    </button>
+                  </PRismTooltip>
                 </div>
                 <p class="thread-comment__text">{{ comment.body }}</p>
               </div>
@@ -582,6 +625,29 @@ async function openThreadOnGitHub(url: string | null): Promise<void> {
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-10);
+}
+
+.thread-comment__icon-btn {
+  background: transparent;
+  border: 0;
+  padding: 2px;
+  border-radius: var(--r-1);
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+}
+
+.thread-comment__icon-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-strong);
+}
+
+.thread-comment__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .thread-comment__text {

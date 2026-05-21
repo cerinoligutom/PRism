@@ -12,6 +12,7 @@
                 "nodes": [
                   {
                     "id": "PRRC_h1",
+                    "url": "https://github.com/owner/repo/pull/42#discussion_r4001",
                     "databaseId": 4001,
                     "author": { "login": "bob" },
                     "body": "**should this** be wrapped?",
@@ -23,6 +24,7 @@
                   },
                   {
                     "id": "PRRC_r1",
+                    "url": "https://github.com/owner/repo/pull/42#discussion_r4002",
                     "databaseId": 4002,
                     "author": { "login": "alice" },
                     "body": "good catch",
@@ -42,6 +44,7 @@
           "nodes": [
             {
               "id": "IC_1",
+              "url": "https://github.com/owner/repo/pull/42#issuecomment-8001",
               "databaseId": 8001,
               "author": { "login": "carol" },
               "body": "Nice work overall.",

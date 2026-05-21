@@ -317,11 +317,14 @@ fn upsert_review_comment(
     // The unique constraint on `node_id` is a partial index
     // (`WHERE node_id IS NOT NULL`) so the conflict target needs the matching
     // predicate. The hydrator always writes a non-null `node_id`.
+    // `COALESCE(excluded.url, ...)` keeps a previously-persisted url if a
+    // later payload happens to omit it (defensive parity with the worker's
+    // thread-level url preservation).
     tx.execute(
         "INSERT INTO review_comments
             (review_thread_id, author_login, body, created_at, node_id,
-             database_id, line, side)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             database_id, line, side, url)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
             review_thread_id = excluded.review_thread_id,
             author_login     = excluded.author_login,
@@ -329,7 +332,8 @@ fn upsert_review_comment(
             created_at       = excluded.created_at,
             database_id      = excluded.database_id,
             line             = excluded.line,
-            side             = excluded.side",
+            side             = excluded.side,
+            url              = COALESCE(excluded.url, review_comments.url)",
         params![
             thread_id,
             author,
@@ -339,6 +343,7 @@ fn upsert_review_comment(
             comment.database_id,
             comment.line,
             comment.side,
+            comment.url,
         ],
     )?;
     Ok(())
@@ -360,14 +365,15 @@ fn upsert_issue_comment(
     }
     tx.execute(
         "INSERT INTO issue_comments
-            (pull_request_id, author_login, body, created_at, node_id, database_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (pull_request_id, author_login, body, created_at, node_id, database_id, url)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
             pull_request_id = excluded.pull_request_id,
             author_login    = excluded.author_login,
             body            = excluded.body,
             created_at      = excluded.created_at,
-            database_id     = excluded.database_id",
+            database_id     = excluded.database_id,
+            url             = COALESCE(excluded.url, issue_comments.url)",
         params![
             pull_request_id,
             author,
@@ -375,6 +381,7 @@ fn upsert_issue_comment(
             created_at,
             comment.id,
             comment.database_id,
+            comment.url,
         ],
     )?;
     Ok(())
@@ -521,6 +528,7 @@ mod tests {
     fn comment(id: &str, db: i64, body: &str, login: &str) -> ReviewCommentNode {
         ReviewCommentNode {
             id: id.into(),
+            url: None,
             database_id: Some(db),
             author: Some(Actor::new(login)),
             body: body.into(),

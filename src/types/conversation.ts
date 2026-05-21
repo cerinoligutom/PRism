@@ -21,6 +21,10 @@ export interface ThreadHeadComment {
   readonly body_text: string;
   /** Unix seconds. */
   readonly created_at: number;
+  /** GitHub permalink for the head comment. Equals `PullRequestThread.url`
+   * (the thread permalink is derived from the head comment per issue
+   * #115). `null` for rows written before that column existed. */
+  readonly url: string | null;
 }
 
 export interface PullRequestThread {
@@ -108,6 +112,10 @@ export interface ThreadComment {
   readonly line: number | null;
   /** `LEFT | RIGHT`. */
   readonly side: string | null;
+  /** GitHub permalink for the comment. Powers the per-comment "Open in
+   * GitHub" icon button on the expanded thread view. `null` for rows
+   * written before issue #115. */
+  readonly url: string | null;
 }
 
 export interface IssueComment {
@@ -118,6 +126,9 @@ export interface IssueComment {
   readonly body: string;
   /** Unix seconds. */
   readonly created_at: number;
+  /** GitHub permalink for the issue comment. Captured for parity; not yet
+   * rendered on the conversation surface (M3 contract). See issue #115. */
+  readonly url: string | null;
 }
 
 export interface HydratedConversation {

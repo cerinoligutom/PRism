@@ -75,11 +75,11 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           line
           startLine
           originalLine
-          url
           comments(first: 1) {
             totalCount
             nodes {
               id
+              url
               author { login avatarUrl }
               bodyText
               createdAt
@@ -165,6 +165,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
             pageInfo { hasNextPage endCursor }
             nodes {
               id
+              url
               databaseId
               author { login avatarUrl }
               body
@@ -181,6 +182,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
         pageInfo { hasNextPage endCursor }
         nodes {
           id
+          url
           databaseId
           author { login }
           body
@@ -378,11 +380,6 @@ pub struct ReviewThread {
     pub start_line: Option<i64>,
     #[serde(default)]
     pub original_line: Option<i64>,
-    /// GitHub permalink for the thread. Persisted to `review_threads.url` so the
-    /// conversation surface can offer an "Open in GitHub" per-thread action
-    /// without reconstructing the URL client-side. See issue #102.
-    #[serde(default)]
-    pub url: Option<String>,
     pub comments: CommentConnection,
 }
 
@@ -397,6 +394,11 @@ pub struct CommentConnection {
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
     pub id: String,
+    /// GitHub permalink for the comment. Surfaced so the sync worker can derive
+    /// the thread's permalink from the head comment (review threads themselves
+    /// have no `url` field on GitHub's GraphQL schema). See issue #115.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub author: Option<Actor>,
     pub body_text: String,
@@ -504,6 +506,11 @@ pub struct ReviewCommentConnection {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCommentNode {
     pub id: String,
+    /// GitHub permalink for the comment. Persisted to `review_comments.url`
+    /// so the conversation surface can offer a per-comment "Open in GitHub"
+    /// action. See issue #115.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub database_id: Option<i64>,
     #[serde(default)]
@@ -532,6 +539,12 @@ pub struct IssueCommentNodeConnection {
 #[serde(rename_all = "camelCase")]
 pub struct IssueCommentNode {
     pub id: String,
+    /// GitHub permalink for the issue comment. Persisted to `issue_comments.url`
+    /// for parity with review comments; the conversation surface doesn't render
+    /// issue comments yet (M3 contract) but the data is captured for a future
+    /// PR. See issue #115.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub database_id: Option<i64>,
     #[serde(default)]
@@ -741,7 +754,7 @@ mod tests {
 
     #[test]
     fn pr_detail_query_includes_conversation_depth_fields() {
-        // Thread line range + comments.totalCount + head comment shape + url.
+        // Thread line range + comments.totalCount + head comment shape.
         for field in [
             "line",
             "startLine",
@@ -750,13 +763,50 @@ mod tests {
             "reviews(first: 30)",
             "submittedAt",
             "issueComments: comments(first: 50)",
-            "url",
         ] {
             assert!(
                 PR_DETAIL_QUERY.contains(field),
                 "pr detail query missing conversation-depth field: {field}"
             );
         }
+    }
+
+    #[test]
+    fn pr_detail_query_omits_url_on_review_thread() {
+        // Regression: `PullRequestReviewThread` has no `url` field on the
+        // GitHub GraphQL schema (issue #115). The thread's permalink is
+        // derived from the head comment's `url` at write time.
+        let after_thread_open = PR_DETAIL_QUERY
+            .split("reviewThreads(first: 100)")
+            .nth(1)
+            .expect("query opens reviewThreads block");
+        let thread_block = after_thread_open
+            .split("reviews(first: 30)")
+            .next()
+            .expect("query closes the thread block before reviews");
+        // The block contains `comments(first: 1)` whose selection includes
+        // `url`. Strip that out before asserting no thread-level `url`.
+        let head_comment_open = thread_block
+            .find("comments(first: 1)")
+            .expect("thread carries a comments(first:1) selection");
+        let pre_head = &thread_block[..head_comment_open];
+        assert!(
+            !pre_head.contains("url"),
+            "PR_DETAIL_QUERY still selects `url` on PullRequestReviewThread"
+        );
+    }
+
+    #[test]
+    fn pr_detail_query_selects_url_on_head_comment() {
+        // The thread permalink now comes from the head comment.
+        let head_block = PR_DETAIL_QUERY
+            .split("comments(first: 1)")
+            .nth(1)
+            .expect("query carries comments(first: 1)");
+        assert!(
+            head_block.contains("url"),
+            "head comment selection must include `url`"
+        );
     }
 
     #[test]
@@ -769,11 +819,11 @@ mod tests {
             "line": 42,
             "startLine": 40,
             "originalLine": 41,
-            "url": "https://github.com/owner/repo/pull/1#discussion_r1",
             "comments": {
                 "totalCount": 3,
                 "nodes": [{
                     "id": "PRRC_1",
+                    "url": "https://github.com/owner/repo/pull/1#discussion_r1",
                     "author": { "login": "alice" },
                     "bodyText": "Looks good",
                     "createdAt": "2026-05-19T10:00:00Z"
@@ -784,31 +834,27 @@ mod tests {
         assert_eq!(thread.line, Some(42));
         assert_eq!(thread.start_line, Some(40));
         assert_eq!(thread.original_line, Some(41));
-        assert_eq!(
-            thread.url.as_deref(),
-            Some("https://github.com/owner/repo/pull/1#discussion_r1")
-        );
         assert_eq!(thread.comments.total_count, 3);
         assert_eq!(thread.comments.nodes.len(), 1);
+        assert_eq!(
+            thread.comments.nodes[0].url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#discussion_r1")
+        );
     }
 
     #[test]
-    fn review_thread_deserialises_with_missing_url_as_none() {
-        // Older fixtures (and tests that wrote thread JSON before #102) won't
-        // carry the new `url` field. Confirm it defaults to None rather than
-        // failing the whole detail parse.
+    fn head_comment_deserialises_with_missing_url_as_none() {
+        // Older fixtures (and tests written before issue #115) won't carry
+        // the new `url` on the head comment. Confirm it defaults to None
+        // rather than failing the whole detail parse.
         let json = serde_json::json!({
-            "id": "PRRT_2",
-            "isResolved": false,
-            "isOutdated": false,
-            "path": "src/lib.rs",
-            "line": 10,
-            "startLine": null,
-            "originalLine": null,
-            "comments": { "totalCount": 0, "nodes": [] }
+            "id": "PRRC_legacy",
+            "author": { "login": "alice" },
+            "bodyText": "head body",
+            "createdAt": "2026-05-19T10:00:00Z"
         });
-        let thread: ReviewThread = serde_json::from_value(json).unwrap();
-        assert!(thread.url.is_none());
+        let comment: Comment = serde_json::from_value(json).unwrap();
+        assert!(comment.url.is_none());
     }
 
     #[test]
@@ -1017,6 +1063,9 @@ mod tests {
             "databaseId",
             "bodyText",
             "originalLine",
+            // Comment-level permalinks for both review and issue comments
+            // (issue #115).
+            "url",
         ] {
             assert!(
                 PR_COMMENTS_QUERY.contains(field),
@@ -1038,6 +1087,7 @@ mod tests {
                                 "pageInfo": { "hasNextPage": false, "endCursor": null },
                                 "nodes": [{
                                     "id": "PRRC_1",
+                                    "url": "https://github.com/owner/repo/pull/1#discussion_r4242",
                                     "databaseId": 4242,
                                     "author": { "login": "alice" },
                                     "body": "**hello**",
@@ -1054,6 +1104,7 @@ mod tests {
                         "pageInfo": { "hasNextPage": true, "endCursor": "c1" },
                         "nodes": [{
                             "id": "IC_1",
+                            "url": "https://github.com/owner/repo/pull/1#issuecomment-9001",
                             "databaseId": 9001,
                             "author": { "login": "bob" },
                             "body": "looks good",
@@ -1071,11 +1122,19 @@ mod tests {
         let c = &pr.review_threads.nodes[0].comments.nodes[0];
         assert_eq!(c.database_id, Some(4242));
         assert_eq!(c.path.as_deref(), Some("src/lib.rs"));
+        assert_eq!(
+            c.url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#discussion_r4242")
+        );
         // `side` lives on PullRequestReviewThread.diffSide, not on the
         // comment; this query no longer requests it, so the field is None
         // and the DB column stays NULL until a future query pulls diffSide.
         assert_eq!(c.side, None);
         assert_eq!(pr.issue_comments.nodes.len(), 1);
+        assert_eq!(
+            pr.issue_comments.nodes[0].url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1#issuecomment-9001")
+        );
         assert!(pr.issue_comments.page_info.has_next_page);
         assert_eq!(
             pr.issue_comments.page_info.end_cursor.as_deref(),

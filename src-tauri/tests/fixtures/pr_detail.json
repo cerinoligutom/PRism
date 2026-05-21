@@ -60,6 +60,7 @@
                 "nodes": [
                   {
                     "id": "PRRC_1",
+                    "url": "https://github.com/owner/repo/pull/42#discussion_r5001",
                     "author": { "login": "bob" },
                     "bodyText": "Nit: rename this.",
                     "createdAt": "2026-05-18T12:00:00Z"
@@ -80,6 +81,7 @@
                 "nodes": [
                   {
                     "id": "PRRC_2",
+                    "url": "https://github.com/owner/repo/pull/42#discussion_r5002",
                     "author": { "login": "carol" },
                     "bodyText": "Should this handle None?",
                     "createdAt": "2026-05-18T13:00:00Z"

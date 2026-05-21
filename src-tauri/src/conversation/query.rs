@@ -97,12 +97,17 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let is_involved: i64 = row.get(17)?;
     let url: Option<String> = row.get(18)?;
 
+    // The thread's `url` and the head comment's `url` are the same value
+    // (the worker derives `review_threads.url` from the head comment per
+    // issue #115). Surfacing it on both lets the frontend reach for whichever
+    // shape is convenient without re-deriving.
     let head_comment = match (head_author, head_body, head_created_at) {
         (Some(author_login), Some(body_text), Some(created_at)) => Some(ThreadHeadComment {
             author_login,
             avatar_url: head_avatar_url,
             body_text,
             created_at,
+            url: url.clone(),
         }),
         _ => None,
     };
@@ -341,7 +346,7 @@ pub fn list_thread_comments(
 ) -> Result<Vec<ThreadComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.review_thread_id, c.author_login, u.avatar_url,
-                c.body, c.created_at, c.line, c.side
+                c.body, c.created_at, c.line, c.side, c.url
            FROM review_comments c
            JOIN review_threads t ON t.id = c.review_thread_id
            LEFT JOIN users u ON u.login = c.author_login
@@ -358,6 +363,7 @@ pub fn list_thread_comments(
             created_at: row.get(5)?,
             line: row.get(6)?,
             side: row.get(7)?,
+            url: row.get(8)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -368,7 +374,7 @@ pub fn list_issue_comments(
     pull_request_id: i64,
 ) -> Result<Vec<IssueComment>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT ic.id, ic.author_login, u.avatar_url, ic.body, ic.created_at
+        "SELECT ic.id, ic.author_login, u.avatar_url, ic.body, ic.created_at, ic.url
            FROM issue_comments ic
            LEFT JOIN users u ON u.login = ic.author_login
           WHERE ic.pull_request_id = ?1
@@ -381,6 +387,7 @@ pub fn list_issue_comments(
             avatar_url: row.get(2)?,
             body: row.get(3)?,
             created_at: row.get(4)?,
+            url: row.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
