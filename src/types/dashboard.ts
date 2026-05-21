@@ -95,6 +95,19 @@ export interface RepoRef {
   readonly name: string;
 }
 
+/**
+ * Render-ready projection of a tracked account for the dashboard row marker.
+ * The view derives this from the accounts store and feeds a shared lookup
+ * to every row so `pullRequest.account_ids` resolves without per-row store
+ * coupling. See ADR 0016 ("Dashboard row shape - option 1").
+ */
+export interface AccountMarker {
+  readonly id: number;
+  readonly label: string;
+  readonly login: string;
+  readonly avatar_url: string | null;
+}
+
 export interface DashboardPullRequest {
   readonly id: number;
   readonly number: number;

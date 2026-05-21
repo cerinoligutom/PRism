@@ -8,9 +8,14 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
-import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
+import type {
+  AccountMarker,
+  DashboardPullRequest,
+  RowDensity,
+} from "@/types/dashboard";
 import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ReviewerStack from "./ReviewerStack.vue";
@@ -26,12 +31,28 @@ interface Props {
   unread?: boolean;
   /** M4 slot — accent tint highlighting rows needing the viewer. */
   needsAttention?: boolean;
+  /**
+   * Lookup from account id to a render-ready marker. Shared across rows so
+   * the dashboard doesn't allocate a per-row computed; the row picks its
+   * own subset via `pullRequest.account_ids`. See ADR 0016 ("Dashboard row
+   * shape - option 1") for the merged-row contract.
+   */
+  accountsById?: ReadonlyMap<number, AccountMarker>;
+  /**
+   * True when the dashboard is scoped to a single account. In that mode the
+   * marker is hidden entirely - every row's `account_ids` collapses to one,
+   * which the picker already names. Unified mode renders the marker (single
+   * muted dot for a single relation, stack for multi).
+   */
+  singleAccountScope?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   density: "comfortable",
   unread: false,
   needsAttention: false,
+  accountsById: () => new Map<number, AccountMarker>(),
+  singleAccountScope: false,
 });
 
 const emit = defineEmits<{
@@ -118,6 +139,44 @@ const sinceLabel = computed<string>(() => sinceLabelFor(props.pullRequest));
 const isStale = computed<boolean>(
   () => secondsSince(props.pullRequest.updated_at) > STALE_THRESHOLD_SECONDS,
 );
+
+/**
+ * Accounts with a relation to this PR, resolved to render-ready markers.
+ * Ids that don't resolve in the lookup are skipped - typically a transient
+ * race when an account was just removed and the dashboard hasn't reloaded.
+ */
+const accountMarkers = computed<readonly AccountMarker[]>(() => {
+  const ids = props.pullRequest.account_ids;
+  const lookup = props.accountsById;
+  const out: AccountMarker[] = [];
+  for (const id of ids) {
+    const entry = lookup.get(id);
+    if (entry !== undefined) out.push(entry);
+  }
+  return out;
+});
+
+const accountStackUsers = computed<readonly { login: string; avatar_url: string | null }[]>(
+  () => accountMarkers.value.map((a) => ({ login: a.login, avatar_url: a.avatar_url })),
+);
+
+/**
+ * Hide the marker when the dashboard is scoped to one account - the picker
+ * already names the scope, so every row's marker would be redundant. Unified
+ * mode always renders, even single-relation rows (one muted dot so the user
+ * can read "this only matches via Work" without scanning).
+ */
+const showAccountMarker = computed<boolean>(
+  () => !props.singleAccountScope && accountMarkers.value.length > 0,
+);
+
+const isSingleRelation = computed<boolean>(() => accountMarkers.value.length === 1);
+
+const accountTooltipText = computed<string>(() => {
+  if (accountMarkers.value.length === 0) return "";
+  const labels = accountMarkers.value.map((a) => a.label || a.login);
+  return `Visible from ${labels.join(", ")}`;
+});
 
 function formatNumber(value: number): string {
   return value.toLocaleString("en-AU");
@@ -275,6 +334,26 @@ function onMarkUnread(): void {
           :review-decision="pullRequest.review_decision"
           :is-draft="pullRequest.is_draft"
         />
+        <PRismTooltip
+          v-if="showAccountMarker"
+          :text="accountTooltipText"
+          :as-child="true"
+        >
+          <span
+            :class="[
+              'pr-row__accounts',
+              isSingleRelation && 'pr-row__accounts--single',
+            ]"
+            :aria-label="accountTooltipText"
+          >
+            <PRismAvatarStack
+              :users="accountStackUsers"
+              :max="2"
+              size="sm"
+              layout="overlap"
+            />
+          </span>
+        </PRismTooltip>
       </div>
       <div class="pr-row__meta-row">
         <PRismTooltip
@@ -544,6 +623,26 @@ function onMarkUnread(): void {
   white-space: nowrap;
   min-width: 0;
   flex: 0 1 auto;
+}
+
+/* Account marker. Sits at the right of the title row when the dashboard is
+ * in unified scope, hinting at which account(s) saw the PR. Pushed to the
+ * trailing edge via `auto` margin so it stays clear of the title ellipsis.
+ * Single-relation rows render at reduced opacity so the marker reads as a
+ * scope hint without competing with the title or the reviewer stack. */
+.pr-row__accounts {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.pr-row__accounts--single {
+  opacity: 0.55;
+}
+
+.pr-row:hover .pr-row__accounts--single {
+  opacity: 0.8;
 }
 
 /* Unread rows lean on the title weight as the primary signal; the left-edge
