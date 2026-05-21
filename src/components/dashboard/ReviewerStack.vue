@@ -22,18 +22,16 @@ const visible = computed<readonly ReviewerEntry[]>(() =>
   props.reviewers.slice(0, props.max),
 );
 
-const hidden = computed<readonly ReviewerEntry[]>(() =>
-  props.reviewers.slice(props.max),
+const overflow = computed<number>(
+  () => Math.max(0, props.reviewers.length - props.max),
 );
 
-const overflow = computed<number>(() => hidden.value.length);
-
-const hiddenReviewers = computed<readonly ReviewerEntry[]>(() =>
-  hidden.value.slice(0, OVERFLOW_TOOLTIP_CAP),
+const tooltipReviewers = computed<readonly ReviewerEntry[]>(() =>
+  props.reviewers.slice(0, OVERFLOW_TOOLTIP_CAP),
 );
 
 const moreCount = computed<number>(
-  () => overflow.value - hiddenReviewers.value.length,
+  () => props.reviewers.length - tooltipReviewers.value.length,
 );
 
 const approvedCount = computed<number>(
@@ -42,6 +40,13 @@ const approvedCount = computed<number>(
 
 const changesCount = computed<number>(
   () => props.reviewers.filter((r) => r.state === "changes-requested").length,
+);
+
+const totalLabel = computed<string>(
+  () =>
+    `${props.reviewers.length} total ${
+      props.reviewers.length === 1 ? "reviewer" : "reviewers"
+    }`,
 );
 
 function stateClass(state: ReviewerState): string {
@@ -55,20 +60,6 @@ function stateClass(state: ReviewerState): string {
     case "pending":
     default:
       return "reviewer-stack__avatar--pending";
-  }
-}
-
-function titleFor(reviewer: ReviewerEntry): string {
-  switch (reviewer.state) {
-    case "approved":
-      return `${reviewer.login} approved`;
-    case "changes-requested":
-      return `${reviewer.login} requested changes`;
-    case "commented":
-      return `${reviewer.login} commented`;
-    case "pending":
-    default:
-      return `${reviewer.login} pending`;
   }
 }
 
@@ -92,30 +83,27 @@ function statusLabel(state: ReviewerState): string {
     no reviewers
   </span>
   <span v-else class="reviewer-stack">
-    <PRismTooltip
-      v-for="reviewer in visible"
-      :key="reviewer.login"
-      :text="titleFor(reviewer)"
-      :as-child="true"
-    >
-      <PRismAvatar
-        :login="reviewer.login"
-        :avatar-url="reviewer.avatar_url"
-        size="sm"
-        :title="null"
-        :class="[
-          'reviewer-stack__avatar',
-          stateClass(reviewer.state),
-          reviewer.is_you && 'reviewer-stack__avatar--you',
-        ]"
-      />
-    </PRismTooltip>
-    <PRismTooltip v-if="overflow > 0" :as-child="true">
-      <span class="reviewer-stack__overflow">+{{ overflow }}</span>
+    <PRismTooltip :as-child="true">
+      <span class="reviewer-stack__avatars">
+        <PRismAvatar
+          v-for="reviewer in visible"
+          :key="reviewer.login"
+          :login="reviewer.login"
+          :avatar-url="reviewer.avatar_url"
+          size="sm"
+          :title="null"
+          :class="[
+            'reviewer-stack__avatar',
+            stateClass(reviewer.state),
+            reviewer.is_you && 'reviewer-stack__avatar--you',
+          ]"
+        />
+        <span v-if="overflow > 0" class="reviewer-stack__overflow">+{{ overflow }}</span>
+      </span>
       <template #content>
         <ul class="reviewer-stack__tooltip-list" style="max-width: 360px">
           <li
-            v-for="reviewer in hiddenReviewers"
+            v-for="reviewer in tooltipReviewers"
             :key="reviewer.login"
             class="reviewer-stack__tooltip-row"
           >
@@ -142,15 +130,28 @@ function statusLabel(state: ReviewerState): string {
       </template>
     </PRismTooltip>
     <span class="reviewer-stack__summary">
-      <span v-if="changesCount > 0" class="reviewer-stack__summary-changes">{{ changesCount }}</span>
-      <span v-else-if="approvedCount > 0" class="reviewer-stack__summary-ok">{{ approvedCount }}</span>
-      <span v-else>0</span><span class="reviewer-stack__summary-total">/{{ reviewers.length }}</span>
+      <PRismTooltip :text="`${changesCount} requested changes`" :as-child="true">
+        <span class="reviewer-stack__summary-changes">{{ changesCount }}</span>
+      </PRismTooltip>
+      <span aria-hidden="true">/</span>
+      <PRismTooltip :text="`${approvedCount} approved`" :as-child="true">
+        <span class="reviewer-stack__summary-ok">{{ approvedCount }}</span>
+      </PRismTooltip>
+      <span aria-hidden="true">/</span>
+      <PRismTooltip :text="totalLabel" :as-child="true">
+        <span class="reviewer-stack__summary-total">{{ reviewers.length }}</span>
+      </PRismTooltip>
     </span>
   </span>
 </template>
 
 <style scoped>
 .reviewer-stack {
+  display: inline-flex;
+  align-items: center;
+}
+
+.reviewer-stack__avatars {
   display: inline-flex;
   align-items: center;
   gap: 4px;
