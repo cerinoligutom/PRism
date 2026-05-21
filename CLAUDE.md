@@ -193,6 +193,11 @@ PRism's UI is layered, lowest to highest:
 - **Keep `PRism*` primitives styled via the CSS primitives layer** (`.btn`, `.badge`, etc.) — don't reintroduce hex codes or pixel values. New variants extend the CSS primitives first, then the Vue prop type.
 - **App-level components** (`AppShell`, `SidebarNav`, `StatusBar`, view components) sit on top of `PRism*` primitives. They live in `src/components/` (top level) or `src/views/`, not `src/components/ui/`.
 
+### Tooltips
+
+- **Always use `PRismTooltip`** for tooltip affordances. Don't use the browser-native `:title` HTML attribute — scoped CSS doesn't propagate across the tooltip portal, browser styling is OS-dependent, and `:title` double-renders alongside any sibling `PRismTooltip` (the OS tooltip appears after ~2s in addition to the styled chip). The `:title` attribute is acceptable only when a screen reader needs the cue AND no visual tooltip is desired; none of v1's surfaces fall into that bucket.
+- **Don't use `cursor: help`** (the question-mark cursor) to advertise a tooltip. It promises an interaction that doesn't exist (no click target). The tooltip itself is the hover affordance.
+
 ### CSS and styling
 
 - **Prefer Tailwind utilities.** Layout, spacing, colour, typography, sizing — all default to Tailwind classes (`flex`, `gap-3`, `bg-surface`, `text-fg-mute`, `border-border-faint`). The Tailwind theme in [`src/assets/styles/main.css`](src/assets/styles/main.css) already aliases every design token, so utilities like `text-accent`, `bg-surface-raised`, `text-fg-strong` resolve against the OKLCH-backed CSS variables.

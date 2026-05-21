@@ -7,6 +7,7 @@ import PullRequestRow from "@/components/dashboard/PullRequestRow.vue";
 import GroupHeader from "@/components/dashboard/GroupHeader.vue";
 import DensityToggle from "@/components/dashboard/DensityToggle.vue";
 import GroupSelector from "@/components/dashboard/GroupSelector.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import {
@@ -98,25 +99,26 @@ watch(() => route.meta?.dashboardView, () => {
         :model-value="dashboard.group"
         @update:model-value="onGroupUpdate"
       />
-      <button
-        type="button"
-        class="btn btn-icon"
-        :disabled="dashboard.loading"
-        title="Refresh"
-        @click="refresh"
-      >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
+      <PRismTooltip text="Refresh" :as-child="true">
+        <button
+          type="button"
+          class="btn btn-icon"
+          :disabled="dashboard.loading"
+          @click="refresh"
         >
-          <path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4" />
-        </svg>
-      </button>
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          >
+            <path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4" />
+          </svg>
+        </button>
+      </PRismTooltip>
     </header>
 
     <div v-if="!hasAccounts" class="dashboard__empty">
