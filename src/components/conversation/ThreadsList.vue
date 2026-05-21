@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
-import type { PullRequestThread, ThreadState } from "@/types/conversation";
+import type {
+  PullRequestThread,
+  ThreadComment,
+  ThreadState,
+} from "@/types/conversation";
 
 import {
   EM_DASH,
@@ -9,12 +14,74 @@ import {
   secondsSince,
 } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
   threads: readonly PullRequestThread[];
+  /** Comments for the active PR, already hydrated by `fetch_pr_conversation`.
+   * The expand affordance filters this by `thread_id` and renders inline; no
+   * extra round-trip. */
+  threadComments?: readonly ThreadComment[];
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  threadComments: () => [],
+});
+
+/**
+ * Per-thread bucket matching ADR 0012's four-state palette. Drives the icon
+ * colour and tooltip label on the leftmost icon. Computed from
+ * `(is_resolved, is_involved)` so outdated-but-resolved threads pick the
+ * resolved (blue/green) icon rather than collapsing into an "unresolved"
+ * variant. `is_outdated` is rendered orthogonally via the dim treatment +
+ * existing `OUTDATED` badge.
+ */
+type ThreadBucket =
+  | "unresolved-uninvolved"
+  | "unresolved-involved"
+  | "resolved-uninvolved"
+  | "resolved-involved";
+
+interface BucketSpec {
+  readonly key: ThreadBucket;
+  readonly label: string;
+  readonly resolvedShape: boolean;
+}
+
+const BUCKETS: Readonly<Record<ThreadBucket, BucketSpec>> = {
+  "unresolved-uninvolved": {
+    key: "unresolved-uninvolved",
+    label: "Unresolved",
+    resolvedShape: false,
+  },
+  "unresolved-involved": {
+    key: "unresolved-involved",
+    label: "Unresolved (involved)",
+    resolvedShape: false,
+  },
+  "resolved-uninvolved": {
+    key: "resolved-uninvolved",
+    label: "Resolved",
+    resolvedShape: true,
+  },
+  "resolved-involved": {
+    key: "resolved-involved",
+    label: "Resolved (involved)",
+    resolvedShape: true,
+  },
+};
+
+function bucketFor(thread: PullRequestThread): BucketSpec {
+  const resolvedKey = thread.is_resolved ? "resolved" : "unresolved";
+  const involvedKey = thread.is_involved ? "involved" : "uninvolved";
+  return BUCKETS[`${resolvedKey}-${involvedKey}` as ThreadBucket];
+}
+
+function bucketTooltip(thread: PullRequestThread): string {
+  const spec = bucketFor(thread);
+  if (thread.is_outdated) return `${spec.label} (outdated)`;
+  return spec.label;
+}
 
 const orderedThreads = computed<readonly PullRequestThread[]>(() => {
   // Unresolved-and-involved first, then unresolved, then resolved, then
@@ -35,6 +102,19 @@ const orderedThreads = computed<readonly PullRequestThread[]>(() => {
     return bTs - aTs;
   });
 });
+
+const expanded = ref<Set<number>>(new Set());
+
+function isExpanded(id: number): boolean {
+  return expanded.value.has(id);
+}
+
+function toggleExpanded(id: number): void {
+  const next = new Set(expanded.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expanded.value = next;
+}
 
 function threadKey(t: PullRequestThread): string {
   return `${t.id}:${t.node_id}`;
@@ -85,6 +165,31 @@ function isStale(t: PullRequestThread): boolean {
   if (reference === null) return false;
   return secondsSince(reference) > 7 * 24 * 60 * 60;
 }
+
+/** Comments belonging to a single thread, ordered chronologically. */
+function commentsFor(threadId: number): readonly ThreadComment[] {
+  const matches = props.threadComments.filter((c) => c.thread_id === threadId);
+  return [...matches].sort((a, b) => a.created_at - b.created_at);
+}
+
+function expandTooltip(t: PullRequestThread): string {
+  if (isExpanded(t.id)) return "Hide comments";
+  const count = commentsFor(t.id).length;
+  if (count === 0) return "No comments to show";
+  const noun = count === 1 ? "comment" : "comments";
+  return `Show ${count} ${noun}`;
+}
+
+async function openThreadOnGitHub(url: string | null): Promise<void> {
+  if (url === null || url.length === 0) return;
+  try {
+    await openUrl(url);
+  } catch (err) {
+    // Avoid throwing into the template; surface a console hint for diagnostics.
+    // eslint-disable-next-line no-console
+    console.warn("failed to open thread url", err);
+  }
+}
 </script>
 
 <template>
@@ -99,22 +204,37 @@ function isStale(t: PullRequestThread): boolean {
         :key="threadKey(thread)"
         :class="[
           'thread-card',
-          `thread-card--${thread.state}`,
-          thread.is_involved && thread.state === 'unresolved' && 'thread-card--mine',
+          `thread-card--${bucketFor(thread).key}`,
+          thread.is_outdated && 'thread-card--outdated',
+          thread.is_involved && !thread.is_resolved && 'thread-card--mine',
           isStale(thread) && 'thread-card--stale',
         ]"
       >
-        <span :class="['thread-card__state', `thread-card__state--${thread.state}`]" aria-hidden="true">
-          <svg v-if="thread.state === 'unresolved'" width="7" height="7" viewBox="0 0 8 8">
-            <circle cx="4" cy="4" r="3" fill="currentColor" />
-          </svg>
-          <svg v-else-if="thread.state === 'resolved'" width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M2 4l1.5 1.5L6 2.5" />
-          </svg>
-          <svg v-else width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M2 4h4M5 2.5l1.5 1.5L5 5.5" />
-          </svg>
-        </span>
+        <PRismTooltip :text="bucketTooltip(thread)" :as-child="true">
+          <span
+            :class="[
+              'thread-card__state',
+              `thread-card__state--${bucketFor(thread).key}`,
+            ]"
+            :aria-label="bucketTooltip(thread)"
+          >
+            <svg
+              v-if="bucketFor(thread).resolvedShape"
+              width="8"
+              height="8"
+              viewBox="0 0 8 8"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <path d="M2 4l1.5 1.5L6 2.5" />
+            </svg>
+            <svg v-else width="7" height="7" viewBox="0 0 8 8">
+              <circle cx="4" cy="4" r="3" fill="currentColor" />
+            </svg>
+          </span>
+        </PRismTooltip>
 
         <div class="thread-card__body">
           <div class="thread-card__file">
@@ -122,11 +242,11 @@ function isStale(t: PullRequestThread): boolean {
             <span v-else class="thread-card__path thread-card__path--missing">No file path</span>
             <span v-if="lineSuffix(thread) !== ''" class="thread-card__line">{{ lineSuffix(thread) }}</span>
             <span
-              v-if="thread.is_involved && thread.state === 'unresolved'"
+              v-if="thread.is_involved && !thread.is_resolved"
               class="thread-card__chip thread-card__chip--mine"
             >INVOLVED</span>
             <span
-              v-if="thread.state === 'outdated'"
+              v-if="thread.is_outdated"
               class="thread-card__chip thread-card__chip--outdated"
             >OUTDATED</span>
           </div>
@@ -147,6 +267,35 @@ function isStale(t: PullRequestThread): boolean {
               <span v-else class="thread-card__snippet-missing">No preview available.</span>
             </p>
           </div>
+
+          <div
+            v-if="isExpanded(thread.id) && commentsFor(thread.id).length > 0"
+            class="thread-card__replies-list"
+          >
+            <div
+              v-for="comment in commentsFor(thread.id)"
+              :key="comment.id"
+              class="thread-comment"
+            >
+              <PRismAvatar
+                :login="comment.author_login"
+                :avatar-url="comment.avatar_url"
+                size="sm"
+                class="thread-comment__avatar"
+              />
+              <div class="thread-comment__body">
+                <div class="thread-comment__meta">
+                  <span class="thread-comment__author">{{ comment.author_login }}</span>
+                  <span class="thread-comment__ts">{{ formatRelativeAgo(comment.created_at) }}</span>
+                </div>
+                <p class="thread-comment__text">{{ comment.body }}</p>
+              </div>
+            </div>
+          </div>
+          <p
+            v-else-if="isExpanded(thread.id)"
+            class="thread-card__replies-empty"
+          >No comments loaded for this thread.</p>
         </div>
 
         <div class="thread-card__meta">
@@ -155,6 +304,60 @@ function isStale(t: PullRequestThread): boolean {
           </div>
           <div class="thread-card__opened">{{ openedRelative(thread) }}</div>
           <div class="thread-card__activity">{{ activityRelative(thread) }}</div>
+          <div class="thread-card__actions">
+            <PRismTooltip :text="expandTooltip(thread)">
+              <button
+                type="button"
+                class="thread-card__icon-btn"
+                :aria-expanded="isExpanded(thread.id)"
+                :aria-label="expandTooltip(thread)"
+                @click="toggleExpanded(thread.id)"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :class="[
+                    'thread-card__chevron',
+                    isExpanded(thread.id) && 'thread-card__chevron--open',
+                  ]"
+                >
+                  <path d="M3 4.5l3 3 3-3" />
+                </svg>
+              </button>
+            </PRismTooltip>
+            <PRismTooltip
+              v-if="thread.url !== null && thread.url.length > 0"
+              text="Open thread on GitHub"
+            >
+              <button
+                type="button"
+                class="thread-card__icon-btn"
+                aria-label="Open thread on GitHub"
+                @click="openThreadOnGitHub(thread.url)"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M5 3H3v6h6V7" />
+                  <path d="M7 2h3v3" />
+                  <path d="M6 6l4-4" />
+                </svg>
+              </button>
+            </PRismTooltip>
+          </div>
         </div>
       </article>
     </div>
@@ -210,7 +413,7 @@ function isStale(t: PullRequestThread): boolean {
 }
 
 .thread-card--outdated {
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
 .thread-card__state {
@@ -222,21 +425,27 @@ function isStale(t: PullRequestThread): boolean {
   justify-content: center;
   margin-top: 4px;
   flex: 0 0 14px;
+  cursor: help;
 }
 
-.thread-card__state--unresolved {
-  background: var(--accent-bg);
-  color: var(--accent);
+.thread-card__state--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.18);
+  color: var(--danger);
 }
 
-.thread-card__state--resolved {
+.thread-card__state--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.2);
+  color: var(--warning);
+}
+
+.thread-card__state--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--info);
+}
+
+.thread-card__state--resolved-involved {
   background: var(--success-bg);
   color: var(--success);
-}
-
-.thread-card__state--outdated {
-  background: var(--bg-4);
-  color: var(--text-faint);
 }
 
 .thread-card__body {
@@ -326,6 +535,65 @@ function isStale(t: PullRequestThread): boolean {
   font-style: italic;
 }
 
+.thread-card__replies-list {
+  margin-top: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  border-left: 2px solid var(--border-1);
+  padding-left: var(--s-3);
+}
+
+.thread-card__replies-empty {
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-11);
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.thread-comment {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+
+.thread-comment__avatar {
+  flex: 0 0 16px;
+  margin-top: 2px;
+}
+
+.thread-comment__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.thread-comment__meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-size: var(--fs-11);
+}
+
+.thread-comment__author {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.thread-comment__ts {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+}
+
+.thread-comment__text {
+  margin: 2px 0 0;
+  font-size: var(--fs-12);
+  line-height: var(--lh-body);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .thread-card__meta {
   text-align: right;
   font-family: var(--font-mono);
@@ -341,5 +609,43 @@ function isStale(t: PullRequestThread): boolean {
 
 .thread-card--stale .thread-card__activity {
   color: var(--warning);
+}
+
+.thread-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: var(--s-2);
+  justify-content: flex-end;
+}
+
+.thread-card__icon-btn {
+  background: transparent;
+  border: 0;
+  padding: 4px;
+  border-radius: var(--r-1);
+  color: var(--text-mute);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thread-card__icon-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-strong);
+}
+
+.thread-card__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.thread-card__chevron {
+  transition: transform 120ms ease-out;
+}
+
+.thread-card__chevron--open {
+  transform: rotate(180deg);
 }
 </style>

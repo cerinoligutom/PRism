@@ -61,7 +61,8 @@ pub fn list_pr_threads(
                        AND a.id = ?2
                 ) THEN 1
                 ELSE 0
-            END AS is_involved
+            END AS is_involved,
+            t.url
         FROM review_threads t
         LEFT JOIN users u ON u.login = t.head_comment_author_login
         WHERE t.pull_request_id = ?1
@@ -94,6 +95,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let head_created_at: Option<i64> = row.get(15)?;
     let head_avatar_url: Option<String> = row.get(16)?;
     let is_involved: i64 = row.get(17)?;
+    let url: Option<String> = row.get(18)?;
 
     let head_comment = match (head_author, head_body, head_created_at) {
         (Some(author_login), Some(body_text), Some(created_at)) => Some(ThreadHeadComment {
@@ -128,6 +130,9 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
         resolved_at,
         last_reply_at,
         is_involved: is_involved != 0,
+        is_resolved: is_resolved != 0,
+        is_outdated: is_outdated != 0,
+        url,
     })
 }
 
@@ -138,6 +143,7 @@ pub fn get_conversation_stats(
     pull_request_id: i64,
 ) -> Result<ConversationStats, rusqlite::Error> {
     let counts = thread_counts(conn, pull_request_id)?;
+    let buckets = thread_buckets(conn, pull_request_id)?;
     let oldest_unresolved_at = oldest_unresolved(conn, pull_request_id)?;
     let avg_response_seconds = avg_time_to_response(conn, pull_request_id)?;
     let resolution_rate = compute_resolution_rate(counts.resolved, counts.total);
@@ -148,6 +154,10 @@ pub fn get_conversation_stats(
         threads_unresolved: counts.unresolved,
         threads_resolved: counts.resolved,
         threads_outdated: counts.outdated,
+        threads_unresolved_involved: buckets.unresolved_involved,
+        threads_unresolved_uninvolved: buckets.unresolved_uninvolved,
+        threads_resolved_involved: buckets.resolved_involved,
+        threads_resolved_uninvolved: buckets.resolved_uninvolved,
         oldest_unresolved_at,
         avg_response_seconds,
         resolution_rate,
@@ -162,6 +172,43 @@ struct ThreadCounts {
     unresolved: i64,
     resolved: i64,
     outdated: i64,
+}
+
+/// Four-bucket breakdown sourced from the pre-aggregated `pull_requests` rollup
+/// columns the sync worker writes per ADR 0012. Reading from the same source
+/// the dashboard row reads keeps the conversation surface's bar visually
+/// identical to the row's bar - both consume the same numbers rather than
+/// re-bucketing client-side from the per-thread state (which can disagree when
+/// outdated threads are mis-classified). See issue #102.
+#[derive(Debug, Clone, Copy)]
+struct ThreadBuckets {
+    unresolved_involved: i64,
+    unresolved_uninvolved: i64,
+    resolved_involved: i64,
+    resolved_uninvolved: i64,
+}
+
+fn thread_buckets(
+    conn: &Connection,
+    pull_request_id: i64,
+) -> Result<ThreadBuckets, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COALESCE(threads_unresolved_involved, 0),
+                COALESCE(threads_unresolved_uninvolved, 0),
+                COALESCE(threads_resolved_involved, 0),
+                COALESCE(threads_resolved_uninvolved, 0)
+           FROM pull_requests
+          WHERE id = ?1",
+        params![pull_request_id],
+        |row| {
+            Ok(ThreadBuckets {
+                unresolved_involved: row.get(0)?,
+                unresolved_uninvolved: row.get(1)?,
+                resolved_involved: row.get(2)?,
+                resolved_uninvolved: row.get(3)?,
+            })
+        },
+    )
 }
 
 fn thread_counts(conn: &Connection, pull_request_id: i64) -> Result<ThreadCounts, rusqlite::Error> {

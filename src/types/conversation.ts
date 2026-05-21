@@ -42,6 +42,17 @@ export interface PullRequestThread {
   readonly last_reply_at: number | null;
   /** True when the active account's login appears anywhere in the thread. */
   readonly is_involved: boolean;
+  /** Resolved-state flag carried separately from `state` so the frontend can
+   * pick the four-state icon palette `(is_resolved, is_involved)` without
+   * losing the orthogonal `is_outdated` cue. See issue #102. */
+  readonly is_resolved: boolean;
+  /** `is_outdated` mirror so the frontend can apply the dim treatment + badge
+   * regardless of which bucket the four-state icon resolves to. */
+  readonly is_outdated: boolean;
+  /** GitHub permalink for the thread; powers the per-thread
+   * "Open in GitHub" action. `null` for rows written before the column
+   * existed. */
+  readonly url: string | null;
 }
 
 export interface CommentBreakdown {
@@ -56,6 +67,13 @@ export interface ConversationStats {
   readonly threads_unresolved: number;
   readonly threads_resolved: number;
   readonly threads_outdated: number;
+  /** Four-bucket breakdown matching the dashboard `ThreadsSummary`. Sourced
+   * from `pull_requests.threads_*_*` so the conversation surface's bar
+   * renders identically to the dashboard row's (issue #102, ADR 0012). */
+  readonly threads_unresolved_involved: number;
+  readonly threads_unresolved_uninvolved: number;
+  readonly threads_resolved_involved: number;
+  readonly threads_resolved_uninvolved: number;
   /** Unix seconds; null when no active threads. */
   readonly oldest_unresolved_at: number | null;
   /** Average seconds between replies; null when no thread has a reply. */

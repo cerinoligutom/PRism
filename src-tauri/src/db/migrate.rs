@@ -16,6 +16,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0004_conversation_depth.sql"),
     include_str!("../../migrations/0005_threads_breakdown.sql"),
     include_str!("../../migrations/0006_users_table.sql"),
+    include_str!("../../migrations/0007_review_thread_url.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -224,6 +225,7 @@ mod tests {
             "head_comment_created_at",
             "line",
             "start_line",
+            "url",
         ];
         let mut stmt = conn
             .prepare("SELECT name FROM pragma_table_info('review_threads')")
