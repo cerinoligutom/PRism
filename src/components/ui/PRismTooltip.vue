@@ -53,10 +53,16 @@ withDefaults(defineProps<Props>(), {
 </template>
 
 <style scoped>
+/*
+ * Inverted palette: in dark mode the chip is near-white on dark text; in
+ * light mode it's near-black on light text. `--text-strong` and `--bg-1`
+ * already define the strongest contrast pair per theme, so reusing them
+ * keeps the tooltip distinct from every surface tier without needing a
+ * dedicated --tooltip-* token.
+ */
 .prism-tooltip__content {
-  background: var(--bg-5);
-  color: var(--text-strong);
-  border: 1px solid var(--border-3);
+  background: var(--text-strong);
+  color: var(--bg-1);
   padding: 8px 10px;
   border-radius: var(--r-2);
   font-size: var(--fs-12);
@@ -67,8 +73,6 @@ withDefaults(defineProps<Props>(), {
 }
 
 .prism-tooltip__arrow {
-  fill: var(--bg-5);
-  stroke: var(--border-3);
-  stroke-width: 1;
+  fill: var(--text-strong);
 }
 </style>
