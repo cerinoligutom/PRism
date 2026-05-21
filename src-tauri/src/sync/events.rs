@@ -24,6 +24,12 @@ pub const SYNC_ERROR_EVENT: &str = "sync://error";
 /// worker stops scheduling cycles for that account until the budget recovers.
 pub const SYNC_RATE_LIMIT_EVENT: &str = "sync://rate-limit-warning";
 
+/// Emitted on every push to the in-memory activity buffer. Payload is one
+/// `ActivityEvent` (see `sync::activity`). Additive alongside the existing
+/// status / error / rate-limit events; the activity panel subscribes here
+/// for live updates and uses `list_recent_activity` to hydrate on startup.
+pub const SYNC_ACTIVITY_EVENT: &str = "sync://activity";
+
 /// Full status payload. Mirror of [`AccountSyncState`] so subscribers in the
 /// frontend get one shape they can store directly.
 #[derive(Debug, Clone, Serialize)]

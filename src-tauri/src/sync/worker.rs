@@ -30,6 +30,10 @@ use crate::github::{
     list_pr_timeline, AccountHandle, AccountId, EtagStore, GitHubClient, GitHubError, ListTimeline,
     RepoCoord,
 };
+use crate::sync::activity::{
+    record as record_activity, ActivityBuffer, ActivityEventBuilder, ActivityKind, ActivityLevel,
+    SyncPhaseLabel,
+};
 use crate::sync::discovery::DiscoveryError;
 use crate::sync::events::{
     SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ERROR_EVENT,
@@ -158,6 +162,10 @@ pub struct WorkerContext {
     pub state: SyncStateMap,
     pub emit: Arc<dyn EmitSink>,
     pub reauth: Arc<dyn ReauthNotifier>,
+    /// Diagnostic activity buffer (issue #122). Cloned into every cycle so the
+    /// status-bar panel sees real-time phase / per-PR / error events alongside
+    /// the existing status / error events.
+    pub activity: ActivityBuffer,
 }
 
 /// Public handle to the running worker pool. Holds the per-account
@@ -339,7 +347,9 @@ async fn account_loop(
         let client = match ctx.clients.build(&account) {
             Ok(c) => c,
             Err(err) => {
-                record_failure(&ctx, &account, &format!("client build: {err}"));
+                let message = format!("client build: {err}");
+                record_failure(&ctx, &account, &message);
+                emit_activity_cycle_failed(&ctx, &account, "client_build", &err.to_string());
                 wait_for_next(&ctx, account.id, &cancel, &refresh).await;
                 continue;
             }
@@ -482,6 +492,7 @@ pub async fn run_one_cycle(
             snapshot.limit,
             snapshot.time_until_reset(),
         );
+        emit_activity_rate_pause(ctx, account, snapshot.time_until_reset(), pct);
         let state = ctx.state.update(account.id, |s| {
             s.phase = SyncPhase::RateLimited;
             s.message = Some(format!("budget {pct}%, skipping cycle"));
@@ -508,6 +519,7 @@ pub async fn run_one_cycle(
         s.message = None;
     });
     emit_status(&ctx.emit, &state);
+    emit_activity_cycle_started(ctx, account);
 
     let pre_used = snapshot.used.max(0);
     let pre_remaining = snapshot.remaining;
@@ -522,8 +534,16 @@ pub async fn run_one_cycle(
 
     // Phase 1: Discovery. Search-API fan-out, ADR 0009. Failure here is
     // treated like any other phase failure: don't run enrichment, don't prune.
+    emit_activity_phase_started(ctx, account, SyncPhaseLabel::Discovery);
     match crate::sync::discovery::discover_account(&ctx.db, client, account.id, cycle_start).await {
-        Ok((_, _discovery_report)) => {}
+        Ok((discovered, _discovery_report)) => {
+            emit_activity_phase_completed(
+                ctx,
+                account,
+                SyncPhaseLabel::Discovery,
+                format!("discovered {} pull request(s)", discovered.len()),
+            );
+        }
         Err(DiscoveryError::GitHub(GitHubError::Unauthorized)) => {
             let state = ctx.state.update(account.id, |s| {
                 s.phase = SyncPhase::Unauthorized;
@@ -531,6 +551,7 @@ pub async fn run_one_cycle(
                 s.next_sync_in_seconds = None;
             });
             emit_status(&ctx.emit, &state);
+            emit_activity_cycle_failed(ctx, account, "discovery", "token rejected; reauthenticate");
             report.outcome = CycleOutcome::Unauthorized;
             return finalise_with_budget(report, client, pre_used, pre_remaining);
         }
@@ -543,6 +564,7 @@ pub async fn run_one_cycle(
             });
             emit_status(&ctx.emit, &state);
             emit_rate_limit(ctx, account, 0, client.rate().snapshot().limit, retry_after);
+            emit_activity_rate_pause(ctx, account, retry_after, 0);
             report.outcome = CycleOutcome::RateLimited {
                 reset_in_seconds: reset_in,
             };
@@ -551,6 +573,7 @@ pub async fn run_one_cycle(
         Err(err) => {
             let message = format!("discovery: {err}");
             record_failure(ctx, account, &message);
+            emit_activity_cycle_failed(ctx, account, "discovery", &err.to_string());
             report.outcome = CycleOutcome::Failed { message };
             return finalise_with_budget(report, client, pre_used, pre_remaining);
         }
@@ -562,6 +585,7 @@ pub async fn run_one_cycle(
         Ok(r) => r,
         Err(err) => {
             record_failure(ctx, account, &format!("read repos: {err}"));
+            emit_activity_cycle_failed(ctx, account, "enrichment", &err.to_string());
             report.outcome = CycleOutcome::Failed {
                 message: err.to_string(),
             };
@@ -580,15 +604,19 @@ pub async fn run_one_cycle(
         );
         let finished_at = SystemTime::now();
         finish_completed(ctx, account, client, finished_at);
+        emit_activity_cycle_completed(ctx, account, 0, "no repos tracked");
         report.outcome = CycleOutcome::Skipped {
             reason: SkipReason::NoReposConfigured,
         };
         return finalise_with_budget(report, client, pre_used, pre_remaining);
     }
 
+    let total_prs = count_prs_across_repos(&ctx.db, &repos);
+    emit_activity_phase_started(ctx, account, SyncPhaseLabel::Enrichment);
+    let mut enriched: u32 = 0;
     for repo in &repos {
         report.repos_visited += 1;
-        match sync_repo(ctx, client, account, repo).await {
+        match sync_repo(ctx, client, account, repo, total_prs, &mut enriched).await {
             Ok(prs_visited) => {
                 report.prs_visited += prs_visited;
             }
@@ -599,6 +627,12 @@ pub async fn run_one_cycle(
                     s.next_sync_in_seconds = None;
                 });
                 emit_status(&ctx.emit, &state);
+                emit_activity_cycle_failed(
+                    ctx,
+                    account,
+                    "enrichment",
+                    "token rejected; reauthenticate",
+                );
                 report.outcome = CycleOutcome::Unauthorized;
                 return finalise_with_budget(report, client, pre_used, pre_remaining);
             }
@@ -611,6 +645,7 @@ pub async fn run_one_cycle(
                 });
                 emit_status(&ctx.emit, &state);
                 emit_rate_limit(ctx, account, 0, client.rate().snapshot().limit, retry_after);
+                emit_activity_rate_pause(ctx, account, retry_after, 0);
                 report.outcome = CycleOutcome::RateLimited {
                     reset_in_seconds: reset_in,
                 };
@@ -618,25 +653,261 @@ pub async fn run_one_cycle(
             }
             Err(SyncRepoError::Other(message)) => {
                 record_failure(ctx, account, &message);
+                emit_activity_cycle_failed(ctx, account, "enrichment", &message);
                 report.outcome = CycleOutcome::Failed { message };
                 return finalise_with_budget(report, client, pre_used, pre_remaining);
             }
         }
     }
+    emit_activity_phase_completed(
+        ctx,
+        account,
+        SyncPhaseLabel::Enrichment,
+        format!("fetched detail for {enriched} pull request(s)"),
+    );
 
     // Phase final: Pruning. Runs only when enrichment completes so a transient
     // discovery hiccup doesn't drop everything (the contract calls this out).
-    if let Err(err) =
-        crate::sync::discovery::prune_stale_relations_for_account(&ctx.db, account.id, cycle_start)
-    {
-        // A prune failure is logged, not fatal: stale rows are merely cosmetic
-        // and the next cycle's prune will retry.
-        eprintln!("sync prune (account {}): {err}", account.id);
-    }
+    emit_activity_phase_started(ctx, account, SyncPhaseLabel::Pruning);
+    let pruned = match crate::sync::discovery::prune_stale_relations_for_account(
+        &ctx.db,
+        account.id,
+        cycle_start,
+    ) {
+        Ok(n) => n,
+        Err(err) => {
+            // A prune failure is logged, not fatal: stale rows are merely cosmetic
+            // and the next cycle's prune will retry.
+            eprintln!("sync prune (account {}): {err}", account.id);
+            0
+        }
+    };
+    emit_activity_phase_completed(
+        ctx,
+        account,
+        SyncPhaseLabel::Pruning,
+        format!("removed {pruned} stale relation(s)"),
+    );
 
     let finished_at = SystemTime::now();
     finish_completed(ctx, account, client, finished_at);
+    emit_activity_cycle_completed(
+        ctx,
+        account,
+        enriched,
+        format!("synced {enriched} pull request(s)"),
+    );
     finalise_with_budget(report, client, pre_used, pre_remaining)
+}
+
+fn count_prs_across_repos(db: &DbHandle, repos: &[RepoRow]) -> u32 {
+    let conn = match db.lock() {
+        Ok(g) => g,
+        Err(_) => return 0,
+    };
+    let mut total: u32 = 0;
+    for repo in repos {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_requests WHERE repo_id = ?1",
+                params![repo.id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        total = total.saturating_add(count.max(0) as u32);
+    }
+    total
+}
+
+fn emit_activity_cycle_started(ctx: &WorkerContext, account: &Account) {
+    let message = format!("Cycle started for {}", account.login);
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::CycleStarted,
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_phase_started(ctx: &WorkerContext, account: &Account, phase: SyncPhaseLabel) {
+    let message = match phase {
+        SyncPhaseLabel::Discovery => format!("Discovering for {}", account.login),
+        SyncPhaseLabel::Enrichment => "Fetching pull request detail".to_string(),
+        SyncPhaseLabel::Pruning => "Pruning stale relations".to_string(),
+    };
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::PhaseStarted { phase },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_phase_progress(
+    ctx: &WorkerContext,
+    account: &Account,
+    phase: SyncPhaseLabel,
+    current: u32,
+    total: u32,
+) {
+    let label = phase.as_str();
+    let message = if total > 0 {
+        format!("{label} ({current}/{total})")
+    } else {
+        format!("{label} ({current})")
+    };
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::PhaseProgress {
+                phase,
+                current,
+                total,
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_pr_fetched(
+    ctx: &WorkerContext,
+    account: &Account,
+    owner: &str,
+    name: &str,
+    number: i64,
+    url: &str,
+) {
+    let message = format!("Fetched detail for {owner}/{name}#{number}");
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::PrFetched {
+                number,
+                owner: owner.to_string(),
+                name: name.to_string(),
+                url: url.to_string(),
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_phase_completed(
+    ctx: &WorkerContext,
+    account: &Account,
+    phase: SyncPhaseLabel,
+    summary: impl Into<String>,
+) {
+    let summary = summary.into();
+    let message = format!("{} complete - {}", phase.as_str(), summary);
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::PhaseCompleted { phase, summary },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_cycle_completed(
+    ctx: &WorkerContext,
+    account: &Account,
+    prs_visited: u32,
+    summary: impl Into<String>,
+) {
+    let summary = summary.into();
+    let message = format!("Cycle complete for {} - {}", account.login, summary);
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::CycleCompleted {
+                prs_visited,
+                summary,
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_cycle_failed(
+    ctx: &WorkerContext,
+    account: &Account,
+    error_kind: &str,
+    error_message: &str,
+) {
+    let truncated = short_error_message(error_message);
+    let message = format!("Cycle failed ({error_kind}): {truncated}");
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Error,
+            Some(account.id),
+            ActivityKind::CycleFailed {
+                error_message: truncated,
+                error_kind: error_kind.to_string(),
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
+fn emit_activity_rate_pause(
+    ctx: &WorkerContext,
+    account: &Account,
+    reset_in: Option<Duration>,
+    pct: u8,
+) {
+    let reset_in_seconds = reset_in.map(|d| d.as_secs()).unwrap_or(0);
+    let message = if reset_in_seconds > 0 {
+        format!(
+            "Rate limit guard paused {} ({}% remaining, resets in {}s)",
+            account.login, pct, reset_in_seconds
+        )
+    } else {
+        format!(
+            "Rate limit guard paused {} ({}% remaining)",
+            account.login, pct
+        )
+    };
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Warn,
+            Some(account.id),
+            ActivityKind::RateLimitPause { reset_in_seconds },
+            message,
+        )
+        .build(),
+    );
 }
 
 fn unix_now() -> i64 {
@@ -724,11 +995,17 @@ impl From<GitHubError> for SyncRepoError {
 
 /// Sync one repo's known PRs. v1 reads PR rows already in the DB; repo
 /// discovery lands in M2 (see PR body).
+///
+/// `total_prs` and `enriched_so_far` thread the cycle-wide progress through
+/// the per-repo loop so activity-feed `PhaseProgress` events surface a single
+/// monotonically-increasing counter against the full PR count.
 async fn sync_repo(
     ctx: &WorkerContext,
     client: &GitHubClient,
     account: &Account,
     repo: &RepoRow,
+    total_prs: u32,
+    enriched_so_far: &mut u32,
 ) -> Result<usize, SyncRepoError> {
     let prs = list_prs_for_repo(&ctx.db, repo.id)
         .map_err(|e| SyncRepoError::Other(format!("read prs: {e}")))?;
@@ -782,6 +1059,25 @@ async fn sync_repo(
             events.as_deref(),
         )
         .map_err(|e| SyncRepoError::Other(format!("persist PR #{}: {e}", pr.number)))?;
+
+        // Activity feed: emit the per-PR detail event, then a phase progress
+        // tick. Detail's URL is the canonical deep-link target; fall back to
+        // the GitHub web URL if the GraphQL payload was thin (None branch).
+        *enriched_so_far = enriched_so_far.saturating_add(1);
+        let pr_url = detail.as_ref().map(|d| d.url.clone()).unwrap_or_else(|| {
+            format!(
+                "https://github.com/{}/{}/pull/{}",
+                repo.owner, repo.name, pr.number
+            )
+        });
+        emit_activity_pr_fetched(ctx, account, &repo.owner, &repo.name, pr.number, &pr_url);
+        emit_activity_phase_progress(
+            ctx,
+            account,
+            SyncPhaseLabel::Enrichment,
+            *enriched_so_far,
+            total_prs,
+        );
     }
     Ok(visited)
 }

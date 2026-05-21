@@ -1,18 +1,79 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, useAttrs } from "vue";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
+import { useSyncActivityStore } from "@/stores/syncActivity";
+import SyncActivityPanel from "./StatusBar/SyncActivityPanel.vue";
 import { formatDuration } from "@/lib/format";
+
+// Custom attrs forwarding so the panel sibling doesn't intercept the
+// `class` AppShell.vue applies for grid-area placement.
+defineOptions({ inheritAttrs: false });
+const attrs = useAttrs();
 
 const sync = useSyncStore();
 const accounts = useAccountsStore();
+const syncActivity = useSyncActivityStore();
+
+function loginForAccount(accountId: number | null): string | null {
+  if (accountId === null) return null;
+  return accounts.accounts.find((a) => a.id === accountId)?.login ?? null;
+}
+
+const chipRef = ref<HTMLButtonElement | null>(null);
+const anchorRect = ref<DOMRect | null>(null);
+const panelOpen = ref(false);
+let resizeObserver: ResizeObserver | null = null;
+
+function refreshAnchor(): void {
+  if (chipRef.value === null) return;
+  anchorRect.value = chipRef.value.getBoundingClientRect();
+}
+
+function openPanel(): void {
+  refreshAnchor();
+  panelOpen.value = true;
+}
+
+function closePanel(): void {
+  panelOpen.value = false;
+}
+
+function togglePanel(): void {
+  if (panelOpen.value) {
+    closePanel();
+  } else {
+    openPanel();
+  }
+}
+
+function onChipHover(): void {
+  // Auto-open behaviour: when the chip is in an error state and the user
+  // hasn't acknowledged the failure yet, hovering reveals the panel so the
+  // failure surface isn't missed. Once the panel opens the failure is marked
+  // acknowledged, so subsequent hovers don't keep triggering the popup.
+  if (panelOpen.value) return;
+  if (summary.value.phase !== "error") return;
+  if (!syncActivity.hasUnseenFailure) return;
+  openPanel();
+}
 
 onMounted(async () => {
   await sync.bind();
+  await syncActivity.bind(loginForAccount);
+  refreshAnchor();
+  window.addEventListener("resize", refreshAnchor);
+  if (chipRef.value && typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(refreshAnchor);
+    resizeObserver.observe(chipRef.value);
+  }
 });
 
 onBeforeUnmount(() => {
   sync.unbind();
+  syncActivity.unbind();
+  window.removeEventListener("resize", refreshAnchor);
+  resizeObserver?.disconnect();
 });
 
 interface SummaryLine {
@@ -46,6 +107,18 @@ const summary = computed<SummaryLine>(() => {
   }
 });
 
+/**
+ * Live ticker label. When a cycle is in flight, the chip's text reads from
+ * the activity store's `currentPhaseLabel` (throttled in the store). When
+ * idle / completed / errored, fall back to the phase-derived summary label.
+ */
+const chipLabel = computed<string>(() => {
+  if (syncActivity.activeCycle && syncActivity.currentPhaseLabel !== null) {
+    return syncActivity.currentPhaseLabel;
+  }
+  return summary.value.label;
+});
+
 const accountsLabel = computed<string | null>(() => {
   if (accounts.isEmpty) return null;
   return accounts.count === 1 ? "1 account" : `${accounts.count} accounts`;
@@ -73,15 +146,23 @@ const budgetLabel = computed<string | null>(() => {
 </script>
 
 <template>
-  <footer class="status-bar">
-    <span class="status-bar__item">
+  <footer class="status-bar" v-bind="attrs">
+    <button
+      ref="chipRef"
+      type="button"
+      class="status-bar__item status-bar__chip"
+      :aria-expanded="panelOpen"
+      aria-label="Open sync activity"
+      @click="togglePanel"
+      @mouseenter="onChipHover"
+    >
       <span :class="summary.dotClass" />
-      <span :class="summary.labelClass">{{ summary.label }}</span>
+      <span :class="summary.labelClass">{{ chipLabel }}</span>
       <template v-if="accountsLabel !== null">
         <span aria-hidden="true">·</span>
         <span>{{ accountsLabel }}</span>
       </template>
-    </span>
+    </button>
     <span v-if="lastSyncedLabel !== null" class="status-bar__item">
       <span>{{ lastSyncedLabel }}</span>
       <template v-if="nextSyncLabel !== null">
@@ -97,6 +178,7 @@ const budgetLabel = computed<string | null>(() => {
     <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
     <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
   </footer>
+  <SyncActivityPanel :open="panelOpen" :anchor-rect="anchorRect" @close="closePanel" />
 </template>
 
 <style scoped>
@@ -118,6 +200,27 @@ const budgetLabel = computed<string | null>(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.status-bar__chip {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  padding: 0 4px;
+  margin: 0 -4px;
+  cursor: pointer;
+  border-radius: var(--r-2);
+}
+
+.status-bar__chip:hover {
+  background: color-mix(in oklch, var(--text) 8%, transparent);
+}
+
+.status-bar__chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .status-bar__spacer {

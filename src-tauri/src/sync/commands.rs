@@ -3,6 +3,8 @@
 //! `get_sync_status` is a read-only snapshot of the worker's per-account
 //! state. `refresh_now` nudges one (or every) account to run a cycle
 //! immediately. Setting the poll interval is exposed for the Settings view.
+//! `list_recent_activity` returns the rolling diagnostic buffer that backs
+//! the status-bar activity panel (issue #122).
 
 use std::sync::Arc;
 
@@ -10,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::github::AccountId;
+use crate::sync::activity::{snapshot, ActivityBuffer, ActivityEvent};
 use crate::sync::scheduler::{MAX_INTERVAL_SECS, MIN_INTERVAL_SECS};
 use crate::sync::state::AccountSyncState;
 use crate::sync::worker::WorkerHandle;
@@ -84,4 +87,32 @@ pub fn set_sync_interval(
     SetIntervalResult {
         applied_seconds: worker.config().interval_secs(),
     }
+}
+
+/// Default page size returned by `list_recent_activity` when the caller
+/// doesn't pass an explicit `limit`. Matches the panel's render budget.
+pub const DEFAULT_ACTIVITY_LIMIT: usize = 100;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListRecentActivityInput {
+    /// Cap on returned events. Defaults to `DEFAULT_ACTIVITY_LIMIT`.
+    pub limit: Option<usize>,
+    /// When set, only events with this `account_id` (or no account at all,
+    /// when matching the variant's own scope) are returned.
+    pub account_id: Option<AccountId>,
+}
+
+/// Most-recent-first slice of the diagnostic activity buffer (issue #122).
+///
+/// The buffer lives in process memory and is bounded to `activity::BUFFER_CAP`.
+/// Callers typically hydrate on store init and then subscribe to the
+/// `sync://activity` Tauri event for live deltas.
+#[tauri::command]
+pub fn list_recent_activity(
+    input: Option<ListRecentActivityInput>,
+    buffer: State<'_, ActivityBuffer>,
+) -> Vec<ActivityEvent> {
+    let input = input.unwrap_or_default();
+    let limit = input.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT);
+    snapshot(&buffer, limit, input.account_id)
 }
