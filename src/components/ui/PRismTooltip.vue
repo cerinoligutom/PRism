@@ -70,7 +70,7 @@ withDefaults(defineProps<Props>(), {
   line-height: var(--lh-body);
   max-width: 260px;
   box-shadow: var(--shadow-2);
-  z-index: 50;
+  z-index: 80;
 }
 
 .prism-tooltip__arrow {
