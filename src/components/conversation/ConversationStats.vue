@@ -3,6 +3,7 @@ import { computed } from "vue";
 
 import type { ConversationStats } from "@/types/conversation";
 
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import { EM_DASH, formatDurationParts, secondsSince } from "@/lib/format";
 
 interface Props {
@@ -37,10 +38,7 @@ const totalComments = computed<{ value: string; sub: string | null }>(() => {
   return { value: String(total), sub: null };
 });
 
-const breakdownLabel = computed<string>(() => {
-  const b = props.stats.comment_breakdown;
-  return `${b.review} review · ${b.issue} issue · ${b.summary} summary`;
-});
+const breakdown = computed(() => props.stats.comment_breakdown);
 </script>
 
 <template>
@@ -83,7 +81,28 @@ const breakdownLabel = computed<string>(() => {
         </div>
         <div class="stat-tile__label">
           Comments total
-          <span class="stat-tile__breakdown">{{ breakdownLabel }}</span>
+          <span class="stat-tile__breakdown">
+            <PRismTooltip
+              text="Per-line review comments and replies inside review threads."
+              :as-child="true"
+            >
+              <span class="stat-tile__breakdown-label">{{ breakdown.review }} review</span>
+            </PRismTooltip>
+            <span aria-hidden="true"> · </span>
+            <PRismTooltip
+              text="Top-level PR conversation comments not tied to a specific code line."
+              :as-child="true"
+            >
+              <span class="stat-tile__breakdown-label">{{ breakdown.issue }} issue</span>
+            </PRismTooltip>
+            <span aria-hidden="true"> · </span>
+            <PRismTooltip
+              text="Prose message attached to a submitted review (approve, request changes, or comment)."
+              :as-child="true"
+            >
+              <span class="stat-tile__breakdown-label">{{ breakdown.summary }} summary</span>
+            </PRismTooltip>
+          </span>
         </div>
       </div>
     </div>
@@ -144,5 +163,12 @@ const breakdownLabel = computed<string>(() => {
 .stat-tile__breakdown {
   display: block;
   color: var(--text-faint);
+}
+
+.stat-tile__breakdown-label {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--border-2);
+  text-underline-offset: 2px;
 }
 </style>
