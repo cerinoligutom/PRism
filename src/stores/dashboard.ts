@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Router } from "vue-router";
 
 import { useAppearanceStore, type Density } from "@/stores/appearance";
+import type { ChipKey, FilterChipCounts } from "@/types/dashboard";
 
 /**
  * Mirrors `DashboardView` in `src-tauri/src/dashboard/types.rs`. The serde
@@ -151,6 +152,15 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const view = ref<DashboardView>("authored");
   const group = ref<DashboardGroup>("repo");
   const sort = ref<DashboardSort>("updated");
+  // M4 triage state. `activeChips` uses a Set for cheap toggle semantics; the
+  // Tauri command takes the `Array.from(...)` projection. `searchQuery` is a
+  // client-side filter (per the contract's "Search semantics") so we don't
+  // round-trip every keystroke. `chipCounts` is `null` while the per-(view,
+  // account) fetch is in flight so `FilterChipsBar` can render labels without
+  // numbers.
+  const activeChips = ref<Set<ChipKey>>(new Set());
+  const searchQuery = ref<string>("");
+  const chipCounts = ref<FilterChipCounts | null>(null);
   const density = ref<Density>(appearance.density);
   const accountFilter = ref<number | null>(null);
 
@@ -185,6 +195,24 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
   const viewLabel = computed<string>(() => VIEW_LABELS[view.value]);
 
+  // Client-side search filter applied AFTER the backend's view + chip + sort
+  // pass. The dataset is bounded (a few hundred PRs typical) so the contract
+  // keeps search in-memory and avoids per-keystroke round-trips. Fields
+  // searched: title, `owner/name`, author_login. Case-insensitive substring
+  // match per the contract's "Search semantics".
+  const filteredPullRequests = computed<DashboardPullRequest[]>(() => {
+    const q = searchQuery.value.toLowerCase().trim();
+    if (q === "") return pullRequests.value;
+    return pullRequests.value.filter((pr) => {
+      const repoSlug = `${pr.repo.owner}/${pr.repo.name}`.toLowerCase();
+      return (
+        pr.title.toLowerCase().includes(q) ||
+        repoSlug.includes(q) ||
+        pr.author_login.toLowerCase().includes(q)
+      );
+    });
+  });
+
   const groups = computed<DashboardGroupBucket[]>(() => {
     const buckets = new Map<string, {
       key: string;
@@ -195,7 +223,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
       failingCount: number;
     }>();
 
-    for (const pr of pullRequests.value) {
+    for (const pr of filteredPullRequests.value) {
       const key = bucketKey(pr, group.value);
       const existing = buckets.get(key);
       const ts = sortTimestamp(pr);
@@ -224,16 +252,61 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const counts = computed(() => ({ ...viewCounts.value }));
 
   /**
-   * Pull the list for one view. Used for both the active view (results land
-   * in `pullRequests`) and for the inactive views' counts (only the length
-   * is kept).
+   * Pull the list for one view _without_ chip filtering. Used to keep
+   * `viewCounts` honest: the sidebar count chips reflect the raw view scope
+   * so they don't shrink when the user narrows the active view via chips.
    */
   async function fetchView(target: DashboardView): Promise<DashboardPullRequest[]> {
     return await invoke<DashboardPullRequest[]>("list_dashboard_pull_requests", {
       view: target,
       sort: sort.value,
       accountId: accountFilter.value,
+      activeChips: null,
     });
+  }
+
+  /**
+   * Pull the active view _with_ chip filtering applied server-side. Only the
+   * row list the user sees needs the chip predicates; the sidebar counts
+   * stay raw via [`fetchView`] above.
+   */
+  async function fetchActiveViewWithChips(
+    target: DashboardView,
+  ): Promise<DashboardPullRequest[]> {
+    return await invoke<DashboardPullRequest[]>("list_dashboard_pull_requests", {
+      view: target,
+      sort: sort.value,
+      accountId: accountFilter.value,
+      activeChips: Array.from(activeChips.value),
+    });
+  }
+
+  /**
+   * Refresh the per-chip counts for the active (view, account) pair. Counts
+   * are independent of the active chip set per the contract's "Counts rule":
+   * each count shows what would match if that chip alone were toggled.
+   * Called on view / account / sync-status changes; the result is `null` on
+   * failure so the bar gracefully degrades to label-only chips.
+   */
+  async function fetchChipCounts(): Promise<void> {
+    const accountId = accountFilter.value;
+    if (accountId === null) {
+      // The chip-counts command is per-account by definition. Without a
+      // selected account we leave the chip row in its "no counts yet" state
+      // rather than fan-out across every account; the badge in the sidebar
+      // already does the fan-out for the attention signal, and the chip row
+      // surfaces zero PRs anyway because the dashboard list aggregates.
+      chipCounts.value = null;
+      return;
+    }
+    try {
+      chipCounts.value = await invoke<FilterChipCounts>(
+        "list_filter_chip_counts",
+        { view: view.value, accountId },
+      );
+    } catch {
+      chipCounts.value = null;
+    }
   }
 
   /**
@@ -245,6 +318,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function load(): Promise<void> {
     loading.value = true;
     lastError.value = null;
+    const active = view.value;
     try {
       const [authored, assigned, watching, team] = await Promise.all([
         fetchView("authored"),
@@ -258,8 +332,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
         watching: watching.length,
         team: team.length,
       };
-      pullRequests.value = (() => {
-        switch (view.value) {
+      const rawActive = (() => {
+        switch (active) {
           case "authored":
             return authored;
           case "assigned":
@@ -270,6 +344,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
             return team;
         }
       })();
+      // The active view fans out to a second fetch only when chips are
+      // active. Reusing the unfiltered result keeps the common no-chip path
+      // at four calls per load, matching the existing budget.
+      pullRequests.value = activeChips.value.size > 0
+        ? await fetchActiveViewWithChips(active)
+        : rawActive;
+      void fetchChipCounts();
     } catch (err) {
       lastError.value = formatError(err);
       pullRequests.value = [];
@@ -281,11 +362,24 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function setView(next: DashboardView): Promise<void> {
     if (view.value === next) return;
     view.value = next;
+    // View change resets chips + search but preserves sort per the contract.
+    // The reset clears the chip state before `load()` so the active view's
+    // fetch lands without the previous view's chips bleeding through.
+    activeChips.value = new Set();
+    searchQuery.value = "";
     await load();
   }
 
   function setGroup(next: DashboardGroup): void {
     group.value = next;
+  }
+
+  function setSort(next: DashboardSort): void {
+    if (sort.value === next) return;
+    sort.value = next;
+    // Sort change re-queries; the backend owns ordering so this is a
+    // round-trip, not an in-memory re-sort.
+    void load();
   }
 
   function setDensity(next: Density): void {
@@ -299,6 +393,64 @@ export const useDashboardStore = defineStore("dashboard", () => {
     void load();
   }
 
+  function toggleChip(key: ChipKey): void {
+    const next = new Set(activeChips.value);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    activeChips.value = next;
+    void load();
+  }
+
+  function clearChips(): void {
+    if (activeChips.value.size === 0) return;
+    activeChips.value = new Set();
+    void load();
+  }
+
+  function setSearchQuery(next: string): void {
+    searchQuery.value = next;
+  }
+
+  function clearFilters(): void {
+    // Filtered-empty-state escape hatch: reset both the chip set and the
+    // search query, then refetch once so the backend drops chip predicates.
+    const hadChips = activeChips.value.size > 0;
+    activeChips.value = new Set();
+    searchQuery.value = "";
+    if (hadChips) void load();
+  }
+
+  async function markPullRequestUnread(
+    pullRequestId: number,
+    accountId: number,
+  ): Promise<void> {
+    // Optimistically flip the dot back on while the Rust write + recompute
+    // round-trips. The follow-up reload reconciles `needs_attention` and the
+    // canonical mention counter; the dot itself is settled by this flip.
+    markRowUnreadOptimistically(pullRequestId);
+    try {
+      await invoke("mark_pr_unread", { pullRequestId, accountId });
+    } finally {
+      // The backend recomputes `needs_attention` inside the same transaction,
+      // so a single reload puts both the dot and any tint back in step.
+      await load();
+    }
+  }
+
+  function markRowUnreadOptimistically(pullRequestId: number): void {
+    let touched = false;
+    const next = pullRequests.value.map((row) => {
+      if (row.id !== pullRequestId) return row;
+      if (row.unread) return row;
+      touched = true;
+      return { ...row, unread: true };
+    });
+    if (touched) pullRequests.value = next;
+  }
+
   /**
    * Open a PR via the active detail surface from the appearance store.
    * - `'drawer'` sets `expandedPullRequestId` so the drawer host mounts it.
@@ -309,6 +461,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
    *   persisted value sneaks through.
    */
   function openPullRequest(pr: DashboardPullRequest, router: Router): void {
+    // Both surfaces (drawer + route) drive `fetch_pr_conversation` on mount,
+    // which runs `auto_mark_read` on the Rust side. Optimistically flip the
+    // local row so the dot clears in the same paint as the surface opens;
+    // the eventual reload reconciles if the write fails.
+    markRowReadOptimistically(pr.id);
     if (appearance.prDetailSurface === "route") {
       void router.push({
         name: "pr-detail",
@@ -317,6 +474,20 @@ export const useDashboardStore = defineStore("dashboard", () => {
       return;
     }
     expandedPullRequestId.value = pr.id;
+  }
+
+  function markRowReadOptimistically(pullRequestId: number): void {
+    // Replace the array reference so Vue's shallow ref reactivity fires.
+    // The next sync-cycle reload re-reads the canonical state from SQL; this
+    // optimistic flip keeps the dot from lingering between open and reload.
+    let touched = false;
+    const next = pullRequests.value.map((row) => {
+      if (row.id !== pullRequestId) return row;
+      if (!row.unread && row.mentioned_count_unread === 0) return row;
+      touched = true;
+      return { ...row, unread: false, mentioned_count_unread: 0 };
+    });
+    if (touched) pullRequests.value = next;
   }
 
   function closeExpanded(): void {
@@ -350,9 +521,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
     view,
     group,
     sort,
+    activeChips,
+    searchQuery,
+    chipCounts,
     density,
     accountFilter,
     pullRequests,
+    filteredPullRequests,
     loading,
     lastError,
     expandedPullRequestId,
@@ -362,8 +537,14 @@ export const useDashboardStore = defineStore("dashboard", () => {
     load,
     setView,
     setGroup,
+    setSort,
     setDensity,
     setAccountFilter,
+    toggleChip,
+    clearChips,
+    setSearchQuery,
+    clearFilters,
+    markPullRequestUnread,
     openPullRequest,
     closeExpanded,
     bind,

@@ -7,6 +7,10 @@ import PullRequestRow from "@/components/dashboard/PullRequestRow.vue";
 import GroupHeader from "@/components/dashboard/GroupHeader.vue";
 import DensityToggle from "@/components/dashboard/DensityToggle.vue";
 import GroupSelector from "@/components/dashboard/GroupSelector.vue";
+import SortSelector from "@/components/dashboard/SortSelector.vue";
+import FilterChipsBar from "@/components/dashboard/FilterChipsBar.vue";
+import DashboardSearch from "@/components/dashboard/DashboardSearch.vue";
+import FilteredEmptyState from "@/components/dashboard/FilteredEmptyState.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
@@ -14,8 +18,10 @@ import {
   useDashboardStore,
   type DashboardGroup,
   type DashboardPullRequest,
+  type DashboardSort,
   type DashboardView as DashboardViewName,
 } from "@/stores/dashboard";
+import type { ChipKey } from "@/types/dashboard";
 import type { Density } from "@/stores/appearance";
 
 const route = useRoute();
@@ -25,9 +31,46 @@ const accounts = useAccountsStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
 
+// Counter semantics per the contract: the first segment reflects the
+// post-search PR count so it tracks the visible list as the user types.
 const countLabel = computed(() => {
-  const total = dashboard.pullRequests.length;
+  const total = dashboard.filteredPullRequests.length;
   return total === 1 ? "1 open" : `${total} open`;
+});
+
+const activeChipsList = computed<readonly ChipKey[]>(() =>
+  Array.from(dashboard.activeChips as Set<ChipKey>),
+);
+
+// View labels are nicer than the kebab keys when surfaced in copy ("12 of
+// your authored PRs are hidden"). Falls back to the kebab key if a new view
+// lands without a label entry.
+const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
+  authored: "authored",
+  assigned: "assigned",
+  watching: "watching",
+  team: "team",
+};
+
+const viewInlineLabel = computed<string>(
+  () => VIEW_INLINE_LABEL[dashboard.view as DashboardViewName] ?? dashboard.view,
+);
+
+// "Hidden" = raw view count minus the visible row count after chips +
+// search. The raw count comes from `viewCounts[active]` (the unfiltered
+// fetch in `load()`); the visible count is `filteredPullRequests.length`
+// after the in-memory search drops rows.
+const hiddenCount = computed<number>(() => {
+  const raw = dashboard.counts[dashboard.view as DashboardViewName] ?? 0;
+  const visible = dashboard.filteredPullRequests.length;
+  return Math.max(0, raw - visible);
+});
+
+const isFilteredEmpty = computed<boolean>(() => {
+  if (dashboard.filteredPullRequests.length > 0) return false;
+  return (
+    dashboard.activeChips.size > 0 || dashboard.searchQuery.length > 0
+  );
 });
 
 function routeView(): DashboardViewName | null {
@@ -64,6 +107,34 @@ function onGroupUpdate(value: DashboardGroup): void {
   dashboard.setGroup(value);
 }
 
+function onSortUpdate(value: DashboardSort): void {
+  dashboard.setSort(value);
+}
+
+function onSearchUpdate(value: string): void {
+  dashboard.setSearchQuery(value);
+}
+
+function onToggleChip(key: ChipKey): void {
+  dashboard.toggleChip(key);
+}
+
+function onClearChips(): void {
+  dashboard.clearChips();
+}
+
+function onClearSearch(): void {
+  dashboard.setSearchQuery("");
+}
+
+function onClearAll(): void {
+  dashboard.clearFilters();
+}
+
+function onMarkUnread(pr: DashboardPullRequest): void {
+  void dashboard.markPullRequestUnread(pr.id, pr.account_id);
+}
+
 onMounted(async () => {
   await accounts.refresh();
   await dashboard.bind();
@@ -88,37 +159,59 @@ watch(() => route.meta?.dashboardView, () => {
 <template>
   <section class="dashboard">
     <header class="dashboard__header">
-      <h1 class="dashboard__title">{{ dashboard.viewLabel }}</h1>
-      <span class="dashboard__count mono">{{ countLabel }}</span>
-      <div class="dashboard__spacer" />
-      <DensityToggle
-        :model-value="dashboard.density"
-        @update:model-value="onDensityUpdate"
-      />
-      <GroupSelector
-        :model-value="dashboard.group"
-        @update:model-value="onGroupUpdate"
-      />
-      <PRismTooltip text="Refresh" :as-child="true">
-        <button
-          type="button"
-          class="btn btn-icon"
-          :disabled="dashboard.loading"
-          @click="refresh"
-        >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
+      <div class="dashboard__top-row">
+        <h1 class="dashboard__title">{{ dashboard.viewLabel }}</h1>
+        <span class="dashboard__count mono">{{ countLabel }}</span>
+        <div class="dashboard__spacer" />
+        <DashboardSearch
+          :model-value="dashboard.searchQuery"
+          @update:model-value="onSearchUpdate"
+        />
+        <DensityToggle
+          :model-value="dashboard.density"
+          @update:model-value="onDensityUpdate"
+        />
+        <PRismTooltip text="Refresh" :as-child="true">
+          <button
+            type="button"
+            class="btn btn-icon"
+            :disabled="dashboard.loading"
+            @click="refresh"
           >
-            <path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4" />
-          </svg>
-        </button>
-      </PRismTooltip>
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            >
+              <path d="M2 6l2-2a5 5 0 018.5 1M14 10l-2 2a5 5 0 01-8.5-1M2 2v4h4M14 14v-4h-4" />
+            </svg>
+          </button>
+        </PRismTooltip>
+      </div>
+
+      <div class="dashboard__chips-row">
+        <FilterChipsBar
+          :counts="dashboard.chipCounts"
+          :active="(dashboard.activeChips as ReadonlySet<ChipKey>)"
+          @toggle="onToggleChip"
+          @clear="onClearChips"
+        />
+        <span class="dashboard__chips-sep" aria-hidden="true" />
+        <span class="dashboard__chips-label">GROUP</span>
+        <GroupSelector
+          :model-value="dashboard.group"
+          @update:model-value="onGroupUpdate"
+        />
+        <span class="dashboard__chips-label dashboard__chips-label--gap">SORT</span>
+        <SortSelector
+          :model-value="(dashboard.sort as DashboardSort)"
+          @update:model-value="onSortUpdate"
+        />
+      </div>
     </header>
 
     <div v-if="!hasAccounts" class="dashboard__empty">
@@ -165,6 +258,18 @@ watch(() => route.meta?.dashboardView, () => {
       Loading pull requests...
     </div>
 
+    <div v-else-if="isFilteredEmpty" class="dashboard__empty">
+      <FilteredEmptyState
+        :hidden-count="hiddenCount"
+        :view-label="viewInlineLabel"
+        :active-chips="activeChipsList"
+        :search-query="dashboard.searchQuery"
+        @drop-chip="onToggleChip"
+        @clear-search="onClearSearch"
+        @clear-all="onClearAll"
+      />
+    </div>
+
     <div
       v-else-if="dashboard.pullRequests.length === 0"
       class="dashboard__empty"
@@ -197,7 +302,10 @@ watch(() => route.meta?.dashboardView, () => {
           :key="`${pr.account_id}:${pr.id}`"
           :pull-request="pr"
           :density="dashboard.density"
+          :unread="pr.unread"
+          :needs-attention="pr.needs_attention"
           @open="openPullRequest"
+          @mark-unread="onMarkUnread"
         />
       </section>
     </div>
@@ -219,10 +327,43 @@ watch(() => route.meta?.dashboardView, () => {
 
 .dashboard__header {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--s-3);
   padding: var(--s-5) var(--s-6) var(--s-4);
   border-bottom: 1px solid var(--border-1);
+}
+
+.dashboard__top-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.dashboard__chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dashboard__chips-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-1);
+  margin: 0 4px;
+}
+
+.dashboard__chips-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-faint);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+.dashboard__chips-label--gap {
+  margin-left: 8px;
 }
 
 .dashboard__title {
