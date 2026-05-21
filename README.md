@@ -8,6 +8,8 @@ PRism gives developers, reviewers, and engineering leads a single focused dashbo
 
 Pre-alpha. M1 (foundations) is in progress — application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
 
+For v1, github.com is the only validated host; GitHub Enterprise hosts have the wiring in place but are not validated. See ADR [0016](docs/adr/0016-unified-multi-account-dashboard.md).
+
 ## Stack
 
 - [Tauri 2](https://tauri.app/) (Rust core + system webview)

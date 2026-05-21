@@ -56,6 +56,7 @@ We will use **Personal Access Tokens stored exclusively in the OS keychain** via
 
 - Post-v1: OAuth Device Flow or GitHub App auth as alternatives (PRD §12).
 - A future ADR will cover token validation cadence (on app start vs. lazy on first 401).
+- **GHE positioning for v1.** ADR [0016](0016-unified-multi-account-dashboard.md) keeps the per-account `host` and `user_endpoint` wiring described above but descopes end-to-end validation against a real GHE host from M5. PRism's code paths accept any GHE host that exposes `api/v3`; the project does not claim a tested GHE experience for v1. Re-promotion is a follow-up ADR once a validation pass lands.
 
 ## References
 
