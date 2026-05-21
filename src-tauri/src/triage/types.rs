@@ -7,6 +7,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Filter chip identifier. The wire shape is the kebab-case `ChipKey` from
+/// `docs/contracts/triage-ux.md` ("Frontend component interfaces"); the
+/// dashboard command takes a `Vec<ChipKey>` as the active chip set and the
+/// counts command projects one count per variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChipKey {
+    NeedsAttention,
+    UnresolvedThreads,
+    CiFailing,
+    Stale,
+    Drafts,
+}
+
 /// Counts for the dashboard's filter-chip row. Each chip's count is
 /// independent of the active chip filter set so the user always sees what
 /// would match if they toggled a single chip alone. The view-scope still

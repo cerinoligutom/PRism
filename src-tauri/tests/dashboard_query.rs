@@ -22,9 +22,11 @@
 //!   - 500 (alice/web, #3): bob involved. `updated_at = 800`,
 //!     `latest_status_change_at = NULL`. CI = SUCCESS 5/5.
 
-use prism_lib::dashboard::query::list_pull_requests;
+use prism_lib::dashboard::query::list_pull_requests as inner_list_pull_requests;
+use prism_lib::dashboard::types::DashboardPullRequest;
 use prism_lib::dashboard::{DashboardSort, DashboardView, ReviewerEntry, ReviewerState};
 use prism_lib::db::migrate;
+use prism_lib::triage::types::ChipKey;
 use rusqlite::params;
 use rusqlite::Connection;
 
@@ -32,6 +34,19 @@ fn fresh_db() -> Connection {
     let mut conn = Connection::open_in_memory().unwrap();
     migrate::run(&mut conn).unwrap();
     conn
+}
+
+/// Backwards-compatible shim for tests that pre-date the M4-D chip-filter
+/// argument. Defaults to "no chips active" so the assertions stay focused on
+/// view / sort / account behaviour. Tests that exercise the chip composition
+/// call [`inner_list_pull_requests`] directly.
+fn list_pull_requests(
+    conn: &Connection,
+    view: DashboardView,
+    sort: DashboardSort,
+    account_id: Option<i64>,
+) -> Result<Vec<DashboardPullRequest>, rusqlite::Error> {
+    inner_list_pull_requests(conn, view, sort, account_id, &[])
 }
 
 fn seed_fixture(conn: &Connection) {
@@ -706,4 +721,289 @@ fn author_and_reviewer_avatar_urls_left_join_users_table() {
     // `carol` was a reviewer but no users row exists → avatar_url is None.
     let carol = pr.reviewers.iter().find(|r| r.login == "carol").unwrap();
     assert!(carol.avatar_url.is_none());
+}
+
+// ===== M4-D Stale / NeedsMe sort + chip-filter composition tests =====
+
+/// Seed a small Watching-view fixture for alice (account 1) with varied
+/// `updated_at` so the Stale sort produces a deterministic order. Returns the
+/// connection.
+fn seed_stale_fixture(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        -- updated_at varied: PR 101 oldest, PR 103 newest. The Stale sort is
+        -- ASC, so the row order must be 101, 102, 103.
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref) VALUES
+            (101, 10, 1, 'old',    'open', 0, 'bob', 0, 100, 'main', 'a'),
+            (102, 10, 2, 'middle', 'open', 0, 'bob', 0, 500, 'main', 'b'),
+            (103, 10, 3, 'new',    'open', 0, 'bob', 0, 900, 'main', 'c');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 101, 0, 0, 1, 0),
+            (1, 102, 0, 0, 1, 0),
+            (1, 103, 0, 0, 1, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn stale_sort_returns_oldest_updated_at_first() {
+    let conn = fresh_db();
+    seed_stale_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Stale,
+        Some(1),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![101, 102, 103],
+        "Stale sort must order rows oldest-activity-first"
+    );
+}
+
+/// Seed a fixture for the NeedsMe sort. PR 200 has `needs_attention = 1`;
+/// PR 201 and 202 don't. Among the two non-attention rows, 202 has the more
+/// recent `latest_status_change_at` and must tie-break first.
+fn seed_needs_me_fixture(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
+            (200, 10, 1, 'attn',     'open', 0, 'bob', 0, 100, 100,  'main', 'a'),
+            (201, 10, 2, 'no-attn1', 'open', 0, 'bob', 0, 200, 200,  'main', 'b'),
+            (202, 10, 3, 'no-attn2', 'open', 0, 'bob', 0, 300, 1000, 'main', 'c');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at, needs_attention) VALUES
+            (1, 200, 0, 0, 1, 0, 1),
+            (1, 201, 0, 0, 1, 0, 0),
+            (1, 202, 0, 0, 1, 0, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn needs_me_sort_surfaces_attention_rows_first_then_breaks_ties_by_status_change() {
+    let conn = fresh_db();
+    seed_needs_me_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::NeedsMe,
+        Some(1),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![200, 202, 201],
+        "NeedsMe sort puts needs_attention=1 first; ties break by COALESCE(lsc, updated_at) DESC"
+    );
+}
+
+/// Seed a Watching-view fixture covering every chip predicate independently.
+fn seed_chip_fixture(conn: &Connection) {
+    // `now - 604800` is the "exactly 7 days ago" boundary; subtract a few
+    // extra seconds so the Stale chip's strict `>` predicate fires.
+    let stale_updated_at = "(strftime('%s','now') - 800000)";
+    let fresh_updated_at = "strftime('%s','now')";
+    conn.execute_batch(&format!(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        -- PR 300: draft only.
+        -- PR 301: ci_state = FAILURE.
+        -- PR 302: stale (old updated_at).
+        -- PR 303: unresolved threads.
+        -- PR 304: needs_attention precomputed on the relation row.
+        -- PR 305: nothing - control row, matches no chip.
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref,
+             threads_unresolved_involved, threads_unresolved_uninvolved,
+             ci_state) VALUES
+            (300, 10, 1, 'draft',   'open', 1, 'bob', 0, {fresh_updated_at}, 'main', 'a', 0, 0, NULL),
+            (301, 10, 2, 'ci',      'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'b', 0, 0, 'FAILURE'),
+            (302, 10, 3, 'stale',   'open', 0, 'bob', 0, {stale_updated_at}, 'main', 'c', 0, 0, NULL),
+            (303, 10, 4, 'threads', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'd', 2, 1, NULL),
+            (304, 10, 5, 'attn',    'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'e', 0, 0, NULL),
+            (305, 10, 6, 'control', 'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'f', 0, 0, NULL);
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at, needs_attention) VALUES
+            (1, 300, 0, 0, 1, 0, 0),
+            (1, 301, 0, 0, 1, 0, 0),
+            (1, 302, 0, 0, 1, 0, 0),
+            (1, 303, 0, 0, 1, 0, 0),
+            (1, 304, 0, 0, 1, 0, 1),
+            (1, 305, 0, 0, 1, 0, 0);
+        "#,
+    ))
+    .unwrap();
+}
+
+#[test]
+fn drafts_chip_narrows_results_to_draft_prs() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::Drafts],
+    )
+    .unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![300],
+        "Drafts chip narrows to PR 300 only"
+    );
+}
+
+#[test]
+fn ci_failing_chip_narrows_results_to_failing_ci() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::CiFailing],
+    )
+    .unwrap();
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![301]);
+}
+
+#[test]
+fn stale_chip_narrows_to_prs_older_than_seven_days() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::Stale],
+    )
+    .unwrap();
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![302]);
+}
+
+#[test]
+fn unresolved_threads_chip_narrows_to_prs_with_unresolved_thread_counts() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::UnresolvedThreads],
+    )
+    .unwrap();
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![303]);
+}
+
+#[test]
+fn needs_attention_chip_narrows_to_relation_flagged_rows() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::NeedsAttention],
+    )
+    .unwrap();
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![304]);
+}
+
+#[test]
+fn two_active_chips_intersect_via_and_composition() {
+    // Add a draft PR with failing CI so the AND-intersection is non-empty.
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref, ci_state) VALUES
+            (306, 10, 7, 'draft+ci', 'open', 1, 'bob', 0,
+             strftime('%s','now'), 'main', 'g', 'ERROR');
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 306, 0, 0, 1, 0);
+        "#,
+    )
+    .unwrap();
+
+    let rows = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[ChipKey::Drafts, ChipKey::CiFailing],
+    )
+    .unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![306],
+        "AND composition narrows to PR 306 alone (draft AND failing CI)"
+    );
+}
+
+#[test]
+fn empty_chip_set_preserves_baseline_view_results() {
+    let conn = fresh_db();
+    seed_chip_fixture(&conn);
+
+    let baseline = inner_list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(baseline.len(), 6, "no chips means no filter");
 }

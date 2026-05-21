@@ -8,8 +8,16 @@
 //! across the parallel implementation waves. See `docs/contracts/triage-ux.md`
 //! ("Sync cycle changes") and ADR 0015 ("Composite formula") for the
 //! single source of truth for the four input signals.
+//!
+//! Wave 2-D additionally lands the per-chip count SQL consumed by
+//! [`crate::triage::commands::list_filter_chip_counts`]. The five counts share
+//! the same view-scoped FROM clause; each chip's predicate is documented in
+//! [`crate::triage::types::ChipKey`].
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::dashboard::DashboardView;
+use crate::triage::types::{ChipKey, FilterChipCounts};
 
 /// Persist the read-state flip for one `(account_id, pull_request_id)` pair.
 /// UPSERTs the relation row, sets `read_at` + `mention_scan_watermark_at` to
@@ -128,6 +136,93 @@ pub fn recompute_needs_attention(
         params![account_id, pull_request_id],
     )?;
     Ok(())
+}
+
+/// SQL predicate fragment for `chip` in the chip-count and chip-WHERE-composition
+/// queries. The `rel.*` references resolve against the
+/// `pull_request_viewer_relations` row joined to the active account; callers
+/// must ensure the join is present before composing this fragment in.
+///
+/// The `Stale` predicate hard-codes the 7-day window pinned in the contract
+/// (`604800` seconds); the value lives in one place so a future revision only
+/// edits this string.
+pub fn chip_predicate(chip: ChipKey) -> &'static str {
+    match chip {
+        ChipKey::NeedsAttention => "rel.needs_attention = 1",
+        ChipKey::UnresolvedThreads => {
+            "(pr.threads_unresolved_involved + pr.threads_unresolved_uninvolved) > 0"
+        }
+        ChipKey::CiFailing => "pr.ci_state IN ('FAILURE', 'ERROR')",
+        ChipKey::Stale => "(strftime('%s','now') - pr.updated_at) > 604800",
+        ChipKey::Drafts => "pr.draft = 1",
+    }
+}
+
+/// Common view-scoped FROM clause for the chip-count SELECTs. Joins
+/// `pull_requests` with the account's relation row so every chip predicate
+/// (including `rel.needs_attention = 1`) can reference `rel.*` uniformly.
+///
+/// Authored / Assigned / Watching gate on the matching relation flag; the
+/// LEFT JOIN inside the team variant lets `rel.needs_attention` resolve to
+/// NULL (which the count predicate then ignores) when the active account has
+/// no relation row for a Team-view PR.
+fn chip_count_from_clause(view: DashboardView) -> &'static str {
+    match view {
+        DashboardView::Authored => {
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_authored = 1 AND rel.account_id = ?1"
+        }
+        DashboardView::Assigned => {
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_review_requested = 1 AND rel.account_id = ?1"
+        }
+        DashboardView::Watching => {
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_involved = 1 AND rel.account_id = ?1"
+        }
+        DashboardView::Team => {
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.account_id = ?1
+             WHERE r.is_team_tracked = 1 AND r.account_id = ?1"
+        }
+    }
+}
+
+/// Run one chip's count SELECT against the view-scoped FROM clause.
+fn count_chip(
+    conn: &Connection,
+    view: DashboardView,
+    account_id: i64,
+    chip: ChipKey,
+) -> Result<i64, rusqlite::Error> {
+    let from_and_where = chip_count_from_clause(view);
+    let predicate = chip_predicate(chip);
+    let sql = format!("SELECT COUNT(*) {from_and_where} AND {predicate}");
+    conn.query_row(&sql, params![account_id], |row| row.get(0))
+}
+
+/// Project the five chip counts for the active view + account. Each count is
+/// independent of the other chips per the contract's "Counts rule": the
+/// number returned for chip `X` is the count of PRs that would match if `X`
+/// were toggled alone within the view scope.
+pub fn list_filter_chip_counts(
+    conn: &Connection,
+    view: DashboardView,
+    account_id: i64,
+) -> Result<FilterChipCounts, rusqlite::Error> {
+    Ok(FilterChipCounts {
+        needs_attention: count_chip(conn, view, account_id, ChipKey::NeedsAttention)?,
+        unresolved_threads: count_chip(conn, view, account_id, ChipKey::UnresolvedThreads)?,
+        ci_failing: count_chip(conn, view, account_id, ChipKey::CiFailing)?,
+        stale: count_chip(conn, view, account_id, ChipKey::Stale)?,
+        drafts: count_chip(conn, view, account_id, ChipKey::Drafts)?,
+    })
 }
 
 #[cfg(test)]
@@ -314,5 +409,181 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 0);
+    }
+
+    // ===== chip-count tests (M4-D) =====
+
+    /// Seed a Watching-view fixture covering each chip predicate exactly once.
+    /// PR 600 is drafts-only, 601 is ci-failing, 602 is stale, 603 has
+    /// unresolved threads, 604 has needs_attention precomputed.
+    fn seed_chip_count_fixture(conn: &Connection) {
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'alice-acct', 'github.com', 'alice', 0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+                (10, 1, 'alice', 'web', 'public');
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref,
+                 threads_unresolved_involved, threads_unresolved_uninvolved,
+                 ci_state) VALUES
+                (600, 10, 1, 'd',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', 0, 0, NULL),
+                (601, 10, 2, 'ci', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 0, 0, 'FAILURE'),
+                (602, 10, 3, 'st', 'open', 0, 'bob', 0, strftime('%s','now') - 800000, 'main', 'c', 0, 0, NULL),
+                (603, 10, 4, 'th', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'd', 1, 1, NULL),
+                (604, 10, 5, 'a',  'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'e', 0, 0, NULL);
+
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention) VALUES
+                (1, 600, 0, 0, 1, 0, 0),
+                (1, 601, 0, 0, 1, 0, 0),
+                (1, 602, 0, 0, 1, 0, 0),
+                (1, 603, 0, 0, 1, 0, 0),
+                (1, 604, 0, 0, 1, 0, 1);
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_filter_chip_counts_projects_one_per_chip() {
+        let conn = fresh_db();
+        seed_chip_count_fixture(&conn);
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
+        assert_eq!(counts.drafts, 1, "PR 600 is the only draft");
+        assert_eq!(counts.ci_failing, 1, "PR 601 is the only CI-failing");
+        assert_eq!(counts.stale, 1, "PR 602 is the only stale");
+        assert_eq!(
+            counts.unresolved_threads, 1,
+            "PR 603 is the only unresolved"
+        );
+        assert_eq!(counts.needs_attention, 1, "PR 604 is the only attention");
+    }
+
+    #[test]
+    fn list_filter_chip_counts_returns_zeros_on_empty_view() {
+        let conn = fresh_db();
+        // Account exists but no PRs / relations.
+        conn.execute(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0)",
+            [],
+        )
+        .unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Authored, 1).unwrap();
+        assert_eq!(counts.needs_attention, 0);
+        assert_eq!(counts.unresolved_threads, 0);
+        assert_eq!(counts.ci_failing, 0);
+        assert_eq!(counts.stale, 0);
+        assert_eq!(counts.drafts, 0);
+    }
+
+    #[test]
+    fn list_filter_chip_counts_per_chip_is_independent_of_other_chips() {
+        // Build a PR that matches both `drafts` and `ci_failing`. Each chip's
+        // count must include that PR independently, not as the AND-intersection.
+        let conn = fresh_db();
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'a', 'github.com', 'alice', 0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+                (10, 1, 'alice', 'web', 'public');
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref, ci_state) VALUES
+                (700, 10, 1, 'd+ci',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', 'FAILURE'),
+                (701, 10, 2, 'ci',    'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 'FAILURE'),
+                (702, 10, 3, 'draft', 'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'c', NULL);
+
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at) VALUES
+                (1, 700, 0, 0, 1, 0),
+                (1, 701, 0, 0, 1, 0),
+                (1, 702, 0, 0, 1, 0);
+            "#,
+        )
+        .unwrap();
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
+        assert_eq!(counts.drafts, 2, "PRs 700 + 702 are drafts");
+        assert_eq!(counts.ci_failing, 2, "PRs 700 + 701 have failing CI");
+    }
+
+    #[test]
+    fn list_filter_chip_counts_scopes_by_account() {
+        // Two accounts, separate watching sets. Counts must only reflect the
+        // requested account's PRs.
+        let conn = fresh_db();
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'a', 'github.com', 'alice', 0),
+                (2, 'b', 'github.com', 'bob',   0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+                (10, 1, 'alice', 'web', 'public');
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (800, 10, 1, 'alice-pr', 'open', 1, 'x', 0, strftime('%s','now'), 'main', 'a'),
+                (801, 10, 2, 'bob-pr',   'open', 1, 'y', 0, strftime('%s','now'), 'main', 'b');
+
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at) VALUES
+                (1, 800, 0, 0, 1, 0),
+                (2, 801, 0, 0, 1, 0);
+            "#,
+        )
+        .unwrap();
+
+        let alice = list_filter_chip_counts(&conn, DashboardView::Watching, 1).unwrap();
+        let bob = list_filter_chip_counts(&conn, DashboardView::Watching, 2).unwrap();
+        assert_eq!(alice.drafts, 1);
+        assert_eq!(bob.drafts, 1);
+    }
+
+    #[test]
+    fn list_filter_chip_counts_team_view_uses_repo_flag_not_relations() {
+        // Team-view rows surface via `repos.is_team_tracked = 1`; the
+        // needs_attention count comes from the LEFT JOIN to relations on the
+        // active account.
+        let conn = fresh_db();
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'a', 'github.com', 'alice', 0);
+
+            INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+                (10, 1, 'alice', 'web', 'public', 1);
+
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref, ci_state) VALUES
+                (900, 10, 1, 't', 'open', 1, 'x', 0, strftime('%s','now'), 'main', 'a', 'FAILURE');
+
+            -- needs_attention precomputed on the relation row for alice.
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention) VALUES
+                (1, 900, 0, 0, 0, 0, 1);
+            "#,
+        )
+        .unwrap();
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Team, 1).unwrap();
+        assert_eq!(counts.drafts, 1);
+        assert_eq!(counts.ci_failing, 1);
+        assert_eq!(counts.needs_attention, 1);
     }
 }

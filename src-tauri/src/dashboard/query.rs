@@ -24,6 +24,8 @@ use crate::dashboard::types::{
     CiSummary, DashboardPullRequest, DashboardSort, DashboardView, RepoRef, ReviewerEntry,
     ReviewerState, ThreadsSummary,
 };
+use crate::triage::query as triage_query;
+use crate::triage::types::ChipKey;
 
 /// SQL fragment that selects every column the row projection needs, joined to
 /// `repos` and `accounts`. Each view prepends its own FROM clause to this body.
@@ -62,36 +64,84 @@ const PR_PROJECTION_COLUMNS: &str = "
 
 /// Common projection: PR + repo + account, ordered by the requested sort.
 /// `from_and_where` substitutes in the view-specific JOIN and WHERE clauses.
-/// Parameter order is determined by the `from_and_where` body. The caller
-/// passes the matching parameters when invoking the prepared statement.
-fn build_sql(from_and_where: &str, sort: DashboardSort) -> String {
-    // M4 (Wave 3-D) replaces this with per-variant ORDER BY clauses. The
-    // contract PR (M4-0) widens the enum so the type checks across the
-    // codebase; until Wave 3-D lands, `Stale` and `NeedsMe` reuse the
-    // `Updated` ordering so the dashboard still sorts deterministically.
+/// `chip_clause` is the optional `AND (chip_1) AND (chip_2) ...` fragment
+/// that pins the chip-filter composition into the WHERE; empty when no chips
+/// are active. Parameter order is determined by the `from_and_where` body;
+/// the caller passes the matching parameters when invoking the prepared
+/// statement.
+///
+/// `NeedsMe` references `rel.needs_attention`; the caller must ensure `rel`
+/// is in scope (either via the relation-view JOIN or via a LEFT JOIN against
+/// `pull_request_viewer_relations` in the Team view path).
+fn build_sql(from_and_where: &str, chip_clause: &str, sort: DashboardSort) -> String {
     let order_by = match sort {
-        DashboardSort::Updated | DashboardSort::Stale | DashboardSort::NeedsMe => {
+        DashboardSort::Updated => {
             "ORDER BY COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, pr.id DESC"
+        }
+        DashboardSort::Stale => "ORDER BY pr.updated_at ASC, pr.id DESC",
+        DashboardSort::NeedsMe => {
+            // `COALESCE` keeps the column NULL-safe for the Team view path,
+            // where the LEFT JOIN against `pull_request_viewer_relations`
+            // misses when the active account has no relation row.
+            "ORDER BY COALESCE(rel.needs_attention, 0) DESC, \
+                      COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, \
+                      pr.id DESC"
         }
     };
     format!(
         "SELECT {PR_PROJECTION_COLUMNS}
          {from_and_where}
+         {chip_clause}
          {order_by}"
     )
 }
 
+/// AND-compose the chip predicates for the active chip set. Returns an empty
+/// string when no chips are active; otherwise returns a leading-` AND `
+/// fragment that drops straight onto the end of the view's WHERE clause.
+///
+/// `Composition rule` from the contract: active chips AND the view; the
+/// predicates themselves never reference each other.
+fn chip_where_clause(active_chips: &[ChipKey]) -> String {
+    if active_chips.is_empty() {
+        return String::new();
+    }
+    let mut clause = String::new();
+    for chip in active_chips {
+        clause.push_str(" AND (");
+        clause.push_str(triage_query::chip_predicate(*chip));
+        clause.push(')');
+    }
+    clause
+}
+
+/// True when any active chip or the chosen sort needs `rel.*` in scope.
+/// Drives the Team view's LEFT JOIN gating.
+fn needs_relation_join(sort: DashboardSort, active_chips: &[ChipKey]) -> bool {
+    matches!(sort, DashboardSort::NeedsMe) || active_chips.contains(&ChipKey::NeedsAttention)
+}
+
 /// Build the per-view SQL + parameter vector for [`list_dashboard_pull_requests`].
+///
+/// `active_chips` is the chip-filter set; empty means "no chip filter". The
+/// chips AND-compose into the WHERE per the contract's "Composition rule".
 fn view_query(
     view: DashboardView,
     sort: DashboardSort,
     account_id: Option<i64>,
+    active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
     match view {
-        DashboardView::Authored => relation_view_query("is_authored", sort, account_id),
-        DashboardView::Assigned => relation_view_query("is_review_requested", sort, account_id),
-        DashboardView::Watching => relation_view_query("is_involved", sort, account_id),
-        DashboardView::Team => team_view_query(sort, account_id),
+        DashboardView::Authored => {
+            relation_view_query("is_authored", sort, account_id, active_chips)
+        }
+        DashboardView::Assigned => {
+            relation_view_query("is_review_requested", sort, account_id, active_chips)
+        }
+        DashboardView::Watching => {
+            relation_view_query("is_involved", sort, account_id, active_chips)
+        }
+        DashboardView::Team => team_view_query(sort, account_id, active_chips),
     }
 }
 
@@ -103,6 +153,7 @@ fn relation_view_query(
     flag_column: &str,
     sort: DashboardSort,
     account_id: Option<i64>,
+    active_chips: &[ChipKey],
 ) -> (String, Vec<i64>) {
     let mut from_and_where = format!(
         "FROM pull_request_viewer_relations rel
@@ -117,38 +168,68 @@ fn relation_view_query(
         from_and_where.push_str(" AND rel.account_id = ?1");
         params.push(id);
     }
-    (build_sql(&from_and_where, sort), params)
+    let chip_clause = chip_where_clause(active_chips);
+    (build_sql(&from_and_where, &chip_clause, sort), params)
 }
 
-/// Team view: PRs in repos opted into team tracking. No relation read; the
-/// row's `account_id` is the repo's owning account.
-fn team_view_query(sort: DashboardSort, account_id: Option<i64>) -> (String, Vec<i64>) {
+/// Team view: PRs in repos opted into team tracking. The relation table is
+/// LEFT JOINed when the sort or any active chip needs `rel.*` in scope
+/// (`NeedsMe` sort or the `Needs my attention` chip); otherwise the JOIN is
+/// omitted to keep the planner shape identical to M2.
+fn team_view_query(
+    sort: DashboardSort,
+    account_id: Option<i64>,
+    active_chips: &[ChipKey],
+) -> (String, Vec<i64>) {
     let mut from_and_where = String::from(
         "FROM pull_requests pr
          JOIN repos r ON r.id = pr.repo_id
          JOIN accounts a ON a.id = r.account_id
-         LEFT JOIN users author_u ON author_u.login = pr.author_login
-         WHERE r.is_team_tracked = 1",
+         LEFT JOIN users author_u ON author_u.login = pr.author_login",
     );
+    if needs_relation_join(sort, active_chips) {
+        // Key the LEFT JOIN on the active account when one is filtered;
+        // otherwise key on the repo's owning account so the JOIN still
+        // resolves to at most one row per PR (no cardinality blow-up) and
+        // `rel.needs_attention` reads the owning-account's flag.
+        let on_clause = if account_id.is_some() {
+            "rel.account_id = ?1"
+        } else {
+            "rel.account_id = r.account_id"
+        };
+        from_and_where.push_str(&format!(
+            "
+         LEFT JOIN pull_request_viewer_relations rel
+            ON rel.pull_request_id = pr.id
+           AND {on_clause}"
+        ));
+    }
+    from_and_where.push_str(" WHERE r.is_team_tracked = 1");
     let mut params: Vec<i64> = Vec::new();
     if let Some(id) = account_id {
         from_and_where.push_str(" AND r.account_id = ?1");
         params.push(id);
     }
-    (build_sql(&from_and_where, sort), params)
+    let chip_clause = chip_where_clause(active_chips);
+    (build_sql(&from_and_where, &chip_clause, sort), params)
 }
 
 /// Execute the per-view list query against `conn` and project each row into a
 /// `DashboardPullRequest` with empty reviewer lists. Reviewer hydration is a
 /// second pass so we batch one `WHERE pull_request_id IN (...)` query per call
 /// instead of N per-row reads.
+///
+/// `active_chips` is the chip-filter set; an empty slice means "no chip
+/// filter applied". See `docs/contracts/triage-ux.md` ("Filter chip semantics")
+/// for the chip predicates and composition rule.
 pub fn list_pull_requests(
     conn: &Connection,
     view: DashboardView,
     sort: DashboardSort,
     account_id: Option<i64>,
+    active_chips: &[ChipKey],
 ) -> Result<Vec<DashboardPullRequest>, rusqlite::Error> {
-    let (sql, params) = view_query(view, sort, account_id);
+    let (sql, params) = view_query(view, sort, account_id, active_chips);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(params.iter()))?;
 
@@ -440,7 +521,12 @@ mod tests {
     /// matching clause so a future refactor doesn't drop the planner hint.
     #[test]
     fn authored_query_includes_is_authored_predicate() {
-        let (sql, _) = view_query(DashboardView::Authored, DashboardSort::Updated, Some(1));
+        let (sql, _) = view_query(
+            DashboardView::Authored,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
         assert!(
             sql.contains("rel.is_authored = 1"),
             "authored query missing flag predicate; SQL: {sql}"
@@ -449,22 +535,32 @@ mod tests {
 
     #[test]
     fn assigned_query_uses_review_requested_predicate() {
-        let (sql, _) = view_query(DashboardView::Assigned, DashboardSort::Updated, Some(1));
+        let (sql, _) = view_query(
+            DashboardView::Assigned,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
         assert!(sql.contains("rel.is_review_requested = 1"), "SQL: {sql}");
     }
 
     #[test]
     fn watching_query_uses_involved_predicate() {
-        let (sql, _) = view_query(DashboardView::Watching, DashboardSort::Updated, Some(1));
+        let (sql, _) = view_query(
+            DashboardView::Watching,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
         assert!(sql.contains("rel.is_involved = 1"), "SQL: {sql}");
     }
 
     #[test]
-    fn team_query_does_not_join_relations() {
-        let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1));
+    fn team_query_does_not_join_relations_when_unused() {
+        let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1), &[]);
         assert!(
             !sql.contains("pull_request_viewer_relations"),
-            "team query must not touch relations; SQL: {sql}"
+            "team query must not touch relations when sort + chips don't need it; SQL: {sql}"
         );
         assert!(
             sql.contains("r.is_team_tracked = 1"),
@@ -473,8 +569,35 @@ mod tests {
     }
 
     #[test]
+    fn team_query_left_joins_relations_for_needs_me_sort() {
+        let (sql, _) = view_query(DashboardView::Team, DashboardSort::NeedsMe, Some(1), &[]);
+        assert!(
+            sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
+            "team query missing LEFT JOIN for NeedsMe sort; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("rel.account_id = ?1"),
+            "team query missing account scope on the LEFT JOIN; SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn team_query_left_joins_relations_for_needs_attention_chip() {
+        let (sql, _) = view_query(
+            DashboardView::Team,
+            DashboardSort::Updated,
+            Some(1),
+            &[ChipKey::NeedsAttention],
+        );
+        assert!(
+            sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
+            "team query missing LEFT JOIN for needs-attention chip; SQL: {sql}"
+        );
+    }
+
+    #[test]
     fn account_id_none_omits_account_filter() {
-        let (sql, params) = view_query(DashboardView::Authored, DashboardSort::Updated, None);
+        let (sql, params) = view_query(DashboardView::Authored, DashboardSort::Updated, None, &[]);
         assert!(params.is_empty());
         assert!(
             !sql.contains("rel.account_id ="),
@@ -484,17 +607,81 @@ mod tests {
 
     #[test]
     fn account_id_some_appends_account_filter_with_param() {
-        let (sql, params) = view_query(DashboardView::Authored, DashboardSort::Updated, Some(42));
+        let (sql, params) = view_query(
+            DashboardView::Authored,
+            DashboardSort::Updated,
+            Some(42),
+            &[],
+        );
         assert_eq!(params, vec![42]);
         assert!(sql.contains("rel.account_id ="), "SQL: {sql}");
     }
 
     #[test]
     fn updated_sort_orders_by_coalesce_lsc_updated() {
-        let (sql, _) = view_query(DashboardView::Watching, DashboardSort::Updated, None);
+        let (sql, _) = view_query(DashboardView::Watching, DashboardSort::Updated, None, &[]);
         assert!(
             sql.contains("ORDER BY COALESCE(pr.latest_status_change_at, pr.updated_at) DESC"),
             "SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn stale_sort_orders_by_updated_at_ascending() {
+        let (sql, _) = view_query(DashboardView::Watching, DashboardSort::Stale, Some(1), &[]);
+        assert!(
+            sql.contains("ORDER BY pr.updated_at ASC, pr.id DESC"),
+            "Stale sort ORDER BY mismatch; SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn needs_me_sort_orders_by_needs_attention_desc_with_coalesce_tiebreak() {
+        let (sql, _) = view_query(
+            DashboardView::Watching,
+            DashboardSort::NeedsMe,
+            Some(1),
+            &[],
+        );
+        assert!(
+            sql.contains("ORDER BY COALESCE(rel.needs_attention, 0) DESC"),
+            "NeedsMe sort missing relation column; SQL: {sql}"
+        );
+        assert!(
+            sql.contains("COALESCE(pr.latest_status_change_at, pr.updated_at) DESC"),
+            "NeedsMe sort missing tie-break; SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn chip_where_clause_is_empty_when_no_chips_active() {
+        assert_eq!(chip_where_clause(&[]), "");
+    }
+
+    #[test]
+    fn chip_where_clause_and_composes_active_chips() {
+        let clause = chip_where_clause(&[ChipKey::Drafts, ChipKey::CiFailing]);
+        assert!(
+            clause.contains("AND (pr.draft = 1)"),
+            "missing drafts: {clause}"
+        );
+        assert!(
+            clause.contains("AND (pr.ci_state IN ('FAILURE', 'ERROR'))"),
+            "missing ci_failing: {clause}"
+        );
+    }
+
+    #[test]
+    fn active_chip_predicate_lands_in_view_sql() {
+        let (sql, _) = view_query(
+            DashboardView::Authored,
+            DashboardSort::Updated,
+            Some(1),
+            &[ChipKey::Drafts],
+        );
+        assert!(
+            sql.contains("AND (pr.draft = 1)"),
+            "chip predicate missing; SQL: {sql}"
         );
     }
 }

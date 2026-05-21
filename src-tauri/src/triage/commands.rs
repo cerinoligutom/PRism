@@ -6,7 +6,7 @@
 //! scanner ever bumps it). Both recompute `needs_attention` inside the same
 //! transaction via [`crate::triage::query::recompute_needs_attention`].
 //!
-//! Wave 2-D will fill in `list_filter_chip_counts`. See
+//! Wave 2-D fills in `list_filter_chip_counts`. See
 //! `docs/contracts/triage-ux.md` ("Tauri command surface") for the contract.
 
 use tauri::State;
@@ -87,10 +87,11 @@ pub fn mark_pr_unread(
 pub fn list_filter_chip_counts(
     view: DashboardView,
     account_id: i64,
-    _db: State<'_, DbHandle>,
+    db: State<'_, DbHandle>,
 ) -> Result<FilterChipCounts, String> {
-    let _ = (view, account_id);
-    unimplemented!("M4-D");
+    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    query::list_filter_chip_counts(&conn, view, account_id)
+        .map_err(|e| format!("list_filter_chip_counts: {e}"))
 }
 
 #[cfg(test)]
