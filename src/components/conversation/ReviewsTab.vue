@@ -3,8 +3,9 @@ import { computed } from "vue";
 
 import type { PullRequestReview } from "@/types/conversation";
 
-import { formatRelativeAgo } from "@/lib/format";
+import { EM_DASH } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 
 interface Props {
   reviews: readonly PullRequestReview[];
@@ -30,7 +31,6 @@ const PILL: Record<string, PillSpec> = {
 interface ReviewView {
   readonly review: PullRequestReview;
   readonly pill: PillSpec;
-  readonly relative: string;
   readonly bodyTrimmed: string;
 }
 
@@ -39,7 +39,6 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
     .map<ReviewView>((review) => ({
       review,
       pill: PILL[review.state] ?? { kind: "commented", label: review.state },
-      relative: formatRelativeAgo(review.submitted_at),
       bodyTrimmed: (review.body ?? "").trim(),
     }))
     .slice();
@@ -81,7 +80,12 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
           <span :class="['review-card__pill', `review-card__pill--${entry.pill.kind}`]">
             {{ entry.pill.label }}
           </span>
-          <span class="review-card__time">{{ entry.relative }}</span>
+          <PRismRelativeTime
+            v-if="entry.review.submitted_at !== null"
+            :value="entry.review.submitted_at"
+            class="review-card__time"
+          />
+          <span v-else class="review-card__time">{{ EM_DASH }}</span>
         </div>
         <p v-if="entry.bodyTrimmed !== ''" class="review-card__text">
           {{ entry.bodyTrimmed }}

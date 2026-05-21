@@ -8,12 +8,9 @@ import type {
   ThreadState,
 } from "@/types/conversation";
 
-import {
-  EM_DASH,
-  formatRelativeAgo,
-  secondsSince,
-} from "@/lib/format";
+import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
@@ -130,23 +127,6 @@ function lineSuffix(t: PullRequestThread): string {
   return `:${t.line}`;
 }
 
-function openedRelative(t: PullRequestThread): string {
-  if (t.created_at === null) return EM_DASH;
-  return `opened ${formatRelativeAgo(t.created_at)}`;
-}
-
-function activityRelative(t: PullRequestThread): string {
-  if (t.state === "resolved") {
-    return t.resolved_at !== null
-      ? `resolved ${formatRelativeAgo(t.resolved_at)}`
-      : "resolved";
-  }
-  if (t.state === "outdated") return "outdated";
-  if (t.last_reply_at !== null) {
-    return `last ${formatRelativeAgo(t.last_reply_at)}`;
-  }
-  return EM_DASH;
-}
 
 function snippetText(t: PullRequestThread): string {
   return t.head_comment?.body_text.trim() ?? "";
@@ -303,7 +283,10 @@ async function openCommentOnGitHub(
               <div class="thread-comment__body">
                 <div class="thread-comment__meta">
                   <span class="thread-comment__author">{{ comment.author_login }}</span>
-                  <span class="thread-comment__ts">{{ formatRelativeAgo(comment.created_at) }}</span>
+                  <PRismRelativeTime
+                    :value="comment.created_at"
+                    class="thread-comment__ts"
+                  />
                   <PRismTooltip
                     v-if="comment.url !== null && comment.url.length > 0"
                     text="Open comment on GitHub"
@@ -345,8 +328,25 @@ async function openCommentOnGitHub(
           <div v-if="thread.reply_count > 0" class="thread-card__replies">
             {{ thread.reply_count }} {{ thread.reply_count === 1 ? "reply" : "replies" }}
           </div>
-          <div class="thread-card__opened">{{ openedRelative(thread) }}</div>
-          <div class="thread-card__activity">{{ activityRelative(thread) }}</div>
+          <div class="thread-card__opened">
+            <template v-if="thread.created_at !== null">
+              opened <PRismRelativeTime :value="thread.created_at" />
+            </template>
+            <template v-else>—</template>
+          </div>
+          <div class="thread-card__activity">
+            <template v-if="thread.state === 'resolved'">
+              <template v-if="thread.resolved_at !== null">
+                resolved <PRismRelativeTime :value="thread.resolved_at" />
+              </template>
+              <template v-else>resolved</template>
+            </template>
+            <template v-else-if="thread.state === 'outdated'">outdated</template>
+            <template v-else-if="thread.last_reply_at !== null">
+              last <PRismRelativeTime :value="thread.last_reply_at" />
+            </template>
+            <template v-else>—</template>
+          </div>
           <div class="thread-card__actions">
             <PRismTooltip :text="expandTooltip(thread)">
               <button
