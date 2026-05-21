@@ -92,6 +92,7 @@ pub fn run() {
             sync::commands::refresh_now,
             sync::commands::set_sync_interval,
             triage::commands::list_filter_chip_counts,
+            triage::commands::list_sidebar_attention_counts,
             triage::commands::mark_pr_read,
             triage::commands::mark_pr_unread,
         ])

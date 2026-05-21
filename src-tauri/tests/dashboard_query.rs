@@ -1007,3 +1007,213 @@ fn empty_chip_set_preserves_baseline_view_results() {
     .unwrap();
     assert_eq!(baseline.len(), 6, "no chips means no filter");
 }
+
+// ===== triage projection tests (M4-C) =====
+
+/// `unread` defaults to true when no relation row carries a `read_at`
+/// watermark (the row is fresh from discovery or the viewer has never opened
+/// the PR).
+#[test]
+fn unread_defaults_to_true_when_read_at_is_null() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(pr.unread, "fresh relation row reads as unread");
+}
+
+/// `unread` clears once `read_at` is set and the PR's `updated_at` hasn't
+/// advanced past the captured `read_pr_updated_at` watermark.
+#[test]
+fn unread_clears_when_read_at_is_after_pr_updated_at() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // PR 100 has updated_at = 950. Set both watermarks to >= 950 so the
+    // derivation treats the open as fresh.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET read_at = 1000, read_pr_updated_at = 950
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(!pr.unread, "read watermark covers PR.updated_at");
+}
+
+/// `unread` flips back to true when sync bumps `pull_requests.updated_at`
+/// past the captured `read_pr_updated_at`.
+#[test]
+fn unread_flips_back_when_pr_updated_at_overtakes_read_watermark() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET read_at = 1000, read_pr_updated_at = 900
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    // PR 100 starts at updated_at = 950; bump it past the read watermark.
+    conn.execute(
+        "UPDATE pull_requests SET updated_at = 1100 WHERE id = 100",
+        [],
+    )
+    .unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(
+        pr.unread,
+        "updated_at > read_pr_updated_at flips back to unread"
+    );
+}
+
+/// `needs_attention` projects the relation column verbatim through COALESCE.
+#[test]
+fn needs_attention_projects_relation_column() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET needs_attention = 1
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(pr.needs_attention);
+}
+
+/// `needs_attention` defaults to false when the relation row carries 0.
+#[test]
+fn needs_attention_defaults_to_false() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(!pr.needs_attention);
+}
+
+/// `mentioned_count_unread` projects the relation column verbatim.
+#[test]
+fn mentioned_count_unread_projects_relation_column() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET mentioned_count_unread = 4
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert_eq!(pr.mentioned_count_unread, 4);
+}
+
+/// Team view without an account filter short-circuits the relation join.
+/// Every row defaults to `unread = true`, `needs_attention = false`,
+/// `mentioned_count_unread = 0`.
+#[test]
+fn team_view_union_defaults_triage_fields() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+    assert!(!rows.is_empty());
+    for pr in rows.iter() {
+        assert!(pr.unread, "PR {} should default to unread", pr.id);
+        assert!(
+            !pr.needs_attention,
+            "PR {} should default to no attention",
+            pr.id
+        );
+        assert_eq!(pr.mentioned_count_unread, 0);
+    }
+}
+
+/// Team view scoped to an account defaults the triage projections to false /
+/// 0 for PRs whose owning-account has no relation row. In the seeded fixture
+/// PR 300 sits in `alice/api` (team-tracked, owned by account 1) and no
+/// relations row references it - the LEFT JOIN misses and COALESCE trips.
+#[test]
+fn team_view_account_scoped_defaults_when_no_relation_row() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
+    assert!(pr_300.unread, "missing relation row reads as unread");
+    assert!(!pr_300.needs_attention);
+    assert_eq!(pr_300.mentioned_count_unread, 0);
+}
+
+/// Team view scoped to an account reads the triage state from the matching
+/// relation row when one exists. The fixture's PR 100 sits in `alice/web`
+/// (not team-tracked) so it doesn't surface in the Team view; instead seed a
+/// fresh team-tracked PR that has a populated relation row for the same
+/// account.
+#[test]
+fn team_view_account_scoped_reads_relation_row_when_present() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Promote alice/web (repo 10) to team-tracked so PR 100's existing
+    // relation row surfaces via the Team view, then populate the triage
+    // columns on that row.
+    conn.execute("UPDATE repos SET is_team_tracked = 1 WHERE id = 10", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET needs_attention = 1,
+                mentioned_count_unread = 3
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("PR 100 surfaces in account-scoped Team view");
+    assert!(pr.needs_attention);
+    assert_eq!(pr.mentioned_count_unread, 3);
+}
