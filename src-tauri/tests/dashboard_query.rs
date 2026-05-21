@@ -250,19 +250,34 @@ fn team_view_drops_dismissed_reviews_from_projection() {
 }
 
 #[test]
-fn account_id_none_returns_union_across_accounts() {
+fn account_id_none_returns_deduped_rows_with_merged_account_ids() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
-    // Watching across every account: every relation row with is_involved = 1.
-    // Fixture has: (1,100), (1,200), (2,400), (1,400), (2,500).
-    // The same PR can appear twice with different `account_id`s.
+    // Watching across every account (ADR 0016): the fixture's relation rows
+    // for `is_involved = 1` are (1,100), (1,200), (2,400), (1,400), (2,500).
+    // PR 400 has two involved-relation owners and PR 100's `is_involved = 1`
+    // sits on account 1 with account 2 also having a (non-involved-flagged)
+    // relation row. The unified path GROUPs by `pr.id` and folds every
+    // relation owner into `account_ids`. The view-filter EXISTS still gates
+    // on `is_involved = 1`, so PR 500 (only involved under account 2) and
+    // PR 100 (involved under account 1) both surface once.
     let rows =
         list_pull_requests(&conn, DashboardView::Watching, DashboardSort::Updated, None).unwrap();
-    let mut actual: Vec<(i64, i64)> = rows.iter().map(|r| (r.id, r.account_id)).collect();
-    let mut expected = vec![(100, 1), (200, 1), (400, 2), (400, 1), (500, 2)];
-    expected.sort();
+    let mut actual: Vec<(i64, Vec<i64>)> =
+        rows.iter().map(|r| (r.id, r.account_ids.clone())).collect();
     actual.sort();
+    // PR 100: account 1 (involved) + account 2 (review-requested) -> [1, 2].
+    // PR 200: account 1 only -> [1].
+    // PR 400: account 1 + account 2 both involved -> [1, 2].
+    // PR 500: account 2 only -> [2].
+    let mut expected = vec![
+        (100, vec![1, 2]),
+        (200, vec![1]),
+        (400, vec![1, 2]),
+        (500, vec![2]),
+    ];
+    expected.sort();
     assert_eq!(actual, expected);
 }
 
@@ -455,7 +470,7 @@ fn projection_carries_top_level_pr_fields() {
     assert_eq!(pr.repo.id, 10);
     assert_eq!(pr.repo.owner, "alice");
     assert_eq!(pr.repo.name, "web");
-    assert_eq!(pr.account_id, 1);
+    assert_eq!(pr.account_ids, vec![1]);
 }
 
 #[test]
@@ -555,11 +570,9 @@ fn threads_buckets_union_involvement_across_every_account() {
 
     let rows =
         list_pull_requests(&conn, DashboardView::Watching, DashboardSort::Updated, None).unwrap();
-    // Watching union: PR 100 surfaces under alice's relation row.
-    let pr = rows
-        .iter()
-        .find(|r| r.id == 100 && r.account_id == 1)
-        .unwrap();
+    // Watching union (ADR 0016 dedupe-and-merge): PR 100 surfaces once with
+    // every involved relation owner folded into `account_ids`.
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
     let threads = pr.threads.as_ref().expect("threads populated");
     assert_eq!(threads.total, 3);
     assert_eq!(
@@ -1504,5 +1517,309 @@ fn is_you_still_flips_same_host_when_viewer_login_matches() {
     assert!(
         ada.is_you,
         "account 1 IS the github.com 'ada' identity (same login, same host)"
+    );
+}
+
+// ===== ADR 0016: unified-mode dedupe and merge (issue #167) =====
+//
+// Two accounts (Alice + Bob) share a PR via different relation types. The
+// unified path GROUPs by `pr.id`, merges triage signals (`unread = MAX`,
+// `needs_attention = MAX`, `mentioned_count_unread = SUM`), and surfaces a
+// single row whose `account_ids` carries every relation owner.
+
+/// Build a two-account fixture: alice authored PR 100, bob review-requested
+/// on the same PR. Both accounts live on github.com (same host) so the
+/// reviewer-identity tests below can flip `is_you` against either login.
+fn seed_two_account_shared_pr_fixture(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0),
+            (2, 'bob-acct',   'github.com', 'bob',   0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
+            (100, 10, 1, 'shared', 'open', 0, 'someone-else', 0, 1000, 1000,
+             'main', 'feat-a');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 1, 0, 0, 0),
+            (2, 100, 0, 1, 0, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn union_dedupes_pr_with_relations_under_two_accounts_to_one_row() {
+    // PR 100 has Authored relation (account 1) and Review-Requested relation
+    // (account 2). The unified Watching/Authored/Assigned views each group
+    // by `pr.id` so the PR surfaces once. `account_ids` carries every
+    // relation owner sorted ascending.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+
+    let authored =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    assert_eq!(authored.len(), 1, "Authored union surfaces PR 100 once");
+    assert_eq!(authored[0].id, 100);
+    assert_eq!(
+        authored[0].account_ids,
+        vec![1, 2],
+        "account_ids must include every relation owner, sorted ascending"
+    );
+
+    let assigned =
+        list_pull_requests(&conn, DashboardView::Assigned, DashboardSort::Updated, None).unwrap();
+    assert_eq!(assigned.len(), 1, "Assigned union surfaces PR 100 once");
+    assert_eq!(assigned[0].account_ids, vec![1, 2]);
+}
+
+#[test]
+fn union_merges_unread_via_max_across_relation_owners() {
+    // Two relation rows for the same PR: alice has read it (read_at set);
+    // bob hasn't. MAX(unread) = 1; the row reads unread.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET read_at = 1100, read_pr_updated_at = 1000
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(
+        pr.unread,
+        "MAX(unread) = 1 when any in-scope account is unread"
+    );
+
+    // Inverse: both accounts read -> row is read.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET read_at = 1100, read_pr_updated_at = 1000
+          WHERE pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(
+        !pr.unread,
+        "MAX(unread) = 0 when every in-scope account is read"
+    );
+}
+
+#[test]
+fn union_merges_needs_attention_via_max_across_relation_owners() {
+    // Bob's relation flags needs_attention; alice's doesn't.
+    // MAX(needs_attention) = 1.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET needs_attention = 1
+          WHERE account_id = 2 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert!(pr.needs_attention);
+}
+
+#[test]
+fn union_merges_mentioned_count_unread_via_sum_across_relation_owners() {
+    // Alice's relation has 2 unread mentions; bob's has 3. SUM = 5.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute_batch(
+        "UPDATE pull_request_viewer_relations
+            SET mentioned_count_unread = 2
+          WHERE account_id = 1 AND pull_request_id = 100;
+         UPDATE pull_request_viewer_relations
+            SET mentioned_count_unread = 3
+          WHERE account_id = 2 AND pull_request_id = 100;",
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert_eq!(
+        pr.mentioned_count_unread, 5,
+        "SUM aggregates mentions across every in-scope relation owner"
+    );
+}
+
+#[test]
+fn union_failure_isolation_drops_one_accounts_relations_other_account_still_surfaces_pr() {
+    // ADR 0016 ("Failure isolation"). PR 100 originally has relations under
+    // accounts 1 and 2. Simulate account 1 failing mid-sync (its relation
+    // row pruned). Account 2's relation row keeps the PR visible in the
+    // union. The view filter EXISTS still admits the PR via account 2.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute(
+        "DELETE FROM pull_request_viewer_relations
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Assigned, DashboardSort::Updated, None).unwrap();
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("account 2's Review-Requested relation surfaces the PR even with account 1 pruned");
+    assert_eq!(
+        pr.account_ids,
+        vec![2],
+        "only the surviving relation owner appears in account_ids"
+    );
+}
+
+#[test]
+fn union_reviewer_is_you_matches_any_in_scope_account_login() {
+    // Reviewer login matches account 2's login (`bob`) but not account 1's
+    // (`alice`). The PR's host is github.com (matches both accounts). With
+    // the unified-mode `is_you` scan testing against every account_id in the
+    // row, `is_you` flips for the `bob` reviewer entry.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute_batch(
+        "INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at)
+            VALUES (9001, 100, 'bob', 'COMMENTED', 500);",
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let bob = pr
+        .reviewers
+        .iter()
+        .find(|r| r.login == "bob")
+        .expect("bob is the submitted reviewer");
+    assert!(
+        bob.is_you,
+        "union-mode is_you must flip for any account_id whose (login, host) matches the reviewer"
+    );
+}
+
+#[test]
+fn union_reviewer_is_you_stays_false_when_no_in_scope_account_matches() {
+    // Reviewer is a third party (`carol`). Neither alice nor bob match.
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute_batch(
+        "INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at)
+            VALUES (9001, 100, 'carol', 'COMMENTED', 500);",
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let carol = pr.reviewers.iter().find(|r| r.login == "carol").unwrap();
+    assert!(!carol.is_you);
+}
+
+#[test]
+fn union_team_view_surfaces_team_repo_pr_without_relations() {
+    // A PR in a team-tracked repo with no relation rows still surfaces in
+    // the Team union view; the view filter is `repos.is_team_tracked = 1`,
+    // not the relations table. `account_ids` is empty for such rows.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // PR 300 sits in alice/api (team-tracked) with no relation rows seeded.
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+    let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
+    assert!(
+        pr_300.account_ids.is_empty(),
+        "Team-view PR with no relations carries an empty account_ids list"
+    );
+    assert!(pr_300.unread, "no relation -> defaults to unread");
+}
+
+#[test]
+fn union_team_view_merges_relations_when_present() {
+    // PR 400 (bob/cli, team-tracked) has relations under both accounts. The
+    // union Team view aggregates over both rows: account_ids = [1, 2] and
+    // the triage merge applies. Seed needs_attention on alice's relation so
+    // the MAX is non-zero.
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    conn.execute_batch(
+        "UPDATE pull_request_viewer_relations
+            SET needs_attention = 1, mentioned_count_unread = 2
+          WHERE account_id = 1 AND pull_request_id = 400;
+         UPDATE pull_request_viewer_relations
+            SET mentioned_count_unread = 4
+          WHERE account_id = 2 AND pull_request_id = 400;",
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+    let pr_400 = rows.iter().find(|r| r.id == 400).unwrap();
+    assert_eq!(pr_400.account_ids, vec![1, 2]);
+    assert!(pr_400.needs_attention);
+    assert_eq!(
+        pr_400.mentioned_count_unread, 6,
+        "SUM merges mentions across both relation owners"
+    );
+}
+
+#[test]
+fn union_url_uses_repo_owning_account_host_not_first_relation_owner() {
+    // A PR owned by repo on github.com (account 1) but with a relation row
+    // from a GHE account would still get the github.com URL. The URL host
+    // comes from the repo's owning account, not the first account_ids entry.
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'gh',  'github.com',       'alice', 0),
+            (2, 'ghe', 'github.acme.corp', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
+            (100, 10, 1, 'cross-host', 'open', 0, 'someone-else', 0, 1000, 1000,
+             'main', 'feat-a');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 1, 0, 0, 0),
+            (2, 100, 1, 0, 0, 0);
+        "#,
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert_eq!(
+        pr.url, "https://github.com/alice/web/pull/1",
+        "URL host comes from the repo's owning account, never from the union of relation owners"
     );
 }

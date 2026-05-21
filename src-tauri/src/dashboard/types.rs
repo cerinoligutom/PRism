@@ -81,22 +81,40 @@ pub struct DashboardPullRequest {
     pub threads: Option<ThreadsSummary>,
     pub reviewers: Vec<ReviewerEntry>,
     pub repo: RepoRef,
-    pub account_id: i64,
+    /// Tracked accounts with a relation to this PR (Authored / Assigned /
+    /// Watching). Sorted ascending. In the single-account-filter path the
+    /// vector has length 1 - the active account id. In the unified path
+    /// (`account_id = None`) it carries 1..N ids: every relation owner the
+    /// `GROUP BY pr.id` merge folded together. For the Team view in unified
+    /// mode a PR with no relation rows still surfaces (the view filter is on
+    /// `repos.is_team_tracked`); in that shape the vector is empty.
+    ///
+    /// The frontend reads the first id as the representative account when it
+    /// needs one (e.g. the `mark unread` action's per-account fallback target);
+    /// the URL builder picks the host from this representative because the PR
+    /// lives on exactly one host - the host of the repo's owning account.
+    /// See ADR 0016 ("Dashboard row shape - option 1").
+    pub account_ids: Vec<i64>,
     /// True when the viewer hasn't opened this PR since the last upstream
     /// update. Derived at query time as
     /// `read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`
     /// against the active account's `pull_request_viewer_relations` row.
     /// `None` collapses to `false` if the join misses (e.g. a Team-view PR
-    /// the active account has no relation row for). See ADR 0015 and
+    /// the active account has no relation row for). In the unified path the
+    /// per-relation flag is merged via `MAX` so the row reads unread when any
+    /// in-scope account is unread. See ADR 0015 and
     /// `docs/contracts/triage-ux.md` ("Read-state derivation").
     pub unread: bool,
     /// Precomputed "needs my attention" composite. Read from
     /// `pull_request_viewer_relations.needs_attention` for the active account.
-    /// See ADR 0015 ("Composite formula") for the four input conditions.
+    /// Merged via `MAX` in the unified path so the row flags attention when
+    /// any in-scope account needs the viewer. See ADR 0015
+    /// ("Composite formula") for the four input conditions.
     pub needs_attention: bool,
     /// Running count of `@<viewer-login>` mentions the sync cycle has seen
-    /// since the last read. Reset to zero by `mark_pr_read`. See
-    /// ADR 0015 ("Mention detection").
+    /// since the last read. Reset to zero by `mark_pr_read`. Summed across
+    /// in-scope accounts in the unified path. See ADR 0015 ("Mention
+    /// detection").
     pub mentioned_count_unread: i64,
 }
 

@@ -104,6 +104,13 @@ pub async fn fetch_pr_conversation(
 /// transaction commits so a failure can't unwind the cached payload.
 /// Errors are logged and swallowed: a mark-read failure must never break
 /// detail-surface hydration.
+///
+/// ADR 0016: in unified mode a PR can have relation rows under multiple
+/// accounts. The auto-mark flips read state for every relation owner so the
+/// merged dashboard row doesn't linger as unread under one of the in-scope
+/// accounts after the open. The hydration `account_id` only drives the URL
+/// host / client (the repo's owning account); the mark-read fan-out reads
+/// the relation table directly.
 fn auto_mark_read(db: &DbHandle, pull_request_id: i64, account_id: i64) {
     if let Err(e) = mark_read_in_tx(db, pull_request_id, account_id) {
         eprintln!("auto-mark-on-open failed (pr={pull_request_id}, account={account_id}): {e}");
@@ -113,10 +120,48 @@ fn auto_mark_read(db: &DbHandle, pull_request_id: i64, account_id: i64) {
 fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
-    crate::triage::query::mark_read(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("mark read: {e}"))?;
-    crate::triage::query::recompute_needs_attention(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("recompute needs_attention: {e}"))?;
+
+    // The repo's owning account always gets a mark_read (UPSERTs the relation
+    // row if missing - matches the existing "Team-view PR the viewer opens
+    // for the first time" semantic). Every other relation owner gets a
+    // per-account flip too.
+    let mut owners: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    owners.insert(account_id);
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT account_id FROM pull_request_viewer_relations
+                  WHERE pull_request_id = ?1",
+            )
+            .map_err(|e| format!("prepare relation owners: {e}"))?;
+        let rows = stmt
+            .query_map([pull_request_id], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("query relation owners: {e}"))?;
+        for row in rows {
+            let id = row.map_err(|e| format!("read relation owner: {e}"))?;
+            owners.insert(id);
+        }
+    }
+
+    for owner in owners {
+        // Per-account failures log + continue (ADR 0016: partial successes
+        // must persist). The hydration transaction has already committed; the
+        // mark-read fanout is best-effort from here.
+        if let Err(e) = crate::triage::query::mark_read(&tx, owner, pull_request_id) {
+            eprintln!(
+                "auto-mark-on-open mark_read failed (pr={pull_request_id}, \
+                 account={owner}): {e}"
+            );
+            continue;
+        }
+        if let Err(e) = crate::triage::query::recompute_needs_attention(&tx, owner, pull_request_id)
+        {
+            eprintln!(
+                "auto-mark-on-open recompute failed (pr={pull_request_id}, \
+                 account={owner}): {e}"
+            );
+        }
+    }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
     Ok(())
 }

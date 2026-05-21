@@ -309,7 +309,7 @@ pub struct DashboardPullRequest {
     pub ci: Option<CiSummary>,
     pub reviewers: Vec<ReviewerEntry>,
     pub repo: RepoRef,
-    pub account_id: i64,
+    pub account_ids: Vec<i64>,                       // ADR 0016 — see "Unified-mode dedupe and merge" below
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -544,6 +544,34 @@ These belong here so Wave-2 agents don't reinvent them, but they don't constrain
 - **CI rollup `passing` count.** `CheckRun` is "passing" when `conclusion == "SUCCESS"`. `StatusContext` is "passing" when `state == "SUCCESS"`. `null` conclusion = in progress (not counted in passing, counted in total).
 - **Frontend opens PR on GitHub on row click.** No internal expanded view in M2 (the dashboard-expanded artboard is M3+). Use `openUrl(pullRequest.url)` from the already-installed `@tauri-apps/plugin-opener` — no new dependency.
 - **Threads rollup is computed at query time** (ADR 0016). The dashboard query LEFT JOINs a `thread_buckets` subquery that GROUPs `review_threads` by `pull_request_id` and computes the four `(resolved x involved)` counts. The involvement test EXISTS-joins `review_comments` against `accounts.login`, scoped to the active account in the single-account path (`a.id = ?1`) and across every tracked account in the union path (`a.id IN (SELECT id FROM accounts)`). The DTO shape is unchanged: `project_pr_row` still emits `threads = None` when the LEFT JOIN misses (no `review_threads` rows for the PR). The legacy `pull_requests.threads_*` columns stay on the schema as dead weight pending a `chore` follow-up.
+
+## Unified-mode dedupe and merge
+
+ADR 0016 reshapes the union path (`account_id = None`). One row per PR, with per-relation triage signals merged via SQL aggregates and `account_ids` carrying every relation owner. The single-account-filter path is unchanged: it returns one row per `(account, PR)` relation, just like before.
+
+### DTO shape change
+
+`DashboardPullRequest.account_id: i64` becomes `account_ids: Vec<i64>` (sorted ascending). Length 1 in the single-account path; 1..N in the union path; empty for Team-view union PRs that have no relation rows (the view filter is `repos.is_team_tracked`, not the relations table). Consumers that need a representative account read `account_ids[0]`; the URL host comes from the repo's owning account regardless (the PR lives on exactly one host, regardless of which accounts have relations to it).
+
+### Merge rules (union path)
+
+| Signal | Aggregation | Single-account behaviour |
+| --- | --- | --- |
+| `unread` | `MAX` across relation rows. Row reads unread when any in-scope account is unread. | Same `CASE WHEN read_at IS NULL THEN 1 ...` projected verbatim. |
+| `needs_attention` | `MAX` across relation rows. | Projected verbatim from `rel.needs_attention`. |
+| `mentioned_count_unread` | `SUM` across relation rows. | Projected verbatim from `rel.mentioned_count_unread`. |
+| `reviewers` | Union by login (existing dedupe logic). `is_you` flips when the reviewer matches any in-scope account's `(login, host)` and the matched account shares the PR's owning host. | `is_you` flips when the reviewer matches the active account's `(login, host)`. |
+| `account_ids` | `GROUP_CONCAT(DISTINCT rel.account_id ORDER BY rel.account_id)` parsed to `Vec<i64>`. | `CAST(a.id AS TEXT)` parsed to a 1-element vector. |
+
+The SQL composition: `GROUP BY pr.id` after a `LEFT JOIN pull_request_viewer_relations rel ON rel.pull_request_id = pr.id` (no account predicate). For Authored / Assigned / Watching the view filter becomes an `EXISTS (SELECT 1 FROM pull_request_viewer_relations rel_filter WHERE ... AND rel_filter.{flag} = 1)` so the PR surfaces if any in-scope account has the view-typed relation. For Team it stays `repos.is_team_tracked = 1`.
+
+### Failure isolation
+
+The union path's relation join is a `LEFT JOIN`, never `INNER`. A failing account whose relation rows got pruned mid-cycle never drops PRs another account also sees. Healthy accounts keep contributing their relations; the merge aggregates over zero or more rows per PR. ADR 0016 ("Failure isolation - option 1").
+
+### Mark-read fan-out
+
+`mark_pr_read` and `mark_pr_unread` accept `account_id: Option<i64>`. `Some(id)` keeps the existing single-account flip (and UPSERTs the relation row for `mark_pr_read` so a Team-view auto-mark still works). `None` (the unified-row affordance) fans the flip out across every existing relation owner for the PR in one transaction; per-account write failures log and continue so partial successes persist (ADR 0016 mark-read option 1). The frontend's row-level Mark Unread action passes `null` so the merged row's dot settles uniformly. `auto_mark_read` in the conversation hydrator follows the same fan-out: every relation owner gets the flip, with the repo's owning account always included (to UPSERT the row if a Team-view PR has no relations yet).
 
 ## ADR cross-references
 

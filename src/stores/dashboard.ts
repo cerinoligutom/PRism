@@ -83,8 +83,18 @@ export interface DashboardPullRequest {
   readonly threads: ThreadsSummary | null;
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
-  readonly account_id: number;
-  /** Triage signals - see ADR 0015 and `docs/contracts/triage-ux.md`. */
+  /**
+   * Tracked accounts with a relation to this PR. Sorted ascending. Length 1
+   * in the single-account-filter path; 1..N in the unified path; empty for
+   * Team-view PRs in the unified path that have no relation rows (the view
+   * filter is `repos.is_team_tracked`, not the relations table). The first
+   * id is the representative account when consumers need one. See
+   * ADR 0016 ("Dashboard row shape - option 1").
+   */
+  readonly account_ids: readonly number[];
+  /** Triage signals - see ADR 0015 and `docs/contracts/triage-ux.md`.
+   * In the unified path `unread` and `needs_attention` are merged via MAX
+   * across relation owners; `mentioned_count_unread` is summed. */
   readonly unread: boolean;
   readonly needs_attention: boolean;
   readonly mentioned_count_unread: number;
@@ -423,9 +433,22 @@ export const useDashboardStore = defineStore("dashboard", () => {
     if (hadChips) void load();
   }
 
+  /**
+   * Flip a PR back to unread. `accountId = null` (ADR 0016) tells the Rust
+   * command to fan the unread flip out across every relation owner so a
+   * merged dashboard row in unified mode flips uniformly. `accountId` set to
+   * a specific id keeps the existing single-account semantic (used when the
+   * caller explicitly wants to flip one account's read state without
+   * touching the others - e.g. a future "mark unread on this account only"
+   * affordance).
+   *
+   * The unified-row affordance defaults to `null`: a user reads "the PR",
+   * not "the PR through account X", and the merged row's unread dot should
+   * settle the same way the merge aggregated it.
+   */
   async function markPullRequestUnread(
     pullRequestId: number,
-    accountId: number,
+    accountId: number | null,
   ): Promise<void> {
     // Optimistically flip the dot back on while the Rust write + recompute
     // round-trips. The follow-up reload reconciles `needs_attention` and the

@@ -135,7 +135,12 @@ function onClearAll(): void {
 }
 
 function onMarkUnread(pr: DashboardPullRequest): void {
-  void dashboard.markPullRequestUnread(pr.id, pr.account_id);
+  // ADR 0016: pass `null` so the Rust command fans the flip across every
+  // relation owner. In single-account-filter mode the relation set is the
+  // active account; in unified mode it's every in-scope account that has a
+  // relation row for the PR. Both surfaces converge on a single round-trip
+  // that matches the merged row's read semantics.
+  void dashboard.markPullRequestUnread(pr.id, null);
 }
 
 function onAccountScopeUpdate(value: number | null): void {
@@ -345,7 +350,7 @@ watch(() => route.meta?.dashboardView, () => {
         />
         <PullRequestRow
           v-for="pr in bucket.items"
-          :key="`${pr.account_id}:${pr.id}`"
+          :key="`${pr.account_ids.join('-')}:${pr.id}`"
           :pull-request="pr"
           :density="dashboard.density"
           :unread="pr.unread"
