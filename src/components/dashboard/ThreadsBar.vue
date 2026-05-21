@@ -22,6 +22,12 @@ interface Segment {
   readonly tooltip: string;
 }
 
+interface BreakdownRow {
+  readonly bucket: Bucket;
+  readonly label: string;
+  readonly count: number;
+}
+
 /**
  * Renders the em-dash count + segment-less bar. Backend contract: this fires
  * when the PR has never had a review thread (rollup is `null`) or has had its
@@ -71,11 +77,29 @@ const segments = computed<readonly Segment[]>(() => {
 });
 
 const totalCount = computed<number>(() => props.threads?.total ?? 0);
-const unresolvedCount = computed<number>(() => {
+const resolvedCount = computed<number>(() => {
   if (props.threads === null) return 0;
+  return props.threads.resolved_involved + props.threads.resolved_uninvolved;
+});
+
+const resolvedPct = computed<number>(() => {
+  if (totalCount.value === 0) return 0;
+  return Math.round((resolvedCount.value / totalCount.value) * 100);
+});
+
+const breakdownRows = computed<readonly BreakdownRow[]>(() => {
+  const t = props.threads;
+  if (t === null) return [];
   return (
-    props.threads.unresolved_involved + props.threads.unresolved_uninvolved
-  );
+    [
+      ["unresolved-uninvolved", "unresolved", t.unresolved_uninvolved],
+      ["unresolved-involved", "unresolved (yours)", t.unresolved_involved],
+      ["resolved-uninvolved", "resolved", t.resolved_uninvolved],
+      ["resolved-involved", "resolved (yours)", t.resolved_involved],
+    ] as const
+  )
+    .filter(([, , count]) => count > 0)
+    .map(([bucket, label, count]) => ({ bucket, label, count }));
 });
 
 function tooltipFor(label: string, count: number): string {
@@ -124,8 +148,38 @@ function distributeWidths(
         <span class="threads-bar__nums-empty">&mdash;</span>
       </template>
       <template v-else>
-        <span>{{ unresolvedCount }}</span>
-        <span class="threads-bar__nums-denom">/{{ totalCount }}</span>
+        <PRismTooltip :as-child="true">
+          <span class="threads-bar__nums-count">
+            <span>{{ resolvedCount }}</span><span class="threads-bar__nums-denom">/{{ totalCount }}</span>
+          </span>
+          <template #content>
+            <div class="threads-bar__breakdown">
+              <div class="threads-bar__breakdown-head">
+                {{ resolvedCount }}/{{ totalCount }} resolved ({{ resolvedPct }}%)
+              </div>
+              <ul
+                v-if="breakdownRows.length > 0"
+                class="threads-bar__breakdown-list"
+              >
+                <li
+                  v-for="row in breakdownRows"
+                  :key="row.bucket"
+                  class="threads-bar__breakdown-row"
+                >
+                  <span
+                    :class="[
+                      'threads-bar__breakdown-dot',
+                      `threads-bar__breakdown-dot--${row.bucket}`,
+                    ]"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="threads-bar__breakdown-count">{{ row.count }}</span>
+                  <span class="threads-bar__breakdown-label">{{ row.label }}</span>
+                </li>
+              </ul>
+            </div>
+          </template>
+        </PRismTooltip>
       </template>
     </div>
   </div>
@@ -133,9 +187,10 @@ function distributeWidths(
 
 <style scoped>
 .threads-bar {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   color: var(--text-mute);
   font-size: var(--fs-11);
 }
@@ -143,16 +198,18 @@ function distributeWidths(
 .threads-bar__seg {
   position: relative;
   display: flex;
-  height: 6px;
-  width: 90px;
+  align-items: stretch;
+  gap: 1px;
+  height: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
   border-radius: var(--r-1);
-  overflow: hidden;
   background: var(--bg-4);
-  flex: 0 0 auto;
 }
 
 .threads-bar__seg-band {
   height: 100%;
+  border-radius: var(--r-1);
 }
 
 .threads-bar__seg-band--unresolved-uninvolved {
@@ -178,6 +235,13 @@ function distributeWidths(
   font-variant-numeric: tabular-nums;
   display: inline-flex;
   gap: 1px;
+  flex: 0 0 auto;
+}
+
+.threads-bar__nums-count {
+  display: inline-flex;
+  gap: 1px;
+  cursor: default;
 }
 
 .threads-bar__nums-denom {
@@ -189,6 +253,79 @@ function distributeWidths(
 }
 
 .threads-bar--muted .threads-bar__nums {
+  color: var(--text-mute);
+}
+</style>
+
+<!--
+  Breakdown styles live in an unscoped block because `PRismTooltip` portals its
+  content to `document.body`, so the scoped `data-v-*` attribute selector
+  doesn't follow. Matches the pattern used by `ReviewerStack.vue` and
+  `PRismTooltip` itself.
+-->
+<style>
+.threads-bar__breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.threads-bar__breakdown-head {
+  font-size: var(--fs-11);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.threads-bar__breakdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.threads-bar__breakdown-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-11);
+  color: var(--text);
+}
+
+.threads-bar__breakdown-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.threads-bar__breakdown-dot--unresolved-uninvolved {
+  background: var(--danger);
+}
+
+.threads-bar__breakdown-dot--unresolved-involved {
+  background: var(--warning);
+}
+
+.threads-bar__breakdown-dot--resolved-uninvolved {
+  background: var(--info);
+}
+
+.threads-bar__breakdown-dot--resolved-involved {
+  background: var(--success);
+}
+
+.threads-bar__breakdown-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.threads-bar__breakdown-label {
   color: var(--text-mute);
 }
 </style>
