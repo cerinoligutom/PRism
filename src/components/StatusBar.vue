@@ -1,15 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useAttrs } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
 import { useSyncActivityStore } from "@/stores/syncActivity";
 import SyncActivityPanel from "./StatusBar/SyncActivityPanel.vue";
 import { formatDuration } from "@/lib/format";
-
-// Custom attrs forwarding so the panel sibling doesn't intercept the
-// `class` AppShell.vue applies for grid-area placement.
-defineOptions({ inheritAttrs: false });
-const attrs = useAttrs();
 
 const sync = useSyncStore();
 const accounts = useAccountsStore();
@@ -146,7 +141,7 @@ const budgetLabel = computed<string | null>(() => {
 </script>
 
 <template>
-  <footer class="status-bar" v-bind="attrs">
+  <footer class="status-bar">
     <button
       ref="chipRef"
       type="button"
@@ -177,8 +172,11 @@ const budgetLabel = computed<string | null>(() => {
     <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span>
     <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span>
     <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span>
+
+    <Teleport to="body">
+      <SyncActivityPanel :open="panelOpen" :anchor-rect="anchorRect" @close="closePanel" />
+    </Teleport>
   </footer>
-  <SyncActivityPanel :open="panelOpen" :anchor-rect="anchorRect" @close="closePanel" />
 </template>
 
 <style scoped>
