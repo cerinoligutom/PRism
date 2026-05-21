@@ -87,11 +87,15 @@ const stripTooltip = computed<string>(() => {
 const branchLabel = computed<string>(() => props.pullRequest.head_ref);
 
 const linesAdditions = computed<string | null>(() =>
-  props.pullRequest.additions === null ? null : formatNumber(props.pullRequest.additions),
+  props.pullRequest.additions === null
+    ? null
+    : formatNumber(props.pullRequest.additions),
 );
 
 const linesDeletions = computed<string | null>(() =>
-  props.pullRequest.deletions === null ? null : formatNumber(props.pullRequest.deletions),
+  props.pullRequest.deletions === null
+    ? null
+    : formatNumber(props.pullRequest.deletions),
 );
 
 const changedFiles = computed<number | null>(
@@ -116,7 +120,8 @@ function sinceLabelFor(pr: DashboardPullRequest): string {
   if (pr.is_draft) return "opened";
   if (pr.mergeable === "CONFLICTING") return "conflicts";
   if (secondsSince(pr.updated_at) > STALE_THRESHOLD_SECONDS) return "stale";
-  if (pr.ci?.state === "FAILURE" || pr.ci?.state === "ERROR") return "CI failed";
+  if (pr.ci?.state === "FAILURE" || pr.ci?.state === "ERROR")
+    return "CI failed";
   if (pr.review_decision === "CHANGES_REQUESTED") return "changes";
   if (pr.review_decision === "APPROVED") return "approved";
   return "updated";
@@ -149,7 +154,6 @@ function openOnGitHub(event: MouseEvent): void {
     ]"
     role="button"
     tabindex="0"
-    :title="pullRequest.title"
     @click="onClick"
     @keydown="onKey"
   >
@@ -169,24 +173,42 @@ function openOnGitHub(event: MouseEvent): void {
     <div class="pr-row__num">#{{ pullRequest.number }}</div>
 
     <div class="pr-row__title-col">
-      <div class="pr-row__title-row">
-        <span class="pr-row__title">{{ pullRequest.title }}</span>
-        <MergeableBadge
-          :state="pullRequest.mergeable"
-          :review-decision="pullRequest.review_decision"
-          :is-draft="pullRequest.is_draft"
-        />
-      </div>
+      <PRismTooltip :text="pullRequest.title" :as-child="true">
+        <div class="pr-row__title-row">
+          <span class="pr-row__title">{{ pullRequest.title }}</span>
+          <MergeableBadge
+            :state="pullRequest.mergeable"
+            :review-decision="pullRequest.review_decision"
+            :is-draft="pullRequest.is_draft"
+          />
+        </div>
+      </PRismTooltip>
       <div class="pr-row__meta-row">
-        <span class="pr-row__branch" :title="`${pullRequest.base_ref} ← ${pullRequest.head_ref}`">
-          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <PRismTooltip
+          :text="`${pullRequest.base_ref} ← ${pullRequest.head_ref}`"
+          :as-child="true"
+        >
+          <span class="pr-row__branch">
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            aria-hidden="true"
+          >
             <circle cx="4" cy="3" r="1.5" />
             <circle cx="4" cy="13" r="1.5" />
             <circle cx="12" cy="6" r="1.5" />
-            <path d="M4 4.5v7M4 8a4 4 0 004 4h0a4 4 0 004-4V7.5" stroke-linecap="round" />
+            <path
+              d="M4 4.5v7M4 8a4 4 0 004 4h0a4 4 0 004-4V7.5"
+              stroke-linecap="round"
+            />
           </svg>
           <span class="pr-row__branch-name">{{ branchLabel }}</span>
-        </span>
+          </span>
+        </PRismTooltip>
         <span class="pr-row__sep" aria-hidden="true">·</span>
         <span class="pr-row__author">
           <PRismAvatar
@@ -269,16 +291,24 @@ function openOnGitHub(event: MouseEvent): void {
   transition: background 0.12s;
 }
 
-.pr-row:hover { background: var(--bg-2); }
+.pr-row:hover {
+  background: var(--bg-2);
+}
 
 .pr-row:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
-.pr-row--tight       { height: var(--row-h-tight); }
-.pr-row--comfortable { height: var(--row-h-comfortable); }
-.pr-row--roomy       { height: var(--row-h-roomy); }
+.pr-row--tight {
+  height: var(--row-h-tight);
+}
+.pr-row--comfortable {
+  height: var(--row-h-comfortable);
+}
+.pr-row--roomy {
+  height: var(--row-h-roomy);
+}
 
 .pr-row--attention {
   background: var(--accent-bg);
@@ -390,9 +420,15 @@ function openOnGitHub(event: MouseEvent): void {
   gap: 4px;
 }
 
-.pr-row__lines-add { color: var(--success); }
-.pr-row__lines-del { color: var(--danger); }
-.pr-row__lines-files { color: var(--text-faint); }
+.pr-row__lines-add {
+  color: var(--success);
+}
+.pr-row__lines-del {
+  color: var(--danger);
+}
+.pr-row__lines-files {
+  color: var(--text-faint);
+}
 
 .pr-row__threads {
   display: flex;
@@ -450,7 +486,9 @@ function openOnGitHub(event: MouseEvent): void {
   border: 0;
   padding: 0;
   cursor: pointer;
-  transition: color 0.12s, background 0.12s;
+  transition:
+    color 0.12s,
+    background 0.12s;
 }
 
 .pr-row:hover .pr-row__github {
