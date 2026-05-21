@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import type { RowDensity } from "@/types/dashboard";
 
 interface Props {
@@ -30,39 +31,43 @@ function select(value: RowDensity): void {
 
 <template>
   <div class="segmented" role="group" aria-label="Row density">
-    <button
+    <PRismTooltip
       v-for="option in options"
       :key="option.value"
-      type="button"
-      :class="{ active: modelValue === option.value }"
-      :title="option.title"
-      :aria-pressed="modelValue === option.value"
-      @click="select(option.value)"
+      :text="option.title"
+      :as-child="true"
     >
-      <span class="ico" aria-hidden="true">
-        <svg
-          v-if="option.value === 'tight'"
-          width="12" height="12" viewBox="0 0 16 16" fill="none"
-          stroke="currentColor" stroke-width="1.5"
-        >
-          <path d="M2 4h12M2 7h12M2 10h12M2 13h12" />
-        </svg>
-        <svg
-          v-else-if="option.value === 'comfortable'"
-          width="12" height="12" viewBox="0 0 16 16" fill="none"
-          stroke="currentColor" stroke-width="1.5"
-        >
-          <path d="M2 5h12M2 9h12M2 13h12" />
-        </svg>
-        <svg
-          v-else
-          width="12" height="12" viewBox="0 0 16 16" fill="none"
-          stroke="currentColor" stroke-width="1.5"
-        >
-          <path d="M2 4h12M2 12h12" />
-        </svg>
-      </span>
-      <span>{{ option.label }}</span>
-    </button>
+      <button
+        type="button"
+        :class="{ active: modelValue === option.value }"
+        :aria-pressed="modelValue === option.value"
+        @click="select(option.value)"
+      >
+        <span class="ico" aria-hidden="true">
+          <svg
+            v-if="option.value === 'tight'"
+            width="12" height="12" viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" stroke-width="1.5"
+          >
+            <path d="M2 4h12M2 7h12M2 10h12M2 13h12" />
+          </svg>
+          <svg
+            v-else-if="option.value === 'comfortable'"
+            width="12" height="12" viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" stroke-width="1.5"
+          >
+            <path d="M2 5h12M2 9h12M2 13h12" />
+          </svg>
+          <svg
+            v-else
+            width="12" height="12" viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" stroke-width="1.5"
+          >
+            <path d="M2 4h12M2 12h12" />
+          </svg>
+        </span>
+        <span>{{ option.label }}</span>
+      </button>
+    </PRismTooltip>
   </div>
 </template>

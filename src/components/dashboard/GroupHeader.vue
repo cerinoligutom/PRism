@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { formatRelativeAgo } from "@/lib/format";
 
 interface Props {
   /** Plain label rendered when `org` is null (e.g. when grouping by `none`). */
@@ -46,28 +47,12 @@ const repoOnly = computed<string>(() => {
   return slash === -1 ? props.label : props.label.slice(slash + 1).trim();
 });
 
-const relativeUpdated = computed<string>(() =>
-  formatRelative(secondsSince(props.latestUpdatedAt)),
-);
+const relativeUpdated = computed<string>(() => formatRelativeAgo(props.latestUpdatedAt));
 
 function toggle(): void {
   if (!props.collapsible) return;
   internalCollapsed.value = !internalCollapsed.value;
   emit("update:collapsed", internalCollapsed.value);
-}
-
-function secondsSince(unix: number): number {
-  return Math.max(0, Math.floor(Date.now() / 1000 - unix));
-}
-
-function formatRelative(seconds: number): string {
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 </script>
 
