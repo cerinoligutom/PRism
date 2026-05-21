@@ -340,24 +340,36 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
 /// Reviewer entries for one PR: one row per unique reviewer login, picking the
 /// latest submitted review per login (with a state-priority tie-break), then
 /// filling in pending entries for requested reviewers who have never
-/// submitted. The viewer marker `is_you` is true when the reviewer login
-/// matches the PR's owning-account login. Rows whose latest state doesn't map
-/// to a [`ReviewerState`] (e.g. `DISMISSED`) are dropped; a login dropped this
-/// way does not re-appear as `Pending` from `requested_reviewers` because the
-/// login still counts as having a submitted review.
+/// submitted. The viewer marker `is_you` is true when the reviewer's identity
+/// `(login, host)` matches the row's projected account `(login, host)` _and_
+/// that account lives on the PR's owning host. Rows whose latest state doesn't
+/// map to a [`ReviewerState`] (e.g. `DISMISSED`) are dropped; a login dropped
+/// this way does not re-appear as `Pending` from `requested_reviewers` because
+/// the login still counts as having a submitted review.
+///
+/// Cross-host isolation (issue #169): GitHub logins are unique per host, not
+/// globally. Two accounts can share login `ada` on github.com and on a GHE
+/// host, but they are different identities. The lookup therefore keys on
+/// `account_id -> (login, host)` and compares against the PR's owning host
+/// (fetched per call from `repos -> accounts`). If the projected account's
+/// host doesn't match the PR's host, `is_you` stays false regardless of any
+/// login string coincidence.
 fn hydrate_reviewers(
     conn: &Connection,
     prs: &mut [DashboardPullRequest],
 ) -> Result<(), rusqlite::Error> {
-    // Build the account-login lookup keyed on the row's projected account_id.
-    let mut account_logins: HashMap<i64, String> = HashMap::new();
+    // account_id -> (login, host). Lookup keyed by the row's projected
+    // account_id; `host` is carried so the cross-host `is_you` guard below
+    // can compare it against the PR's owning host.
+    let mut account_identities: HashMap<i64, (String, String)> = HashMap::new();
     {
-        let mut stmt = conn.prepare("SELECT id, login FROM accounts")?;
+        let mut stmt = conn.prepare("SELECT id, login, host FROM accounts")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
             let login: String = row.get(1)?;
-            account_logins.insert(id, login);
+            let host: String = row.get(2)?;
+            account_identities.insert(id, (login, host));
         }
     }
 
@@ -365,6 +377,27 @@ fn hydrate_reviewers(
     // table (reviews + requested_reviewers).
     let pr_ids: Vec<i64> = prs.iter().map(|pr| pr.id).collect();
     let placeholders = vec!["?"; pr_ids.len()].join(",");
+
+    // PR id -> owning host (the repo's owning account host). One round trip
+    // for the loaded set; the EXISTS / JOIN form would otherwise rerun per row
+    // during the `is_you` derivation.
+    let mut pr_owner_host_by_pr: HashMap<i64, String> = HashMap::new();
+    {
+        let sql = format!(
+            "SELECT pr.id, acc.host
+               FROM pull_requests pr
+               JOIN repos r ON r.id = pr.repo_id
+               JOIN accounts acc ON acc.id = r.account_id
+              WHERE pr.id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(pr_ids.iter()))?;
+        while let Some(row) = rows.next()? {
+            let pr_id: i64 = row.get(0)?;
+            let host: String = row.get(1)?;
+            pr_owner_host_by_pr.insert(pr_id, host);
+        }
+    }
 
     let mut reviewers_by_pr: HashMap<i64, Vec<ReviewerEntry>> = HashMap::new();
     // Track every login that has _any_ submitted review per PR (including
@@ -473,12 +506,16 @@ fn hydrate_reviewers(
         }
     }
 
-    // Attach to the parent PR rows and compute `is_you`.
+    // Attach to the parent PR rows and compute `is_you`. The marker requires
+    // both a login string match and a host match against the PR's owning host
+    // (issue #169 - same login on different hosts is a different identity).
     for pr in prs.iter_mut() {
         if let Some(mut entries) = reviewers_by_pr.remove(&pr.id) {
-            if let Some(viewer_login) = account_logins.get(&pr.account_id) {
+            if let Some((viewer_login, viewer_host)) = account_identities.get(&pr.account_id) {
+                let pr_host = pr_owner_host_by_pr.get(&pr.id);
+                let host_matches = pr_host.is_some_and(|h| h == viewer_host);
                 for entry in entries.iter_mut() {
-                    entry.is_you = entry.login == *viewer_login;
+                    entry.is_you = host_matches && entry.login == *viewer_login;
                 }
             }
             pr.reviewers = entries;

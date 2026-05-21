@@ -1217,3 +1217,103 @@ fn team_view_account_scoped_reads_relation_row_when_present() {
     assert!(pr.needs_attention);
     assert_eq!(pr.mentioned_count_unread, 3);
 }
+
+// ===== cross-host (login collision) is_you tests (issue #169) =====
+//
+// Two accounts share login `ada` on different hosts. The PR is owned by
+// account 1 (github.com). When the dashboard surfaces the PR under account
+// 2's relation row (a deliberate edge case forced via direct INSERT - the
+// sync flow doesn't normally create cross-host relations), the `is_you`
+// reviewer marker must NOT flip for reviewers whose login matches account
+// 2's login string but whose identity lives on the PR's host.
+
+/// Build a fixture with one PR owned by account 1 (github.com), where a
+/// second account shares the login on a different host. Both accounts get a
+/// relation row to the same PR so the union path can return either.
+fn seed_cross_host_login_collision_fixture(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'gh-acct',  'github.com',       'ada', 0),
+            (2, 'ghe-acct', 'github.acme.corp', 'ada', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'ada', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
+            (100, 10, 1, 'web/#1', 'open', 0, 'someone-else', 0, 1000, 1000,
+             'main', 'feat-a');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 0, 0, 1, 0),
+            (2, 100, 0, 0, 1, 0);
+
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9001, 100, 'ada', 'APPROVED', 500);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn is_you_does_not_flip_cross_host_when_viewer_login_matches() {
+    let conn = fresh_db();
+    seed_cross_host_login_collision_fixture(&conn);
+
+    // Query under account 2 (ghe). The PR is on github.com - reviewer 'ada'
+    // is the github.com 'ada', not account 2's ghe identity. is_you must be
+    // false.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(2),
+    )
+    .unwrap();
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("PR 100 surfaces under account 2's relation row");
+    let ada = pr
+        .reviewers
+        .iter()
+        .find(|r| r.login == "ada")
+        .expect("ada is a reviewer");
+    assert!(
+        !ada.is_you,
+        "account 2 lives on a different host; the github.com 'ada' is not its identity"
+    );
+}
+
+#[test]
+fn is_you_still_flips_same_host_when_viewer_login_matches() {
+    let conn = fresh_db();
+    seed_cross_host_login_collision_fixture(&conn);
+
+    // Regression guard: under account 1 (github.com - the PR's host),
+    // reviewer 'ada' IS the viewer.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("PR 100 surfaces under account 1's relation row");
+    let ada = pr
+        .reviewers
+        .iter()
+        .find(|r| r.login == "ada")
+        .expect("ada is a reviewer");
+    assert!(
+        ada.is_you,
+        "account 1 IS the github.com 'ada' identity (same login, same host)"
+    );
+}

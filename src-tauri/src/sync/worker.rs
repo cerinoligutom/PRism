@@ -1323,6 +1323,15 @@ pub fn write_pr_updates(
 ///
 /// Watermark advance runs unconditionally so a cycle with zero new comments
 /// still moves the cursor forward and the next scan starts from now.
+///
+/// Host isolation (issue #169): GitHub logins are unique per host, not
+/// globally. Two PRism accounts can share the same login on different hosts
+/// (e.g. `ada` on github.com and `ada` on github.acme.corp) but they are
+/// different identities. The scan + recompute therefore matches on the
+/// viewer's `(login, host)` pair, derived from `accounts WHERE id = ?1` and
+/// the PR's owning host from `repos -> accounts`. A relation row whose viewer
+/// host differs from the PR's host is treated as a no-op so cross-host login
+/// collisions never inflate counters or flip `needs_attention`.
 fn scan_mentions_and_recompute_attention(
     tx: &rusqlite::Transaction<'_>,
     account_id: AccountId,
@@ -1330,19 +1339,42 @@ fn scan_mentions_and_recompute_attention(
 ) -> Result<(), rusqlite::Error> {
     let account_id = account_id as i64;
 
-    // Viewer login. The relation row may not exist on this account (Team-view
-    // path where the active account has no discovered relation to the PR); in
-    // that case the UPDATE matches zero rows and the scan is a clean no-op.
-    let viewer_login: Option<String> = tx
+    // Viewer (login, host). The relation row may not exist on this account
+    // (Team-view path where the active account has no discovered relation to
+    // the PR); in that case the UPDATE matches zero rows and the scan is a
+    // clean no-op.
+    let viewer: Option<(String, String)> = tx
         .query_row(
-            "SELECT login FROM accounts WHERE id = ?1",
+            "SELECT login, host FROM accounts WHERE id = ?1",
             params![account_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok();
+    let Some((viewer_login, viewer_host)) = viewer else {
+        return Ok(());
+    };
+
+    // PR's owning host: the host of the account that owns the repo. Used to
+    // confirm the viewer's identity lives on this PR's host before counting
+    // mentions or matching the PR author / requested reviewer. A missing PR
+    // row reads the same as "no relation" - clean no-op.
+    let pr_owner_host: Option<String> = tx
+        .query_row(
+            "SELECT acc.host
+               FROM pull_requests pr
+               JOIN repos r ON r.id = pr.repo_id
+               JOIN accounts acc ON acc.id = r.account_id
+              WHERE pr.id = ?1",
+            params![pr_id],
             |r| r.get::<_, String>(0),
         )
         .ok();
-    let Some(viewer_login) = viewer_login else {
+    let Some(pr_owner_host) = pr_owner_host else {
         return Ok(());
     };
+    if viewer_host != pr_owner_host {
+        return Ok(());
+    }
 
     // Read the prior watermark. NULL or missing relation row reads as 0 so the
     // first cycle counts every comment newer than the epoch.
@@ -1412,33 +1444,46 @@ fn scan_mentions_and_recompute_attention(
     // Composite recompute. Mirrors the formula in ADR 0015. Short-lived
     // duplication with `triage::query::recompute_needs_attention` (M4-A);
     // ADR 0015 calls out the intentional overlap.
+    //
+    // Identity match uses the viewer's `(login, host)` pair against the PR's
+    // owning host. The early-exit above guarantees `viewer_host` equals the
+    // PR's host, so the EXISTS subqueries only need to verify `pr.author_login
+    // = ?3` and `rr.login = ?3` (login string equality) against PR rows on
+    // the matching host - captured by the `pr_host_acc.host = ?4` join below.
     tx.execute(
         "UPDATE pull_request_viewer_relations
             SET needs_attention = CASE WHEN (
                 EXISTS (
                     SELECT 1 FROM pull_requests pr
-                     JOIN accounts a ON a.login = pr.author_login
+                     JOIN repos r ON r.id = pr.repo_id
+                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                      WHERE pr.id = ?2
-                       AND a.id = ?1
+                       AND pr.author_login = ?3
+                       AND pr_host_acc.host = ?4
                        AND pr.threads_unresolved_involved > 0
                 )
                 OR EXISTS (
                     SELECT 1 FROM requested_reviewers rr
-                     JOIN accounts a ON a.login = rr.login
+                     JOIN pull_requests pr ON pr.id = rr.pull_request_id
+                     JOIN repos r ON r.id = pr.repo_id
+                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                      WHERE rr.pull_request_id = ?2
-                       AND a.id = ?1
+                       AND rr.login = ?3
+                       AND pr_host_acc.host = ?4
                 )
                 OR (mentioned_count_unread > 0)
                 OR EXISTS (
                     SELECT 1 FROM pull_requests pr
-                     JOIN accounts a ON a.login = pr.author_login
+                     JOIN repos r ON r.id = pr.repo_id
+                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                      WHERE pr.id = ?2
-                       AND a.id = ?1
+                       AND pr.author_login = ?3
+                       AND pr_host_acc.host = ?4
                        AND pr.review_decision = 'CHANGES_REQUESTED'
                 )
             ) THEN 1 ELSE 0 END
           WHERE account_id = ?1 AND pull_request_id = ?2",
-        params![account_id, pr_id],
+        params![account_id, pr_id, viewer_login, viewer_host],
     )?;
 
     Ok(())
@@ -3821,6 +3866,186 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0, "missing relation row must remain missing");
+    }
+
+    // --- cross-host (login collision) isolation tests (issue #169) ---
+    //
+    // Two accounts share login `me` on different hosts. The PR is owned by
+    // account 1 (github.com). Without the host-aware joins the recompute
+    // would flag account 2 as the PR author / requested reviewer / etc.
+    // purely because the login string matches, even though account 2 lives
+    // on a different host and isn't the same identity.
+
+    /// Seed a fixture where the PR is owned by account 1 (github.com, login
+    /// `me`) and a second account on a different host shares the same login.
+    /// Both accounts get a relation row to the same PR so the scan + recompute
+    /// can run for either.
+    fn seed_db_with_cross_host_login_collision() -> (DbHandle, i64, i64) {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO accounts (id, label, host, login, created_at)
+                    VALUES (2, 'ghe', 'github.acme.corp', 'me', 0);",
+            )
+            .unwrap();
+        seed_relation(&db, 1, pr_id);
+        seed_relation(&db, 2, pr_id);
+        (db, repo_id, pr_id)
+    }
+
+    #[test]
+    fn needs_attention_does_not_fire_cross_host_for_pr_author_match() {
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+
+        // PR sits on github.com (account 1's host); author_login matches both
+        // accounts' login string but the identity is only account 1's. Seed
+        // an unresolved + involved thread via a `me`-authored comment so the
+        // threads rollup writes `threads_unresolved_involved = 1` under
+        // either account (the rollup itself uses a login-only join).
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+                 INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_x');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES (2001, 1001, 'me', 'reply', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 2, pr_id),
+            0,
+            "account 2 lives on a different host, so the login-only author \
+             match must not flag its needs_attention"
+        );
+    }
+
+    #[test]
+    fn needs_attention_does_not_fire_cross_host_for_requested_reviewer_match() {
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+
+        // Requested reviewer `me` on a github.com PR refers to the github.com
+        // user, not account 2's ghe identity.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (100, 'me', 'user');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 2, pr_id),
+            0,
+            "the requested reviewer is on the PR's host; cross-host login \
+             match must not flag account 2"
+        );
+    }
+
+    #[test]
+    fn needs_attention_does_not_fire_cross_host_for_changes_requested() {
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE pull_requests
+                    SET author_login = 'me',
+                        review_decision = 'CHANGES_REQUESTED'
+                  WHERE id = ?1",
+                params![pr_id],
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 2, pr_id),
+            0,
+            "CHANGES_REQUESTED on a github.com PR doesn't make account 2 \
+             (different host) the author"
+        );
+    }
+
+    #[test]
+    fn needs_attention_still_fires_same_host_for_pr_author_match() {
+        // Regression guard: the host-aware join must not break the matching
+        // account's recompute. Same fixture, but check the account that IS
+        // the PR author still gets needs_attention=1.
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+                 INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_y');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES (2001, 1001, 'me', 'reply', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 1, pr_id),
+            1,
+            "account 1 IS the PR author (same host, same login) - must flag"
+        );
+    }
+
+    #[test]
+    fn mention_scan_does_not_increment_cross_host_relation_row() {
+        // The same `@me` mention applies to whichever identity matches the
+        // PR's host. Account 2 (different host) must not see its mention
+        // count climb when only the literal `@me` token matches its login
+        // string.
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, 100, 'bob', 'ping @me', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_mention_count(&db, 2, pr_id),
+            0,
+            "cross-host account must not see the github.com mention"
+        );
+    }
+
+    #[test]
+    fn mention_scan_still_increments_same_host_relation_row() {
+        // Regression guard for the same fixture: the host-matching account
+        // still gets the mention counted.
+        let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, 100, 'bob', 'ping @me', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_mention_count(&db, 1, pr_id), 1);
     }
 
     // ===== timeline_events persistence tests =====
