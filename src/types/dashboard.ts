@@ -30,6 +30,32 @@ export type RowDensity = "comfortable" | "tight" | "roomy";
 
 export type DashboardGroup = "repo" | "org" | "none";
 
+/**
+ * Mirrors the kebab-case Rust enum tag used by the chip filter pipeline (see
+ * `docs/contracts/triage-ux.md` "Filter chip semantics"). Active chips compose
+ * as AND across keys; per-chip counts are independent (each shows what would
+ * match if that chip alone were toggled).
+ */
+export type ChipKey =
+  | "needs-attention"
+  | "unresolved-threads"
+  | "ci-failing"
+  | "stale"
+  | "drafts";
+
+/**
+ * Mirrors `FilterChipCounts` in `src-tauri/src/triage/types.rs`. Per-chip
+ * counts are returned by `list_filter_chip_counts` once per (view, account)
+ * change; the frontend renders them inline on each chip.
+ */
+export interface FilterChipCounts {
+  readonly needs_attention: number;
+  readonly unresolved_threads: number;
+  readonly ci_failing: number;
+  readonly stale: number;
+  readonly drafts: number;
+}
+
 export interface CiSummary {
   /** `"SUCCESS" | "FAILURE" | "PENDING" | "ERROR" | "EXPECTED"`. */
   readonly state: string;
