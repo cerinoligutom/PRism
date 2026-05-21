@@ -104,7 +104,7 @@ function statusLabel(state: ReviewerState): string {
     <PRismTooltip :as-child="true">
       <span class="reviewer-stack__avatars">
         <PRismAvatar
-          v-for="reviewer in visible"
+          v-for="(reviewer, index) in visible"
           :key="reviewer.login"
           :login="reviewer.login"
           :avatar-url="reviewer.avatar_url"
@@ -115,6 +115,7 @@ function statusLabel(state: ReviewerState): string {
             stateClass(reviewer.state),
             reviewer.is_you && 'reviewer-stack__avatar--you',
           ]"
+          :style="{ zIndex: visible.length - index }"
         />
         <span v-if="overflow > 0" class="reviewer-stack__overflow">+{{ overflow }}</span>
       </span>
@@ -245,6 +246,8 @@ function statusLabel(state: ReviewerState): string {
  * stack: perfect circle at single-digit counts, horizontal capsule at two or
  * three digits, never taller than the avatars it sits beside. */
 .reviewer-stack__overflow {
+  position: relative;
+  z-index: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
