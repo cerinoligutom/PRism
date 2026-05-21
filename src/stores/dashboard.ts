@@ -297,22 +297,16 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * each count shows what would match if that chip alone were toggled.
    * Called on view / account / sync-status changes; the result is `null` on
    * failure so the bar gracefully degrades to label-only chips.
+   *
+   * `accountFilter = null` (the ADR 0016 unified default) fans the count
+   * across every tracked account and dedupes by PR id so a PR matched via
+   * two accounts contributes one to each chip it triggers.
    */
   async function fetchChipCounts(): Promise<void> {
-    const accountId = accountFilter.value;
-    if (accountId === null) {
-      // The chip-counts command is per-account by definition. Without a
-      // selected account we leave the chip row in its "no counts yet" state
-      // rather than fan-out across every account; the badge in the sidebar
-      // already does the fan-out for the attention signal, and the chip row
-      // surfaces zero PRs anyway because the dashboard list aggregates.
-      chipCounts.value = null;
-      return;
-    }
     try {
       chipCounts.value = await invoke<FilterChipCounts>(
         "list_filter_chip_counts",
-        { view: view.value, accountId },
+        { view: view.value, accountId: accountFilter.value },
       );
     } catch {
       chipCounts.value = null;

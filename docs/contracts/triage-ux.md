@@ -275,15 +275,21 @@ pub fn mark_pr_unread(
 /// Count how many PRs in the current view would match each filter chip
 /// independently of the other chips. Per-chip counts so the UI shows
 /// what would match if a single chip were toggled alone.
+///
+/// `account_id = Some(id)` runs the per-account count. `account_id = None`
+/// (the ADR 0016 unified default) fans the count across every tracked
+/// account and dedupes by PR id so a PR matched via two accounts contributes
+/// one to each chip it triggers - matching the dashboard query's union-mode
+/// `GROUP BY pr.id` row shape.
 #[tauri::command]
 pub fn list_filter_chip_counts(
     view: DashboardView,
-    account_id: i64,
+    account_id: Option<i64>,
     db: State<'_, DbHandle>,
 ) -> Result<FilterChipCounts, String>;
 ```
 
-The commands are synchronous DB writes / reads - no `async` because there's no network round-trip. `account_id` is required (not `Option<i64>`) because triage signals are per-account by definition; the union-across-accounts case isn't meaningful for read-state.
+The commands are synchronous DB writes / reads - no `async` because there's no network round-trip. `mark_pr_read` / `mark_pr_unread` take `account_id: Option<i64>` (ADR 0016 fan-out: `None` writes across every relation owner). `list_filter_chip_counts` takes `account_id: Option<i64>` too: `Some(id)` keeps the per-account behaviour byte-identical to before ADR 0016, `None` reads the union scope and dedupes by PR id.
 
 ## DTO extensions
 
@@ -398,7 +404,7 @@ Five chips, each with an independent count and an active state. Multi-select.
 
 **Counts rule.** Each chip count is independent of the active chip set - the count shows how many PRs would match if that chip were toggled alone (within the active view + account scope). The user always sees "if I toggle this on, how many show up?" rather than "how many of the current results match this chip?".
 
-The chip-count Tauri command (`list_filter_chip_counts`) runs five SELECTs over the same view-scoped FROM clause and returns them in one `FilterChipCounts` payload. The frontend invalidates the counts whenever the active view or account filter changes.
+The chip-count Tauri command (`list_filter_chip_counts`) runs five SELECTs over the same view-scoped FROM clause and returns them in one `FilterChipCounts` payload. The frontend invalidates the counts whenever the active view or account filter changes. In unified scope (`account_id = None`) each SELECT wraps in `COUNT(DISTINCT pr.id)` over a LEFT JOIN to relations without an account predicate, mirroring the dashboard query's union-mode `GROUP BY pr.id` so the chip count agrees row-for-row with the chip-filtered list (ADR 0016, issue #171).
 
 ### Tooltip explainers
 
