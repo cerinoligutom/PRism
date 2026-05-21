@@ -54,19 +54,21 @@ withDefaults(defineProps<Props>(), {
 
 <style scoped>
 .prism-tooltip__content {
-  background: var(--bg-3);
-  color: var(--text);
-  border: 1px solid var(--border-2);
+  background: var(--bg-5);
+  color: var(--text-strong);
+  border: 1px solid var(--border-3);
   padding: 8px 10px;
   border-radius: var(--r-2);
   font-size: var(--fs-12);
   line-height: var(--lh-body);
   max-width: 260px;
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--shadow-3);
   z-index: 50;
 }
 
 .prism-tooltip__arrow {
-  fill: var(--bg-3);
+  fill: var(--bg-5);
+  stroke: var(--border-3);
+  stroke-width: 1;
 }
 </style>

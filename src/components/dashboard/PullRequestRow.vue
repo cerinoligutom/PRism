@@ -156,6 +156,7 @@ function openOnGitHub(event: MouseEvent): void {
     <PRismTooltip
       :text="stripTooltip"
       :disabled="stripClass === 'row-strip-none'"
+      side="right"
       as-child
     >
       <div
