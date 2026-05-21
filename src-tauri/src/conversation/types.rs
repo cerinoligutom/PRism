@@ -138,6 +138,11 @@ pub struct PullRequestReview {
     /// to the frontend's `PRismMarkdown` primitive; falls back to `body` as
     /// plain text when `None` (legacy rows). See ADR 0014 and issue #138.
     pub body_html: Option<String>,
+    /// GitHub permalink for the review (`PullRequestReview.url`). Mirrors the
+    /// thread-level `url` from M3 so the Reviews tab can offer a per-review
+    /// "Open in GitHub" affordance. `None` for rows written before
+    /// migration 0011.
+    pub url: Option<String>,
     pub submitted_at: Option<i64>,
 }
 

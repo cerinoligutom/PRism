@@ -10,6 +10,7 @@ import type {
 
 import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
@@ -151,6 +152,33 @@ function isStale(t: PullRequestThread): boolean {
 function commentsFor(threadId: number): readonly ThreadComment[] {
   const matches = props.threadComments.filter((c) => c.thread_id === threadId);
   return [...matches].sort((a, b) => a.created_at - b.created_at);
+}
+
+interface ThreadParticipant {
+  readonly login: string;
+  readonly avatar_url: string | null;
+}
+
+/** Unique participants in a thread, head-comment author first, then reply
+ * authors in chronological order. Dedupes by login. Thread comments
+ * lazy-hydrate per ADR 0010; avatars come from the cached `users` table
+ * (ADR 0013). Returns an empty array when only the head-comment author is
+ * present so the consumer can skip rendering a single-avatar stack. */
+function participantsFor(t: PullRequestThread): readonly ThreadParticipant[] {
+  const seen = new Set<string>();
+  const out: ThreadParticipant[] = [];
+  const headLogin = t.head_comment?.author_login ?? "";
+  if (headLogin.length > 0) {
+    seen.add(headLogin);
+    out.push({ login: headLogin, avatar_url: t.head_comment?.avatar_url ?? null });
+  }
+  for (const c of commentsFor(t.id)) {
+    if (c.author_login.length === 0 || seen.has(c.author_login)) continue;
+    seen.add(c.author_login);
+    out.push({ login: c.author_login, avatar_url: c.avatar_url });
+  }
+  // Single-author threads are just the head comment - skip the stack.
+  return out.length > 1 ? out : [];
 }
 
 function expandTooltip(t: PullRequestThread): string {
@@ -351,9 +379,39 @@ async function openCommentOnGitHub(
             v-else-if="isExpanded(thread.id)"
             class="thread-card__replies-empty"
           >No comments loaded for this thread.</p>
+
         </div>
 
         <div class="thread-card__meta">
+          <PRismTooltip
+            v-if="participantsFor(thread).length > 0"
+            :as-child="true"
+          >
+            <div class="thread-card__participants">
+              <PRismAvatarStack
+                :users="participantsFor(thread)"
+                size="sm"
+                layout="overlap"
+              />
+            </div>
+            <template #content>
+              <ul class="thread-card__participants-tooltip">
+                <li
+                  v-for="p in participantsFor(thread)"
+                  :key="p.login"
+                  class="thread-card__participants-tooltip-row"
+                >
+                  <PRismAvatar
+                    :login="p.login"
+                    :avatar-url="p.avatar_url"
+                    size="sm"
+                    :title="null"
+                  />
+                  <span class="thread-card__participants-tooltip-login">{{ p.login }}</span>
+                </li>
+              </ul>
+            </template>
+          </PRismTooltip>
           <div v-if="thread.reply_count > 0" class="thread-card__replies">
             {{ thread.reply_count }} {{ thread.reply_count === 1 ? "reply" : "replies" }}
           </div>
@@ -650,6 +708,22 @@ async function openCommentOnGitHub(
   font-style: italic;
 }
 
+/* Participants strip - "who's in this conversation". Sits below the snippet
+ * / replies list inside the body column. Only renders when 2+ distinct
+ * authors are involved (single-author threads collapse it out). The stack's
+ * `--bg-1` ring matches the card background so the avatars read as inset
+ * peers rather than floating chips. */
+/* Participants stack lives at the top of the meta column - reads as thread
+ * metadata (alongside reply count, opened, last activity) rather than as a
+ * floating row of avatars below the snippet body. Right-aligned to match the
+ * rest of the meta column. */
+.thread-card__participants {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: var(--s-1);
+}
+
 .thread-card__replies-list {
   margin-top: var(--s-3);
   display: flex;
@@ -724,11 +798,14 @@ async function openCommentOnGitHub(
 }
 
 .thread-comment__text {
+  /* PRismMarkdown renders the body now; line-height + `white-space: pre-wrap`
+   * are owned by `.prism-markdown` in `markdown.css`. Re-asserting them here
+   * (scoped selectors get higher specificity than the global rule) preserves
+   * literal whitespace between `<p>` tags and inflates the line-box, surfacing
+   * as huge gaps between paragraphs. Leave only the host-level margin. */
   margin: 2px 0 0;
   font-size: var(--fs-12);
-  line-height: var(--lh-body);
   color: var(--text);
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -785,5 +862,32 @@ async function openCommentOnGitHub(
 
 .thread-card__chevron--open {
   transform: rotate(180deg);
+}
+</style>
+
+<!-- Participants tooltip lives outside scoped CSS because Reka's TooltipPortal
+     teleports content outside the component's `data-v-*` boundary. Mirrors the
+     ReviewerStack overflow-tooltip pattern. -->
+<style>
+.thread-card__participants-tooltip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+}
+
+.thread-card__participants-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-card__participants-tooltip-login {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  color: var(--text-strong);
 }
 </style>

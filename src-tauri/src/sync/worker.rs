@@ -1834,15 +1834,16 @@ fn write_reviews(
         tx.execute(
             "INSERT INTO reviews
                 (pull_request_id, node_id, reviewer_login, state, submitted_at,
-                 body, body_html)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 body, body_html, url)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
                 pull_request_id = excluded.pull_request_id,
                 reviewer_login = excluded.reviewer_login,
                 state = excluded.state,
                 submitted_at = excluded.submitted_at,
                 body = excluded.body,
-                body_html = COALESCE(excluded.body_html, reviews.body_html)",
+                body_html = COALESCE(excluded.body_html, reviews.body_html),
+                url = COALESCE(excluded.url, reviews.url)",
             params![
                 pr_id,
                 review.id,
@@ -1851,6 +1852,7 @@ fn write_reviews(
                 submitted_at,
                 review.body,
                 review.body_html,
+                review.url,
             ],
         )?;
 
@@ -2908,6 +2910,7 @@ mod tests {
                         body: Some("LGTM".into()),
                         body_html: None,
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                        url: None,
                         author: Some(Actor::new("alice")),
                     },
                     PullRequestReviewNode {
@@ -2916,6 +2919,7 @@ mod tests {
                         body: None,
                         body_html: None,
                         submitted_at: Some("2026-05-18T13:00:00Z".into()),
+                        url: None,
                         author: Some(Actor::new("bob")),
                     },
                 ],
@@ -2962,6 +2966,7 @@ mod tests {
                     body: Some("LGTM".into()),
                     body_html: None,
                     submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                    url: None,
                     author: Some(Actor::new("alice")),
                 }],
             }),
@@ -3053,6 +3058,7 @@ mod tests {
                         body: Some("LGTM".into()),
                         body_html: None,
                         submitted_at: Some("2026-05-18T12:00:00Z".into()),
+                        url: None,
                         author: Some(Actor::new("alice")),
                     },
                     PullRequestReviewNode {
@@ -3061,6 +3067,7 @@ mod tests {
                         body: None,
                         body_html: None,
                         submitted_at: None,
+                        url: None,
                         author: None,
                     },
                 ],

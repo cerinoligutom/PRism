@@ -79,6 +79,31 @@ const SANITISE_CONFIG: DOMPurifyConfig = {
   // `v-html` binding can swap it in directly.
 };
 
+/**
+ * Strip empty `<p>` elements (and `<p><br></p>` / `<p>&nbsp;</p>` variants)
+ * from the sanitised HTML. GitHub's `bodyHTML` emits these for double-blank
+ * lines in the source markdown; each one eats `line-height` + a margin even
+ * with the tightened `--s-1` paragraph spacing. Pruning at the string level
+ * (before `v-html` writes the DOM) ensures Vue doesn't re-inject the empty
+ * paragraphs on a re-render. Image / media-only paragraphs are preserved.
+ */
+function stripEmptyParagraphs(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const paras = doc.querySelectorAll("p");
+  for (const p of Array.from(paras)) {
+    const text = p.textContent?.trim() ?? "";
+    if (text !== "") continue;
+    if (
+      p.querySelector("img, picture, video, audio, iframe, svg, canvas") !==
+      null
+    ) {
+      continue;
+    }
+    p.remove();
+  }
+  return doc.body.innerHTML;
+}
+
 const sanitised = computed<string>(() => {
   if (!hasHtml.value) return "";
   // DOMPurify v3 returns `string | TrustedHTML | ...` depending on the
@@ -86,7 +111,8 @@ const sanitised = computed<string>(() => {
   // narrow via the explicit return type rather than chasing the union
   // each call site.
   const out = DOMPurify.sanitize(props.html ?? "", SANITISE_CONFIG);
-  return typeof out === "string" ? out : String(out);
+  const purified = typeof out === "string" ? out : String(out);
+  return stripEmptyParagraphs(purified);
 });
 
 // Container element ref used for: (1) anchor click delegation, (2) walking

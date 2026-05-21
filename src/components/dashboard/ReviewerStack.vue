@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ReviewerEntry, ReviewerState } from "@/types/dashboard";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
@@ -17,14 +18,6 @@ const props = withDefaults(defineProps<Props>(), {
 /** Cap on rows rendered inside the overflow tooltip; remainder collapses
  * into a muted "+M more" footer so the chip stays readable for huge PRs. */
 const OVERFLOW_TOOLTIP_CAP = 12;
-
-const visible = computed<readonly ReviewerEntry[]>(() =>
-  props.reviewers.slice(0, props.max),
-);
-
-const overflow = computed<number>(
-  () => Math.max(0, props.reviewers.length - props.max),
-);
 
 const tooltipReviewers = computed<readonly ReviewerEntry[]>(() =>
   props.reviewers.slice(0, OVERFLOW_TOOLTIP_CAP),
@@ -94,6 +87,15 @@ function statusLabel(state: ReviewerState): string {
       return "Pending";
   }
 }
+
+/** Look up the full reviewer record by login so the `avatar` slot can layer
+ * the state dot + "you" ring. `PRismAvatarStack` only carries
+ * `{ login, avatar_url }` in its slot prop. */
+const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
+  const map = new Map<string, ReviewerEntry>();
+  for (const r of props.reviewers) map.set(r.login, r);
+  return map;
+});
 </script>
 
 <template>
@@ -102,29 +104,28 @@ function statusLabel(state: ReviewerState): string {
   </span>
   <span v-else class="reviewer-stack">
     <PRismTooltip :as-child="true">
-      <span class="reviewer-stack__avatars">
-        <span
-          v-for="(reviewer, index) in visible"
-          :key="reviewer.login"
-          class="reviewer-stack__avatar-slot"
-          :style="{ zIndex: visible.length - index }"
-        >
+      <PRismAvatarStack
+        :users="reviewers"
+        :max="max"
+        size="sm"
+        layout="overlap"
+      >
+        <template #avatar="{ user }">
           <PRismAvatar
-            :login="reviewer.login"
-            :avatar-url="reviewer.avatar_url"
+            :login="user.login"
+            :avatar-url="user.avatar_url"
             size="sm"
             :title="null"
             :class="[
               'reviewer-stack__avatar',
-              stateClass(reviewer.state),
-              reviewer.is_you && 'reviewer-stack__avatar--you',
+              reviewerByLogin.get(user.login)
+                ? stateClass(reviewerByLogin.get(user.login)!.state)
+                : 'reviewer-stack__avatar--pending',
+              reviewerByLogin.get(user.login)?.is_you && 'reviewer-stack__avatar--you',
             ]"
           />
-        </span>
-        <span v-if="overflow > 0" class="reviewer-stack__overflow-slot">
-          <span class="reviewer-stack__overflow">+{{ overflow }}</span>
-        </span>
-      </span>
+        </template>
+      </PRismAvatarStack>
       <template #content>
         <ul class="reviewer-stack__tooltip-list" style="max-width: 360px">
           <li
@@ -206,39 +207,16 @@ function statusLabel(state: ReviewerState): string {
   column-gap: 6px;
 }
 
-.reviewer-stack__avatars {
-  display: inline-flex;
-  align-items: center;
-}
-
-/* Each avatar (and the overflow pill) sits inside a positioned slot so the
- * per-item z-index actually applies. PRismAvatar has a multi-root template,
- * so inline `:style` passed to it doesn't fall through to the rendered DOM -
- * the slot wrapper is what gives us reliable stack-order control. */
-.reviewer-stack__avatar-slot,
-.reviewer-stack__overflow-slot {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-/* Jira-style stacked deck: each slot after the first crowds into the previous
- * one. The 1.5px border in --bg-1 on the avatar/pill paints the ring-separator. */
-.reviewer-stack__avatar-slot:not(:first-child),
-.reviewer-stack__overflow-slot {
-  margin-left: -6px;
-}
-
-.reviewer-stack__overflow-slot {
-  z-index: 0;
-}
-
 .reviewer-stack--empty {
   font-family: var(--font-mono);
   font-size: var(--fs-11);
   color: var(--text-faint);
 }
 
+/* The avatar slot's `PRismAvatar` resolves to a single rendered element
+ * (the image / initial span), so the `reviewer-stack__avatar` class on it
+ * survives fallthrough. The base ring matches the `PRismAvatarStack`
+ * default - we keep it so the per-state ::after pseudo can anchor here. */
 .reviewer-stack__avatar {
   position: relative;
   border-width: 1.5px;
@@ -265,27 +243,6 @@ function statusLabel(state: ReviewerState): string {
 
 .reviewer-stack__avatar--you {
   box-shadow: 0 0 0 2px var(--accent);
-}
-
-/* Locked to the `sm` avatar size (16px) so the pill reads as a peer in the
- * stack: perfect circle at single-digit counts, horizontal capsule at two or
- * three digits, never taller than the avatars it sits beside. Stack-order
- * and overlap are handled by `.reviewer-stack__overflow-slot`. */
-.reviewer-stack__overflow {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  height: 16px;
-  min-width: 16px;
-  padding: 0 5px;
-  border-radius: var(--r-pill);
-  background: var(--bg-3);
-  border: 1.5px solid var(--bg-1);
-  font-family: var(--font-mono);
-  font-size: var(--fs-9);
-  line-height: 1;
-  color: var(--text-mute);
 }
 
 .reviewer-stack__summary {
