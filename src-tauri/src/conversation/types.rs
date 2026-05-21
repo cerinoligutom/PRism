@@ -51,6 +51,14 @@ pub struct PullRequestThread {
     /// the "Open in GitHub" per-thread action. `None` for legacy rows written
     /// before the column was introduced.
     pub url: Option<String>,
+    /// True when this thread has activity the active account hasn't seen yet.
+    /// Derivation (see issue #158): the thread's latest activity timestamp
+    /// (`last_reply_at`, falling back to the head comment's `created_at`,
+    /// then `created_at`) is newer than the viewer's `read_at` from
+    /// `pull_request_viewer_relations`. A NULL `read_at` means the viewer has
+    /// never opened the PR; the thread is unread. Always `false` when
+    /// `account_id` is None (no viewer = no read state).
+    pub unread: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -81,7 +81,12 @@ const threadsSummary = computed<string>(() => {
   const unresolved = c.stats.threads_unresolved;
   if (total === 0) return "No review threads yet.";
   const totalLabel = total === 1 ? "thread" : "threads";
-  return `${total} ${totalLabel} · ${unresolved} unresolved`;
+  // Unread count is derived per-thread (`thread.unread` from M4-A's
+  // read-state + per-thread `last_reply_at` comparison). Only surface when
+  // there's something unread so the label doesn't carry redundant "0 unread".
+  const unread = c.threads.filter((t) => t.unread).length;
+  const base = `${total} ${totalLabel} · ${unresolved} unresolved`;
+  return unread > 0 ? `${base} · ${unread} unread` : base;
 });
 
 /**

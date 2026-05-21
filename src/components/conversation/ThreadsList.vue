@@ -206,7 +206,14 @@ async function openCommentOnGitHub(
           thread.is_outdated && 'thread-card--outdated',
           thread.is_involved && !thread.is_resolved && 'thread-card--mine',
           isStale(thread) && 'thread-card--stale',
+          thread.unread && 'thread-card--unread',
         ]"
+        role="button"
+        tabindex="0"
+        :aria-expanded="isExpanded(thread.id)"
+        @click="toggleExpanded(thread.id)"
+        @keydown.enter.prevent="toggleExpanded(thread.id)"
+        @keydown.space.prevent="toggleExpanded(thread.id)"
       >
         <PRismTooltip :text="bucketTooltip(thread)" :as-child="true">
           <span
@@ -218,18 +225,34 @@ async function openCommentOnGitHub(
           >
             <svg
               v-if="bucketFor(thread).resolvedShape"
-              width="8"
-              height="8"
-              viewBox="0 0 8 8"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="1.5"
               stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <path d="M2 4l1.5 1.5L6 2.5" />
+              <circle cx="8" cy="8" r="6.25" />
+              <path d="M5.25 8.25l2 2 3.5-4" />
             </svg>
-            <svg v-else width="7" height="7" viewBox="0 0 8 8">
-              <circle cx="4" cy="4" r="3" fill="currentColor" />
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+              />
             </svg>
           </span>
         </PRismTooltip>
@@ -249,7 +272,7 @@ async function openCommentOnGitHub(
             >OUTDATED</span>
           </div>
 
-          <div class="thread-card__snippet">
+          <div v-if="!isExpanded(thread.id)" class="thread-card__snippet">
             <PRismAvatar
               v-if="snippetAuthor(thread) !== ''"
               :login="snippetAuthor(thread)"
@@ -269,6 +292,7 @@ async function openCommentOnGitHub(
           <div
             v-if="isExpanded(thread.id) && commentsFor(thread.id).length > 0"
             class="thread-card__replies-list"
+            @click.stop
           >
             <div
               v-for="comment in commentsFor(thread.id)"
@@ -359,11 +383,11 @@ async function openCommentOnGitHub(
                 class="thread-card__icon-btn"
                 :aria-expanded="isExpanded(thread.id)"
                 :aria-label="expandTooltip(thread)"
-                @click="toggleExpanded(thread.id)"
+                @click.stop="toggleExpanded(thread.id)"
               >
                 <svg
-                  width="12"
-                  height="12"
+                  width="14"
+                  height="14"
                   viewBox="0 0 12 12"
                   fill="none"
                   stroke="currentColor"
@@ -387,11 +411,11 @@ async function openCommentOnGitHub(
                 type="button"
                 class="thread-card__icon-btn"
                 aria-label="Open thread on GitHub"
-                @click="openThreadOnGitHub(thread.url)"
+                @click.stop="openThreadOnGitHub(thread.url)"
               >
                 <svg
-                  width="12"
-                  height="12"
+                  width="14"
+                  height="14"
                   viewBox="0 0 12 12"
                   fill="none"
                   stroke="currentColor"
@@ -422,6 +446,7 @@ async function openCommentOnGitHub(
 .threads-list__items {
   display: flex;
   flex-direction: column;
+  gap: var(--s-4);
 }
 
 .threads-list__empty {
@@ -437,42 +462,47 @@ async function openCommentOnGitHub(
 
 .thread-card {
   display: grid;
-  grid-template-columns: 14px 1fr auto;
+  grid-template-columns: 22px 1fr auto;
   gap: var(--s-3);
-  padding: var(--s-4) 0;
-  border-bottom: 1px solid var(--border-1);
+  padding: var(--s-4);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  background: var(--bg-1);
+  transition: background 0.12s;
 }
 
-.thread-card:last-child {
-  border-bottom: 0;
+.thread-card:hover {
+  background: var(--bg-0);
+}
+
+.thread-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .thread-card--mine {
-  background: linear-gradient(
-    90deg,
-    oklch(0.4 0.12 var(--accent-h) / 0.18),
-    transparent 60%
-  );
-  border-radius: var(--r-2);
-  padding-left: var(--s-3);
-  padding-right: var(--s-3);
-  margin-left: calc(-1 * var(--s-3));
-  margin-right: calc(-1 * var(--s-3));
+  /* Needs-attention thread: clear coloured left-edge accent only. No bg tint -
+   * the strip is the scan signal on its own. Uses `--accent` so the cue says
+   * "this needs YOU", matching the row attention signal M4 uses elsewhere. */
+  border-left-width: 3px;
+  border-left-color: var(--accent);
 }
 
 .thread-card--outdated {
   opacity: 0.65;
 }
 
+/* State badge - same square-pill pattern as `.pr-row__state` so the
+ * conversation surface and the dashboard row share the visual language.
+ * Top-aligned with the file-path row via a small margin-top. */
 .thread-card__state {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-top: 4px;
-  flex: 0 0 14px;
+  margin-top: 2px;
 }
 
 .thread-card__state--unresolved-uninvolved {
@@ -493,6 +523,21 @@ async function openCommentOnGitHub(
 .thread-card__state--resolved-involved {
   background: var(--success-bg);
   color: var(--success);
+}
+
+/* Brighter bucket badge for unread threads. The bg alpha jumps from 0.18-0.2
+ * to ~0.4 so the badge itself communicates "new activity" without extra chrome. */
+.thread-card--unread .thread-card__state--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.4);
+}
+.thread-card--unread .thread-card__state--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.4);
+}
+.thread-card--unread .thread-card__state--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.4);
+}
+.thread-card--unread .thread-card__state--resolved-involved {
+  background: oklch(from var(--success) l c h / 0.4);
 }
 
 .thread-card__body {
@@ -575,6 +620,29 @@ async function openCommentOnGitHub(
   color: var(--text-mute);
   font-weight: 500;
   margin-right: 4px;
+}
+
+/* Unread threads carry three layered cues: brighter bucket badge (above),
+ * full-strength bold text on the snippet author / body / file-path, and a
+ * small accent dot prefixing the last-activity timestamp. Read threads
+ * default to muted text so the contrast carries without extra chrome. */
+.thread-card--unread .thread-card__author,
+.thread-card--unread .thread-card__snippet p {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.thread-card--unread .thread-card__path {
+  color: var(--text-strong);
+}
+
+.thread-card--unread .thread-card__activity::before {
+  content: "\2022";
+  color: var(--accent);
+  margin-right: 4px;
+  font-size: 1.4em;
+  vertical-align: middle;
+  line-height: 0;
 }
 
 .thread-card__snippet-missing {
@@ -692,8 +760,8 @@ async function openCommentOnGitHub(
 .thread-card__icon-btn {
   background: transparent;
   border: 0;
-  padding: 4px;
-  border-radius: var(--r-1);
+  padding: 6px;
+  border-radius: var(--r-2);
   color: var(--text-mute);
   cursor: pointer;
   display: inline-flex;

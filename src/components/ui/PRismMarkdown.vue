@@ -117,16 +117,46 @@ function normaliseLang(raw: string): BundledLanguage | null {
 }
 
 async function highlightBlocks(root: HTMLElement): Promise<void> {
-  const blocks = root.querySelectorAll<HTMLElement>("pre > code[class*='language-']");
-  if (blocks.length === 0) return;
+  // GitHub's `bodyHTML` wraps fenced code blocks in any of:
+  //   1. `<pre><code class="language-X">...</code></pre>` - markdown-it/marked
+  //      shape; the language lives on `<code>`.
+  //   2. `<div class="highlight highlight-source-X"><pre>...</pre></div>` -
+  //      the canonical GitHub shape; the language lives on the wrapper div
+  //      and the `<pre>` carries already-highlighted `<span class="pl-...">`
+  //      children that we collapse via `textContent` before re-highlighting.
+  //   3. `<pre lang="X">...</pre>` - rarer but seen in some renderers.
+  // Walk every `<pre>` in the tree and resolve the language from whichever
+  // attribute carries it.
+  const pres = root.querySelectorAll<HTMLPreElement>("pre");
+  if (pres.length === 0) return;
   const hl = await ensureHighlighter();
-  for (const code of Array.from(blocks)) {
-    // The `language-foo` class is the source of truth; fenced code blocks
-    // without a language attribute don't enter this loop.
-    const langClass = Array.from(code.classList).find((c) => c.startsWith("language-"));
-    if (langClass === undefined) continue;
-    const lang = normaliseLang(langClass);
+  for (const pre of Array.from(pres)) {
+    // Skip Shiki output (re-runs of this function on the same DOM).
+    if (pre.classList.contains("shiki")) continue;
+
+    let langRaw: string | null = null;
+    // Pattern 1: child `<code class="language-X">`.
+    const code = pre.querySelector<HTMLElement>(":scope > code[class*='language-']");
+    if (code !== null) {
+      const cls = Array.from(code.classList).find((c) => c.startsWith("language-"));
+      if (cls !== undefined) langRaw = cls.slice("language-".length);
+    }
+    // Pattern 2: parent `<div class="highlight highlight-source-X">`.
+    if (langRaw === null && pre.parentElement !== null) {
+      const cls = Array.from(pre.parentElement.classList).find((c) =>
+        c.startsWith("highlight-source-"),
+      );
+      if (cls !== undefined) langRaw = cls.slice("highlight-source-".length);
+    }
+    // Pattern 3: `<pre lang="X">`.
+    if (langRaw === null) {
+      langRaw = pre.getAttribute("lang");
+    }
+    if (langRaw === null) continue;
+
+    const lang = normaliseLang(langRaw);
     if (lang === null) continue;
+
     if (!loadedLangs.has(lang)) {
       try {
         await hl.loadLanguage(lang);
@@ -138,26 +168,32 @@ async function highlightBlocks(root: HTMLElement): Promise<void> {
         continue;
       }
     }
-    const source = code.textContent ?? "";
-    if (source === "") continue;
+
+    // `textContent` collapses GitHub's inline `<span class="pl-...">`
+    // children to the raw code Shiki re-highlights.
+    const source = pre.textContent ?? "";
+    if (source.trim() === "") continue;
+
     try {
       const html = hl.codeToHtml(source, {
         lang,
         themes: { light: "github-light", dark: "github-dark" },
         defaultColor: false,
       });
-      // Replace the entire `<pre>` so the Shiki wrapper takes over the
-      // surrounding markup; the design-system styles target `.shiki` to
-      // keep the surface flush with the surrounding card.
-      const pre = code.parentElement;
-      if (pre !== null && pre.tagName === "PRE") {
-        pre.outerHTML = html;
+      // Replace the outermost wrapper so Shiki's `<pre class="shiki">`
+      // takes over the surrounding markup. If we're inside a
+      // `div.highlight-source-X` wrapper, drop the whole div; otherwise
+      // just replace the `<pre>` itself.
+      const wrapper = pre.parentElement;
+      const wrapperIsHighlight =
+        wrapper !== null &&
+        Array.from(wrapper.classList).some((c) => c.startsWith("highlight"));
+      if (wrapperIsHighlight && wrapper !== null) {
+        wrapper.outerHTML = html;
       } else {
-        code.outerHTML = html;
+        pre.outerHTML = html;
       }
     } catch {
-      // Same defensive posture: skip on highlight failure rather than
-      // disrupting the rest of the comment.
       continue;
     }
   }

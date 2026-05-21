@@ -156,7 +156,7 @@ function onMarkUnread(): void {
 </script>
 
 <template>
-  <div
+  <article
     :class="[
       'pr-row',
       `pr-row--${density}`,
@@ -168,6 +168,12 @@ function onMarkUnread(): void {
     @click="onClick"
     @keydown="onKey"
   >
+    <span
+      class="pr-row__dot"
+      :aria-label="unread ? 'Unread' : undefined"
+      :aria-hidden="unread ? undefined : 'true'"
+    ></span>
+
     <PRismTooltip
       :text="stripTooltip"
       :disabled="stripClass === 'row-strip-none'"
@@ -175,25 +181,101 @@ function onMarkUnread(): void {
       as-child
     >
       <div
-        :class="['pr-row__strip', stripClass]"
+        :class="['pr-row__state', stripClass]"
         :aria-label="stripTooltip || undefined"
         :aria-hidden="stripClass === 'row-strip-none' ? 'true' : undefined"
-      ></div>
+      >
+        <svg
+          v-if="stripClass === 'row-strip-needs'"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
+          <circle cx="8" cy="8" r="2" />
+        </svg>
+        <svg
+          v-else-if="stripClass === 'row-strip-changes'"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
+        </svg>
+        <svg
+          v-else-if="stripClass === 'row-strip-approved'"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M5.25 8.25l2 2 3.5-4" />
+        </svg>
+        <svg
+          v-else-if="stripClass === 'row-strip-draft'"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
+          <path d="M10 4l2 2" />
+        </svg>
+        <svg
+          v-else-if="stripClass === 'row-strip-stale'"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M8 4.5V8l2.25 1.5" />
+        </svg>
+      </div>
     </PRismTooltip>
 
     <div class="pr-row__num">#{{ pullRequest.number }}</div>
 
     <div class="pr-row__title-col">
-      <PRismTooltip :text="pullRequest.title" :as-child="true">
-        <div class="pr-row__title-row">
+      <div class="pr-row__title-row">
+        <PRismTooltip :text="pullRequest.title" :as-child="true">
           <span class="pr-row__title">{{ pullRequest.title }}</span>
-          <MergeableBadge
-            :state="pullRequest.mergeable"
-            :review-decision="pullRequest.review_decision"
-            :is-draft="pullRequest.is_draft"
-          />
-        </div>
-      </PRismTooltip>
+        </PRismTooltip>
+        <MergeableBadge
+          :state="pullRequest.mergeable"
+          :review-decision="pullRequest.review_decision"
+          :is-draft="pullRequest.is_draft"
+        />
+      </div>
       <div class="pr-row__meta-row">
         <PRismTooltip
           :text="`${pullRequest.base_ref} ← ${pullRequest.head_ref}`"
@@ -325,17 +407,19 @@ function onMarkUnread(): void {
         </DropdownMenuContent>
       </DropdownMenuPortal>
     </DropdownMenuRoot>
-  </div>
+  </article>
 </template>
 
 <style scoped>
 .pr-row {
   position: relative;
+  /* Columns: [dot] [state icon + edge] [#num] [title] [threads] [reviewers] */
+  /* [ci] [time] [github] [kebab] */
   display: grid;
-  grid-template-columns: 6px 54px 1fr 144px 180px 80px 80px 24px 28px;
+  grid-template-columns: 10px 22px 54px 1fr 144px 180px 80px 80px 24px 28px;
   align-items: center;
   gap: 14px;
-  padding: 0 var(--s-6) 0 0;
+  padding: 0 var(--s-6) 0 var(--s-3);
   height: var(--row-h-comfortable);
   border-top: 1px solid var(--border-1);
   background: var(--bg-1);
@@ -370,12 +454,66 @@ function onMarkUnread(): void {
   background: var(--attention-tint-hover);
 }
 
-.pr-row__strip {
-  width: 5px;
-  height: 30px;
-  border-radius: 2px;
-  margin-left: 1px;
-  align-self: center;
+/* Leftmost unread dot. Sits in its own grid cell so read / unread rows align
+ * identically; only its background switches between transparent and the
+ * accent token. Centred inside the 10px column. */
+.pr-row__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+  justify-self: center;
+}
+
+.pr-row--unread .pr-row__dot {
+  background: var(--accent-strong);
+}
+
+/* State badge. A 22px tinted-square pill with a centred 14px Lucide-style svg.
+ * The tinted background carries the colour-coded scan signal; the icon glyph
+ * disambiguates on closer look. Same pattern as `.thread-card__state`. */
+.pr-row__state {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-1);
+  color: var(--text-faint);
+}
+
+.pr-row__state svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pr-row__state.row-strip-none {
+  background: transparent;
+}
+
+.pr-row__state.row-strip-needs {
+  color: var(--info);
+  background: oklch(from var(--info) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-changes {
+  color: var(--danger);
+  background: oklch(from var(--danger) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-approved {
+  color: var(--success);
+  background: oklch(from var(--success) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-draft {
+  color: var(--text-mute);
+  background: oklch(from var(--text-mute) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-stale {
+  color: var(--warning);
+  background: oklch(from var(--warning) l c h / 0.18);
 }
 
 .pr-row__num {
@@ -408,15 +546,10 @@ function onMarkUnread(): void {
   flex: 0 1 auto;
 }
 
-.pr-row--unread .pr-row__title::after {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-left: 6px;
-  vertical-align: middle;
+/* Unread rows lean on the title weight as the primary signal; the left-edge
+ * dot is the secondary confirmation. */
+.pr-row--unread .pr-row__title {
+  font-weight: 600;
 }
 
 .pr-row__meta-row {
