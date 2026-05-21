@@ -78,6 +78,7 @@ pub fn run() {
             auth::commands::add_account,
             auth::commands::list_accounts,
             auth::commands::remove_account,
+            auth::commands::update_token,
             auth::commands::validate_token_cmd,
             conversation::commands::fetch_pr_conversation,
             conversation::commands::get_pr_conversation_stats,

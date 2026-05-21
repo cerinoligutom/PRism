@@ -13,15 +13,24 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use thiserror::Error;
 
-/// Hot-add / hot-remove hook called by the auth commands so the sync worker
-/// (or anything else that cares about the account roster) can spin up / tear
-/// down per-account resources without waiting for the next app restart.
+/// Hot-add / hot-remove / hot-refresh hook called by the auth commands so the
+/// sync worker (or anything else that cares about the account roster) can spin
+/// up / tear down per-account resources or wake a parked loop without waiting
+/// for the next app restart.
 ///
 /// The trait is defined here in `auth` so this module has no compile-time
 /// dependency on `sync` — the implementation lives in `sync::worker`.
 pub trait AccountChangeListener: Send + Sync {
     fn on_added(&self, account: &Account);
     fn on_removed(&self, account_id: AccountId);
+    /// Fired after the keychain entry for `account_id` has been rewritten with
+    /// a fresh PAT. Implementations nudge the per-account loop so a
+    /// `SyncPhase::Unauthorized` slot exits its suspend branch on the next
+    /// cycle without waiting for the next interval tick.
+    ///
+    /// Default impl is a no-op so existing listeners (and the `NoopAccountListener`
+    /// used in tests / headless dev) don't need to opt in.
+    fn on_token_updated(&self, _account_id: AccountId) {}
 }
 
 /// Default listener used when no live worker is wired (tests, headless dev).
@@ -34,7 +43,7 @@ impl AccountChangeListener for NoopAccountListener {
 
 use crate::auth::keychain::OsKeychain;
 use crate::auth::store::{
-    import_legacy_json_if_present, Account, AccountId, AccountStore, SqlAccountStore,
+    import_legacy_json_if_present, Account, AccountHandle, AccountId, AccountStore, SqlAccountStore,
 };
 use crate::auth::token_source::KeychainTokenSource;
 use crate::auth::validation::{
@@ -67,6 +76,16 @@ pub enum AuthCommandError {
     Network { host: String },
     #[error("account not found.")]
     NotFound,
+    /// `update_token` refused the PAT because it authenticated as a different
+    /// GitHub login than the one stored against `account_id`. Surfaced as a
+    /// distinct variant so the renderer can prompt the user to Remove + Add
+    /// instead of silently switching the identity. Carries the expected and
+    /// actual logins for the inline error message; neither is a secret.
+    #[error("token authenticated as {actual_login} but this account is {expected_login}.")]
+    LoginMismatch {
+        expected_login: String,
+        actual_login: String,
+    },
     #[error("an unexpected error occurred. Try again, or check the application logs.")]
     Internal,
 }
@@ -124,6 +143,12 @@ impl AuthState {
     fn notify_removed(&self, account_id: AccountId) {
         if let Some(l) = self.listener.get() {
             l.on_removed(account_id);
+        }
+    }
+
+    fn notify_token_updated(&self, account_id: AccountId) {
+        if let Some(l) = self.listener.get() {
+            l.on_token_updated(account_id);
         }
     }
 }
@@ -219,6 +244,113 @@ pub fn remove_account(state: State<'_, AuthState>, id: AccountId) -> Result<(), 
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateTokenInput {
+    pub account_id: AccountId,
+    pub token: String,
+}
+
+/// Swap the PAT for an existing account. The new token is validated against
+/// the account's stored host and rejected unless it authenticates as the same
+/// login: re-authing across identities is Remove + Add territory (per the
+/// issue + ADR 0016 host immutability).
+///
+/// On success the keychain entry under `account_id` is rewritten and the sync
+/// worker is nudged so a parked `SyncPhase::Unauthorized` loop exits its
+/// suspend branch on the next cycle. Token material never crosses back to the
+/// renderer: the command returns `()` on success and a sanitised error on
+/// failure (CLAUDE.md security rule).
+#[tauri::command]
+pub async fn update_token(
+    state: State<'_, AuthState>,
+    input: UpdateTokenInput,
+) -> Result<(), AuthCommandError> {
+    if input.token.trim().is_empty() {
+        return Err(AuthCommandError::Unauthorized);
+    }
+
+    let account = find_account(&state, input.account_id)?;
+    let secret = SecretString::from(input.token);
+    let validated = validate_token(&account.host, &secret).await?;
+
+    apply_token_swap(
+        state.store.as_ref(),
+        |handle, token| {
+            state
+                .token_source
+                .store(handle, token)
+                .map_err(|_| AuthCommandError::Internal)
+        },
+        &account,
+        &validated,
+        &secret,
+    )?;
+
+    // Nudge the worker so the parked loop runs a cycle immediately instead of
+    // waiting for the next interval tick. Best-effort; the listener swallows
+    // failures (e.g. running outside the desktop shell in tests).
+    state.notify_token_updated(input.account_id);
+
+    Ok(())
+}
+
+/// Post-validation persistence step shared between `update_token` and its
+/// unit tests. Refuses the swap on a login mismatch (without touching the
+/// keychain), writes the token via `keychain_write`, and refreshes the
+/// account's `scopes` / `expires_at` from the validation response.
+///
+/// The keychain operation flows through a closure so the test path can
+/// substitute an in-memory mock without smuggling an Arc into `AuthState`.
+/// The closure signature matches `KeychainTokenSource::store` so production
+/// callers can pass it directly.
+fn apply_token_swap<F>(
+    store: &dyn AccountStore,
+    keychain_write: F,
+    account: &Account,
+    validated: &crate::auth::validation::ValidatedToken,
+    secret: &SecretString,
+) -> Result<(), AuthCommandError>
+where
+    F: FnOnce(&AccountHandle, &str) -> Result<(), AuthCommandError>,
+{
+    if validated.login != account.login {
+        // Don't write anything. The keychain entry for `account_id` is
+        // untouched; the next sync cycle keeps using the existing token.
+        return Err(AuthCommandError::LoginMismatch {
+            expected_login: account.login.clone(),
+            actual_login: validated.login.clone(),
+        });
+    }
+
+    let handle = account.handle();
+    keychain_write(&handle, secret_as_str(secret))?;
+
+    // Refresh metadata (scopes, expiry) from the validation response so the
+    // Settings card reflects the new token without waiting for the next list.
+    // Identity fields (id, label, host, login) are preserved.
+    let refreshed = Account {
+        scopes: validated.scopes.clone(),
+        expires_at: validated.expires_at.clone(),
+        ..account.clone()
+    };
+    if let Err(e) = store.upsert(refreshed) {
+        // Metadata refresh failure isn't fatal: the new token is already in
+        // the keychain and will work. Log and continue so the user's re-auth
+        // doesn't appear to fail because of a side-effect.
+        eprintln!("update_token: refresh metadata: {e}");
+    }
+
+    Ok(())
+}
+
+fn find_account(state: &AuthState, account_id: AccountId) -> Result<Account, AuthCommandError> {
+    let accounts = state.store.list().map_err(|_| AuthCommandError::Internal)?;
+    accounts
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .ok_or(AuthCommandError::NotFound)
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ValidateTokenInput {
     pub host: String,
     pub token: String,
@@ -301,6 +433,12 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, db: DbHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::keychain::{KeychainBackend, MockKeychain};
+    use crate::auth::store::{SqlAccountStore, StoreError};
+    use crate::auth::validation::ValidatedToken;
+    use crate::db::migrate;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn host_normalisation_strips_scheme_and_trailing_slash() {
@@ -316,5 +454,229 @@ mod tests {
     fn host_normalisation_falls_back_to_github_com_when_empty() {
         assert_eq!(normalise_host(""), "github.com");
         assert_eq!(normalise_host("   "), "github.com");
+    }
+
+    // ────── update_token: post-validation persistence ──────
+
+    fn fresh_store() -> Arc<SqlAccountStore> {
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        migrate::run(&mut conn).expect("run migrations");
+        Arc::new(SqlAccountStore::new(Arc::new(Mutex::new(conn))))
+    }
+
+    fn seed(store: &dyn AccountStore, id: AccountId, login: &str) -> Account {
+        let account = Account {
+            id,
+            label: "Test".into(),
+            host: "github.com".into(),
+            login: login.into(),
+            scopes: vec!["repo".into()],
+            expires_at: Some("2026-01-01T00:00:00Z".into()),
+            avatar_url: None,
+        };
+        store.upsert(account.clone()).expect("seed account");
+        account
+    }
+
+    fn validated(login: &str, scopes: &[&str], expires_at: Option<&str>) -> ValidatedToken {
+        ValidatedToken {
+            login: login.into(),
+            scopes: scopes.iter().map(|s| (*s).to_string()).collect(),
+            expires_at: expires_at.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn apply_swap_writes_new_token_and_refreshes_metadata_on_login_match() {
+        // Validate-OK + login-match path: the keychain entry under
+        // `account_id` is rewritten and scopes / expiry refresh from the
+        // validation response. This is the wiremock "validate-OK" outcome
+        // routed into the persistence helper without re-running the network
+        // path (validation.rs already wiremocks GET /user end-to-end).
+        let store = fresh_store();
+        let account = seed(store.as_ref(), 1, "ada");
+        let keychain = MockKeychain::new();
+        keychain.set(&account.id, "old-token").unwrap();
+
+        let new = SecretString::from("new-token".to_string());
+        let result = apply_token_swap(
+            store.as_ref(),
+            |handle, token| {
+                keychain
+                    .set(&handle.id, token)
+                    .map_err(|_| AuthCommandError::Internal)
+            },
+            &account,
+            &validated("ada", &["repo", "read:org"], Some("2027-06-01T00:00:00Z")),
+            &new,
+        );
+        assert!(result.is_ok());
+
+        use secrecy::ExposeSecret;
+        let stored = keychain.get(&account.id).unwrap().expect("token persists");
+        assert_eq!(stored.expose_secret(), "new-token");
+
+        let refreshed = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == account.id)
+            .unwrap();
+        assert_eq!(
+            refreshed.scopes,
+            vec!["repo".to_string(), "read:org".into()]
+        );
+        assert_eq!(
+            refreshed.expires_at.as_deref(),
+            Some("2027-06-01T00:00:00Z")
+        );
+        // Identity fields are preserved across the swap.
+        assert_eq!(refreshed.login, "ada");
+        assert_eq!(refreshed.host, "github.com");
+        assert_eq!(refreshed.label, "Test");
+    }
+
+    #[test]
+    fn apply_swap_refuses_login_mismatch_and_leaves_keychain_untouched() {
+        // Login-mismatch path: the PAT belongs to a different identity. The
+        // existing keychain entry is preserved (the next sync cycle keeps
+        // using whatever was there) and no metadata is written.
+        let store = fresh_store();
+        let account = seed(store.as_ref(), 1, "ada");
+        let keychain = MockKeychain::new();
+        keychain.set(&account.id, "old-token").unwrap();
+
+        let new = SecretString::from("intruder-token".to_string());
+        let result = apply_token_swap(
+            store.as_ref(),
+            |handle, token| {
+                keychain
+                    .set(&handle.id, token)
+                    .map_err(|_| AuthCommandError::Internal)
+            },
+            &account,
+            &validated("grace", &["repo"], None),
+            &new,
+        );
+
+        match result {
+            Err(AuthCommandError::LoginMismatch {
+                expected_login,
+                actual_login,
+            }) => {
+                assert_eq!(expected_login, "ada");
+                assert_eq!(actual_login, "grace");
+            }
+            other => panic!("expected LoginMismatch, got {other:?}"),
+        }
+
+        // Keychain entry is untouched.
+        use secrecy::ExposeSecret;
+        let stored = keychain.get(&account.id).unwrap().expect("token preserved");
+        assert_eq!(stored.expose_secret(), "old-token");
+
+        // Metadata is untouched.
+        let unchanged = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == account.id)
+            .unwrap();
+        assert_eq!(unchanged.scopes, vec!["repo".to_string()]);
+        assert_eq!(
+            unchanged.expires_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn apply_swap_login_match_is_case_sensitive() {
+        // GitHub logins are normalised lowercase by the API, so a literal
+        // mismatch (even on case) means the PAT belongs to a different
+        // identity. Conservative: refuse the swap rather than silently
+        // changing the row's login casing.
+        let store = fresh_store();
+        let account = seed(store.as_ref(), 1, "Ada");
+        let keychain = MockKeychain::new();
+
+        let new = SecretString::from("tok".to_string());
+        let result = apply_token_swap(
+            store.as_ref(),
+            |handle, token| {
+                keychain
+                    .set(&handle.id, token)
+                    .map_err(|_| AuthCommandError::Internal)
+            },
+            &account,
+            &validated("ada", &[], None),
+            &new,
+        );
+
+        assert!(matches!(
+            result,
+            Err(AuthCommandError::LoginMismatch { .. })
+        ));
+        assert!(keychain.get(&account.id).unwrap().is_none());
+    }
+
+    /// Store impl that fails on `upsert` so the test can assert the helper
+    /// treats the metadata refresh as best-effort.
+    struct UpsertFailingStore {
+        inner: Arc<SqlAccountStore>,
+    }
+
+    impl AccountStore for UpsertFailingStore {
+        fn list(&self) -> Result<Vec<Account>, StoreError> {
+            self.inner.list()
+        }
+        fn upsert(&self, _account: Account) -> Result<(), StoreError> {
+            Err(StoreError::Io("simulated".into()))
+        }
+        fn remove(&self, id: AccountId) -> Result<(), StoreError> {
+            self.inner.remove(id)
+        }
+        fn next_id(&self) -> Result<AccountId, StoreError> {
+            self.inner.next_id()
+        }
+    }
+
+    #[test]
+    fn apply_swap_succeeds_even_if_metadata_refresh_fails() {
+        // The new token is what matters: a metadata refresh failure (e.g.
+        // DB temporarily locked) must not be reported as a re-auth failure
+        // because the keychain write already succeeded.
+        let inner = fresh_store();
+        let account = seed(inner.as_ref(), 1, "ada");
+        let store = UpsertFailingStore {
+            inner: inner.clone(),
+        };
+        let keychain = MockKeychain::new();
+
+        let new = SecretString::from("tok".to_string());
+        let result = apply_token_swap(
+            &store,
+            |handle, token| {
+                keychain
+                    .set(&handle.id, token)
+                    .map_err(|_| AuthCommandError::Internal)
+            },
+            &account,
+            &validated("ada", &["repo"], None),
+            &new,
+        );
+        assert!(result.is_ok());
+
+        use secrecy::ExposeSecret;
+        let stored = keychain.get(&account.id).unwrap().expect("token persists");
+        assert_eq!(stored.expose_secret(), "tok");
+    }
+
+    #[test]
+    fn on_token_updated_default_impl_is_a_noop() {
+        // The trait default exists so existing listeners (and the test
+        // `NoopAccountListener`) don't need to opt in. Exercising it here
+        // documents the contract.
+        let listener = NoopAccountListener;
+        listener.on_token_updated(42);
     }
 }

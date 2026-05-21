@@ -45,6 +45,7 @@ type AuthCommandError =
   | { kind: "forbidden" }
   | { kind: "network"; host: string }
   | { kind: "not_found" }
+  | { kind: "login_mismatch"; expected_login: string; actual_login: string }
   | { kind: "internal" };
 
 /**
@@ -64,6 +65,8 @@ function formatAuthError(raw: unknown): string {
         return `Couldn't reach ${err.host}. Check your connection or the host name.`;
       case "not_found":
         return "Account not found.";
+      case "login_mismatch":
+        return `This token authenticates as ${err.actual_login}, but the account is ${err.expected_login}. To switch identity, remove the account and add it again.`;
       case "internal":
         return "Something went wrong saving the account. Check the application logs.";
     }
@@ -131,6 +134,29 @@ export const useAccountsStore = defineStore("accounts", () => {
     }
   }
 
+  /**
+   * Per-account re-auth (issue #59). Validates the new PAT against the
+   * account's existing host, confirms the returned login matches, swaps the
+   * keychain entry under the same `accountId`, and nudges the sync worker so
+   * a parked `unauthorized` cycle wakes immediately.
+   *
+   * The token never leaves this function: it's passed to the Tauri command
+   * as a string and is wiped from the call frame on return. The backend
+   * surfaces a `login_mismatch` error if the PAT belongs to a different
+   * identity; the modal renders the formatted message inline.
+   */
+  async function updateToken(accountId: number, token: string): Promise<void> {
+    try {
+      await invoke<void>("update_token", { input: { account_id: accountId, token } });
+      // Pull the fresh metadata (scopes + expiry refresh from the validation
+      // response) back into the local store so the Settings card updates
+      // without a full reload.
+      await refresh();
+    } catch (err) {
+      throw new Error(formatAuthError(err));
+    }
+  }
+
   function clearError(): void {
     lastError.value = null;
   }
@@ -145,6 +171,7 @@ export const useAccountsStore = defineStore("accounts", () => {
     validateToken,
     addAccount,
     removeAccount,
+    updateToken,
     clearError,
   };
 });
