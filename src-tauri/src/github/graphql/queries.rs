@@ -94,6 +94,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           body
           bodyHTML
           submittedAt
+          url
           author { login avatarUrl }
         }
       }
@@ -428,6 +429,11 @@ pub struct PullRequestReviewNode {
     pub body_html: Option<String>,
     #[serde(default)]
     pub submitted_at: Option<String>,
+    /// GitHub permalink for the review. Persisted to `reviews.url` so the
+    /// frontend can offer a per-review "Open in GitHub" affordance, mirroring
+    /// the thread-level pattern from M3.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub author: Option<Actor>,
 }

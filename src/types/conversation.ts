@@ -107,6 +107,10 @@ export interface PullRequestReview {
   readonly body_html: string | null;
   /** Unix seconds. */
   readonly submitted_at: number | null;
+  /** GitHub permalink for the review (`PullRequestReview.url`). Used by the
+   *  Reviews tab's per-review "Open in GitHub" action. `null` for rows
+   *  written before migration 0011. */
+  readonly url: string | null;
 }
 
 export interface ThreadComment {

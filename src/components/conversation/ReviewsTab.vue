@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type { PullRequestReview } from "@/types/conversation";
 
@@ -7,6 +8,7 @@ import { EM_DASH } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
   reviews: readonly PullRequestReview[];
@@ -33,6 +35,16 @@ interface ReviewView {
   readonly review: PullRequestReview;
   readonly pill: PillSpec;
   readonly bodyTrimmed: string;
+}
+
+async function openReviewOnGitHub(url: string | null): Promise<void> {
+  if (url === null || url.length === 0) return;
+  try {
+    await openUrl(url);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("failed to open review url", err);
+  }
 }
 
 const orderedReviews = computed<readonly ReviewView[]>(() => {
@@ -87,6 +99,33 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
             class="review-card__time"
           />
           <span v-else class="review-card__time">{{ EM_DASH }}</span>
+          <PRismTooltip
+            v-if="entry.review.url !== null && entry.review.url.length > 0"
+            text="Open review on GitHub"
+          >
+            <button
+              type="button"
+              class="review-card__icon-btn"
+              aria-label="Open review on GitHub"
+              @click="openReviewOnGitHub(entry.review.url)"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M5 3H3v6h6V7" />
+                <path d="M7 2h3v3" />
+                <path d="M6 6l4-4" />
+              </svg>
+            </button>
+          </PRismTooltip>
         </div>
         <PRismMarkdown
           :html="entry.review.body_html"
@@ -199,12 +238,37 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
   color: var(--text-faint);
 }
 
+/* Per-review "Open in GitHub" affordance. Mirrors the thread-card icon-button
+ * scale + interaction states. */
+.review-card__icon-btn {
+  background: transparent;
+  border: 0;
+  padding: 6px;
+  border-radius: var(--r-2);
+  color: var(--text-mute);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.review-card__icon-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-strong);
+}
+
+.review-card__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
 .review-card__text {
+  /* PRismMarkdown renders the body now; `line-height` + `white-space: pre-wrap`
+   * are owned by `.prism-markdown` (see ThreadsList for the same rationale).
+   * Re-asserting them here inflates paragraph gaps and reads as dead space. */
   margin: 0;
   font-size: var(--fs-12);
   color: var(--text);
-  line-height: var(--lh-body);
-  white-space: pre-wrap;
   word-break: break-word;
 }
 

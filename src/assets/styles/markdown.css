@@ -16,7 +16,11 @@
  */
 
 .prism-markdown {
-  /* Reset margins so the host caller's gap stack stays intact. */
+  /* GitHub-equivalent spacing balance: line-height 1.55 (matches their 1.5)
+   * + a 12px / 1em paragraph margin (matches their 16px at 14px font scaled
+   * proportionally to our 12px). The earlier `white-space: pre-wrap` host
+   * override is what made the gaps look huge; with that gone the standard
+   * line-height + margin land where GitHub itself does. */
   font-family: var(--font-sans);
   font-size: var(--fs-12);
   line-height: var(--lh-body);
@@ -33,7 +37,7 @@
 }
 
 .prism-markdown p {
-  margin: 0 0 var(--s-1);
+  margin: 0 0 var(--s-3);
 }
 
 /* Headings — six levels, scaled down from GitHub's defaults to match the
@@ -245,4 +249,227 @@
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* GitHub's "Suggested change" diff block. The bodyHTML ships a
+ * `<div class="js-suggested-changes-blob diff-view">` wrapper with a
+ * `<table>` of `.blob-code-deletion` / `.blob-code-addition` rows whose
+ * children are GitHub's PrettyLights syntax-highlight spans (`.pl-*`).
+ * Style the structure + the green/red row backgrounds; map the pl-* tokens
+ * to OKLCH approximations of GitHub's `github-dark` palette so syntax
+ * highlighting carries through. The light theme palette is overridden
+ * lower in the file via `[data-theme="light"]`. */
+.prism-markdown .js-suggested-changes-blob {
+  margin: var(--s-3) 0;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+
+.prism-markdown .js-suggested-changes-blob > .f6 {
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.prism-markdown .js-suggested-changes-blob .blob-wrapper {
+  overflow-x: auto;
+}
+
+.prism-markdown .js-suggested-changes-blob table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 1.45;
+}
+
+.prism-markdown .js-suggested-changes-blob td {
+  padding: 2px var(--s-3);
+  border: 0;
+  vertical-align: top;
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-num {
+  width: 28px;
+  min-width: 28px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-num-deletion::before {
+  content: "-";
+  color: var(--danger);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-num-addition::before {
+  content: "+";
+  color: var(--success);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-code-deletion {
+  background: oklch(from var(--danger) l c h / 0.14);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-code-addition {
+  background: oklch(from var(--success) l c h / 0.14);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-num-deletion {
+  background: oklch(from var(--danger) l c h / 0.25);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-num-addition {
+  background: oklch(from var(--success) l c h / 0.25);
+}
+
+.prism-markdown .js-suggested-changes-blob td.blob-code-inner {
+  white-space: pre;
+  color: var(--text);
+}
+
+/* PrettyLights syntax tokens. The bodyHTML emits these classes whenever
+ * GitHub server-side highlights code (suggested changes, inline `<pre>`
+ * blocks in some contexts). Approximations of `github-dark` - the light
+ * theme overrides land via `:root[data-theme="light"]` further down.
+ *
+ * Covered tokens (full PrettyLights catalogue is larger - extend on
+ * demand): comment, keyword, function-call, string, constant, variable,
+ * member, entity (type / interface), regex, decorator. */
+.prism-markdown .pl-c   { color: #8b949e; font-style: italic; }
+.prism-markdown .pl-k   { color: #ff7b72; }
+.prism-markdown .pl-en  { color: #d2a8ff; }
+.prism-markdown .pl-e   { color: #d2a8ff; }
+.prism-markdown .pl-s   { color: #a5d6ff; }
+.prism-markdown .pl-pds { color: #a5d6ff; }
+.prism-markdown .pl-c1  { color: #79c0ff; }
+.prism-markdown .pl-cn  { color: #79c0ff; }
+.prism-markdown .pl-s1  { color: var(--text); }
+.prism-markdown .pl-smi { color: var(--text); }
+.prism-markdown .pl-kos { color: var(--text-mute); }
+.prism-markdown .pl-ent { color: #7ee787; }
+.prism-markdown .pl-v   { color: #ffa657; }
+
+:root[data-theme="light"] .prism-markdown .pl-c   { color: #6a737d; }
+:root[data-theme="light"] .prism-markdown .pl-k   { color: #d73a49; }
+:root[data-theme="light"] .prism-markdown .pl-en  { color: #6f42c1; }
+:root[data-theme="light"] .prism-markdown .pl-e   { color: #6f42c1; }
+:root[data-theme="light"] .prism-markdown .pl-s   { color: #032f62; }
+:root[data-theme="light"] .prism-markdown .pl-pds { color: #032f62; }
+:root[data-theme="light"] .prism-markdown .pl-c1  { color: #005cc5; }
+:root[data-theme="light"] .prism-markdown .pl-cn  { color: #005cc5; }
+:root[data-theme="light"] .prism-markdown .pl-ent { color: #22863a; }
+:root[data-theme="light"] .prism-markdown .pl-v   { color: #e36209; }
+
+/* GitHub permalink-to-code-snippet embed. When a reviewer pastes a
+ * `https://github.com/<owner>/<repo>/blob/<sha>/<path>#L42-L68` URL into a
+ * comment / review, the bodyHTML ships:
+ *
+ *   <div class="Box Box--condensed my-2">
+ *     <div class="Box-header f6">
+ *       <a>file path</a>
+ *       <p>Lines 42 to 68 in <a>commit-sha</a></p>
+ *     </div>
+ *     <div class="Box-body blob-wrapper blob-wrapper-embedded">
+ *       <table class="highlight js-file-line-container">
+ *         <tr>
+ *           <td class="blob-num" data-line-number="42"></td>
+ *           <td class="blob-code blob-code-inner js-file-line">...pl-* spans...</td>
+ *         </tr>
+ *         ...
+ *       </table>
+ *     </div>
+ *   </div>
+ *
+ * The line numbers come from `data-line-number` attributes - surfaced via
+ * `::before { content: attr(...) }`. The wrapper gets a max-height with
+ * vertical scroll so 200+ line embeds don't dominate the comment. */
+.prism-markdown .Box.Box--condensed {
+  margin: var(--s-3) 0;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+
+.prism-markdown .Box-header {
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-1);
+  font-size: var(--fs-11);
+}
+
+.prism-markdown .Box-header p {
+  margin: 0;
+  color: var(--text-mute);
+}
+
+.prism-markdown .Box-header p.text-bold {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.prism-markdown .Box-header a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prism-markdown .Box-header a:hover {
+  text-decoration: underline;
+}
+
+.prism-markdown .Box-body.blob-wrapper-embedded {
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-2);
+}
+
+/* Override the generic `.prism-markdown table` chrome for the file-line
+ * container so it reads as a code surface (no per-cell borders, no zebra
+ * striping, monospace, no width: 100%). */
+.prism-markdown .Box-body table.highlight,
+.prism-markdown .Box-body table.js-file-line-container {
+  width: auto;
+  margin: 0;
+  border-collapse: collapse;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+  background: transparent;
+}
+
+.prism-markdown .Box-body table.highlight td,
+.prism-markdown .Box-body table.js-file-line-container td {
+  padding: 0 var(--s-3);
+  border: 0;
+  background: transparent;
+  vertical-align: top;
+  white-space: pre;
+}
+
+.prism-markdown .Box-body tr:nth-child(2n) td {
+  background: transparent;
+}
+
+.prism-markdown .Box-body td.blob-num {
+  width: 1%;
+  min-width: 36px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  padding-right: var(--s-3);
+}
+
+.prism-markdown .Box-body td.blob-num[data-line-number]::before {
+  content: attr(data-line-number);
+}
+
+.prism-markdown .Box-body td.blob-code {
+  color: var(--text);
 }

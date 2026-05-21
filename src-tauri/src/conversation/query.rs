@@ -423,7 +423,7 @@ pub fn list_reviews(
 ) -> Result<Vec<PullRequestReview>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT r.id, r.node_id, r.reviewer_login, u.avatar_url,
-                r.state, r.body, r.body_html, r.submitted_at
+                r.state, r.body, r.body_html, r.submitted_at, r.url
            FROM reviews r
            LEFT JOIN users u ON u.login = r.reviewer_login
           WHERE r.pull_request_id = ?1
@@ -440,6 +440,7 @@ pub fn list_reviews(
             body: row.get(5)?,
             body_html: row.get(6)?,
             submitted_at: row.get(7)?,
+            url: row.get(8)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
