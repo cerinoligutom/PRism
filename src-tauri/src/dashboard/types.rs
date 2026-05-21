@@ -18,12 +18,21 @@ pub enum DashboardView {
 
 /// Sort order for the dashboard list.
 ///
-/// M2 ships with `Updated` only. M4 will add `NeedsAttention`, `Stale`,
-/// `Comments` once the underlying signals exist.
+/// M2 shipped with `Updated` only. M4 (`docs/contracts/triage-ux.md`,
+/// ADR 0015) adds `Stale` and `NeedsMe`. The new variants are wired through
+/// at the type level by the contract PR; Wave 3-D implements the matching
+/// `ORDER BY` clauses in `dashboard::query`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DashboardSort {
+    /// `ORDER BY COALESCE(latest_status_change_at, updated_at) DESC, id DESC`.
     Updated,
+    /// `ORDER BY updated_at ASC, id DESC` - oldest activity first.
+    Stale,
+    /// `ORDER BY needs_attention DESC,
+    ///          COALESCE(latest_status_change_at, updated_at) DESC,
+    ///          id DESC`.
+    NeedsMe,
 }
 
 /// Reviewer's review state surfaced on the dashboard row.
@@ -73,6 +82,22 @@ pub struct DashboardPullRequest {
     pub reviewers: Vec<ReviewerEntry>,
     pub repo: RepoRef,
     pub account_id: i64,
+    /// True when the viewer hasn't opened this PR since the last upstream
+    /// update. Derived at query time as
+    /// `read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`
+    /// against the active account's `pull_request_viewer_relations` row.
+    /// `None` collapses to `false` if the join misses (e.g. a Team-view PR
+    /// the active account has no relation row for). See ADR 0015 and
+    /// `docs/contracts/triage-ux.md` ("Read-state derivation").
+    pub unread: bool,
+    /// Precomputed "needs my attention" composite. Read from
+    /// `pull_request_viewer_relations.needs_attention` for the active account.
+    /// See ADR 0015 ("Composite formula") for the four input conditions.
+    pub needs_attention: bool,
+    /// Running count of `@<viewer-login>` mentions the sync cycle has seen
+    /// since the last read. Reset to zero by `mark_pr_read`. See
+    /// ADR 0015 ("Mention detection").
+    pub mentioned_count_unread: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

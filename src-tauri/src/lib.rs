@@ -8,6 +8,7 @@
 //! - `dashboard`: dashboard query surface (M2)
 //! - `repos`: repo discovery + Team-tracked opt-in (M2-D)
 //! - `conversation`: per-thread state, conversation stats, lazy hydrator (M3)
+//! - `triage`: per-account read-state, mention counters, "needs my attention" (M4)
 
 pub mod auth;
 pub mod conversation;
@@ -16,6 +17,7 @@ pub mod db;
 pub mod github;
 pub mod repos;
 pub mod sync;
+pub mod triage;
 
 use std::sync::Arc;
 
@@ -89,6 +91,9 @@ pub fn run() {
             sync::commands::list_recent_activity,
             sync::commands::refresh_now,
             sync::commands::set_sync_interval,
+            triage::commands::list_filter_chip_counts,
+            triage::commands::mark_pr_read,
+            triage::commands::mark_pr_unread,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
