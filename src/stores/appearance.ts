@@ -34,6 +34,12 @@ interface PersistedState {
   density: Density;
   accent: AccentHue;
   prDetailSurface: PrDetailSurface;
+  /**
+   * Dashboard account scope (ADR 0016, "Account picker - option 1").
+   * `null` = unified ("All accounts"), a positive integer = a specific
+   * `accounts.id`. Persisted so the last scope survives across restarts.
+   */
+  accountScope: number | null;
 }
 
 const DEFAULT_STATE: PersistedState = {
@@ -41,6 +47,7 @@ const DEFAULT_STATE: PersistedState = {
   density: "comfortable",
   accent: ACCENT_PRESETS.magenta!,
   prDetailSurface: "drawer",
+  accountScope: null,
 };
 
 function readPersisted(): PersistedState {
@@ -70,6 +77,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
   const density = ref<Density>(DEFAULT_STATE.density);
   const accent = ref<AccentHue>({ ...DEFAULT_STATE.accent });
   const prDetailSurface = ref<PrDetailSurface>(DEFAULT_STATE.prDetailSurface);
+  const accountScope = ref<number | null>(DEFAULT_STATE.accountScope);
 
   function effectiveTheme(): "dark" | "light" {
     if (mode.value === "system") return prefersDark() ? "dark" : "light";
@@ -92,6 +100,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
       density: density.value,
       accent: { ...accent.value },
       prDetailSurface: prDetailSurface.value,
+      accountScope: accountScope.value,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
@@ -106,6 +115,14 @@ export const useAppearanceStore = defineStore("appearance", () => {
     // value, per ADR 0011) is coerced back to the `"drawer"` default.
     prDetailSurface.value =
       stored.prDetailSurface === "route" ? "route" : "drawer";
+    // `accountScope` is either a positive integer id or `null` (unified).
+    // A stale id whose account no longer exists is reconciled by the
+    // dashboard mount path - we keep the persisted value here so the
+    // restore-then-load ordering still applies.
+    accountScope.value =
+      typeof stored.accountScope === "number" && Number.isFinite(stored.accountScope)
+        ? stored.accountScope
+        : null;
     applyToDocument();
 
     // Always-on OS theme listener so switching to "system" mid-session also
@@ -119,7 +136,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
     }
   }
 
-  watch([mode, density, accent, prDetailSurface], () => {
+  watch([mode, density, accent, prDetailSurface, accountScope], () => {
     applyToDocument();
     persist();
   }, { deep: true });
@@ -139,17 +156,22 @@ export const useAppearanceStore = defineStore("appearance", () => {
   function setPrDetailSurface(next: PrDetailSurface): void {
     prDetailSurface.value = next;
   }
+  function setAccountScope(next: number | null): void {
+    accountScope.value = next;
+  }
 
   return {
     mode,
     density,
     accent,
     prDetailSurface,
+    accountScope,
     hydrate,
     setMode,
     setDensity,
     setAccent,
     setAccentHue,
     setPrDetailSurface,
+    setAccountScope,
   };
 });
