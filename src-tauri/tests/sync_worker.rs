@@ -21,8 +21,8 @@ use prism_lib::github::{
     AccountHandle, EtagStore, GitHubClient, GitHubError, InMemoryEtagStore, StaticTokenSource,
 };
 use prism_lib::sync::{
-    AccountSyncState, ClientFactory, CycleOutcome, EmitSink, ReauthNotifier, SchedulerConfig,
-    SkipReason, SyncStateMap, WorkerContext,
+    new_activity_buffer, AccountSyncState, ActivityBuffer, ClientFactory, CycleOutcome, EmitSink,
+    ReauthNotifier, SchedulerConfig, SkipReason, SyncStateMap, WorkerContext,
 };
 use rusqlite::params;
 use tempfile::TempDir;
@@ -117,6 +117,7 @@ struct Harness {
     reauth: Arc<CountingReauth>,
     config: Arc<SchedulerConfig>,
     factory: Arc<MockServerFactory>,
+    activity: ActivityBuffer,
 }
 
 impl Harness {
@@ -129,6 +130,7 @@ impl Harness {
             state: self.state.clone(),
             emit: self.emit.clone(),
             reauth: self.reauth.clone(),
+            activity: self.activity.clone(),
         }
     }
 }
@@ -152,6 +154,7 @@ fn setup_harness(server: &MockServer) -> Harness {
             graphql: base.join("/graphql").unwrap(),
             etags: Arc::new(InMemoryEtagStore::new()),
         }),
+        activity: new_activity_buffer(),
     }
 }
 
@@ -1413,4 +1416,200 @@ async fn timeline_events_wipe_and_rewrite_across_two_cycles() {
     // overwrite is observed on the cached row.
     let reviewed = rows.iter().find(|r| r.0 == "reviewed").unwrap();
     assert_eq!(reviewed.2, r#"{"state":"CHANGES_REQUESTED"}"#);
+}
+
+// ===== Diagnostic activity feed (issue #122) =====
+//
+// A single happy-path cycle must emit the documented `sync://activity`
+// sequence: cycle_started -> phase_started discovery -> phase_completed
+// discovery -> phase_started enrichment -> pr_fetched + phase_progress per PR
+// -> phase_completed enrichment -> phase_started pruning -> phase_completed
+// pruning -> cycle_completed. The failure path must emit `cycle_failed` with
+// the underlying error message.
+
+fn activity_event_kinds(emit: &CapturingEmitter) -> Vec<String> {
+    emit.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "sync://activity")
+        .map(|(_, payload)| {
+            payload
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect()
+}
+
+fn activity_event_messages(emit: &CapturingEmitter) -> Vec<String> {
+    emit.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "sync://activity")
+        .map(|(_, payload)| {
+            payload
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn happy_cycle_emits_full_activity_event_sequence() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    let kinds = activity_event_kinds(&harness.emit);
+    // The exact order matters: cycle -> discovery -> enrichment + PRs ->
+    // pruning -> cycle completion. The pr_fetched + phase_progress pair fires
+    // once per enriched PR (here, one).
+    assert_eq!(
+        kinds,
+        vec![
+            "cycle_started",
+            "phase_started",
+            "phase_completed",
+            "phase_started",
+            "pr_fetched",
+            "phase_progress",
+            "phase_completed",
+            "phase_started",
+            "phase_completed",
+            "cycle_completed",
+        ],
+        "activity event order",
+    );
+
+    // The pre-rendered messages mention the active account login and the
+    // owner/name/number for the per-PR row, so the panel doesn't have to
+    // re-render structured payloads.
+    let messages = activity_event_messages(&harness.emit);
+    assert!(
+        messages.iter().any(|m| m.contains("alice")),
+        "cycle-level messages mention the account login: {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("owner/repo#42") || m.contains("owner/repo#42")),
+        "per-PR message includes owner/name#number: {messages:?}"
+    );
+
+    // The buffer itself holds the same events (the worker writes through
+    // `record`, which both appends and emits).
+    let buffered = prism_lib::sync::activity::snapshot(&harness.activity, 100, Some(1));
+    assert_eq!(buffered.len(), kinds.len(), "buffer mirrors emitted events");
+}
+
+#[tokio::test]
+async fn cycle_failure_emits_cycle_failed_event_with_error_message() {
+    // Stub a discovery failure (500 on the GraphQL endpoint) and assert the
+    // activity feed surfaces a `cycle_failed` event with the underlying error.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert!(matches!(report.outcome, CycleOutcome::Failed { .. }));
+
+    let kinds = activity_event_kinds(&harness.emit);
+    assert!(
+        kinds.contains(&"cycle_failed".to_string()),
+        "cycle_failed must be emitted on a failed cycle: {kinds:?}"
+    );
+    // Stricter: the failure event carries the structured `error_kind`
+    // discriminator the panel uses to colour the row.
+    let activity_events: Vec<serde_json::Value> = harness
+        .emit
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == "sync://activity")
+        .map(|(_, p)| p.clone())
+        .collect();
+    let failed = activity_events
+        .iter()
+        .find(|p| p.get("kind").and_then(|k| k.as_str()) == Some("cycle_failed"))
+        .expect("cycle_failed event present");
+    assert_eq!(
+        failed.get("error_kind").and_then(|k| k.as_str()),
+        Some("discovery"),
+        "error_kind classifies the failing phase",
+    );
+    assert_eq!(
+        failed.get("level").and_then(|l| l.as_str()),
+        Some("error"),
+        "cycle_failed event is at error level",
+    );
+}
+
+#[tokio::test]
+async fn rate_budget_guard_emits_rate_limit_pause_activity() {
+    // Seed the budget below 20% before running the cycle. Activity feed must
+    // surface the pause as a `rate_limit_pause` warn event so the panel can
+    // explain the skip without leaving the user wondering.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 7, "bob");
+    seed_repo_with_pr(&harness, 200, 7, "owner", "repo", 7000, 42);
+
+    Mock::given(method("GET"))
+        .and(path("/seed"))
+        .respond_with(rate_headers(500, 5000))
+        .mount(&server)
+        .await;
+    let client = harness.factory.build(&account).unwrap();
+    let _ = client.get_conditional("/seed").await;
+
+    let ctx = harness.ctx();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert!(matches!(report.outcome, CycleOutcome::Skipped { .. }));
+
+    let kinds = activity_event_kinds(&harness.emit);
+    assert!(
+        kinds.contains(&"rate_limit_pause".to_string()),
+        "rate_limit_pause must be emitted: {kinds:?}"
+    );
 }

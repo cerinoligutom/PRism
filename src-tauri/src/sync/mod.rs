@@ -6,11 +6,14 @@
 //! - [`state`] is the shared per-account state map the worker writes and the
 //!   commands read.
 //! - [`events`] declares the Tauri event names + payload shapes.
+//! - [`activity`] is the diagnostic event buffer that backs the status-bar
+//!   activity panel (issue #122).
 //! - [`worker`] is the per-account polling loop (issue #13).
 //! - [`discovery`] runs the Search-API discovery phase that seeds the four
 //!   sidebar views (ADR 0009, issue #37).
 //! - [`commands`] are the Tauri commands the frontend invokes.
 
+pub mod activity;
 pub mod commands;
 pub mod discovery;
 pub mod events;
@@ -19,17 +22,21 @@ pub mod state;
 pub mod status_timeline;
 pub mod worker;
 
+pub use activity::{
+    new_buffer as new_activity_buffer, record as record_activity, ActivityBuffer, ActivityEvent,
+    ActivityEventBuilder, ActivityKind, ActivityLevel, SyncPhaseLabel, BUFFER_CAP,
+};
 pub use commands::{
-    get_sync_status, refresh_now, set_sync_interval, RefreshNowInput, RefreshNowResult,
-    SetIntervalInput, SetIntervalResult, SyncStatusSnapshot,
+    get_sync_status, list_recent_activity, refresh_now, set_sync_interval, ListRecentActivityInput,
+    RefreshNowInput, RefreshNowResult, SetIntervalInput, SetIntervalResult, SyncStatusSnapshot,
 };
 pub use discovery::{
     discover_account, prune_stale_relations_for_account, DiscoveredPr, DiscoveryError,
     DiscoveryRelation, DiscoveryReport,
 };
 pub use events::{
-    SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ERROR_EVENT,
-    SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
+    SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ACTIVITY_EVENT,
+    SYNC_ERROR_EVENT, SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
 };
 pub use scheduler::{
     SchedulerConfig, DEFAULT_INTERVAL_SECS, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS,

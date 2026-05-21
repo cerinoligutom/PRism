@@ -48,6 +48,11 @@ pub fn run() {
             app.manage::<conversation::commands::ClientFactoryHandle>(client_factory.clone());
             app.manage::<conversation::commands::AccountStoreHandle>(account_store.clone());
 
+            // Activity buffer — shared between the worker (writes) and the
+            // Tauri command (reads). Issue #122 / `docs/contracts/sync-observability.md`.
+            let activity_buffer: sync::ActivityBuffer = sync::new_activity_buffer();
+            app.manage(activity_buffer.clone());
+
             let ctx = sync::WorkerContext {
                 db: db_handle.clone(),
                 accounts: account_store,
@@ -56,6 +61,7 @@ pub fn run() {
                 state: sync::SyncStateMap::new(),
                 emit: Arc::new(sync::AppHandleEmitter::new(app.handle().clone())),
                 reauth: Arc::new(sync::AppHandleReauth::new(app.handle().clone())),
+                activity: activity_buffer,
             };
             let worker = Arc::new(sync::spawn_worker(ctx));
             // Hook the worker into the auth commands so add/remove account
@@ -80,6 +86,7 @@ pub fn run() {
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_team_tracked,
             sync::commands::get_sync_status,
+            sync::commands::list_recent_activity,
             sync::commands::refresh_now,
             sync::commands::set_sync_interval,
         ])
