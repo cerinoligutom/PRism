@@ -235,11 +235,14 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     })
 }
 
-/// Reviewer entries for one PR: submitted reviews (with mapped state) unioned
-/// with requested-but-not-submitted reviewers. The viewer marker `is_you` is
-/// true when the reviewer login matches the PR's owning-account login. Rows
-/// from `reviews` whose state doesn't map to a [`ReviewerState`] (e.g.
-/// `DISMISSED`) are dropped.
+/// Reviewer entries for one PR: one row per unique reviewer login, picking the
+/// latest submitted review per login (with a state-priority tie-break), then
+/// filling in pending entries for requested reviewers who have never
+/// submitted. The viewer marker `is_you` is true when the reviewer login
+/// matches the PR's owning-account login. Rows whose latest state doesn't map
+/// to a [`ReviewerState`] (e.g. `DISMISSED`) are dropped; a login dropped this
+/// way does not re-appear as `Pending` from `requested_reviewers` because the
+/// login still counts as having a submitted review.
 fn hydrate_reviewers(
     conn: &Connection,
     prs: &mut [DashboardPullRequest],
@@ -262,14 +265,43 @@ fn hydrate_reviewers(
     let placeholders = vec!["?"; pr_ids.len()].join(",");
 
     let mut reviewers_by_pr: HashMap<i64, Vec<ReviewerEntry>> = HashMap::new();
+    // Track every login that has _any_ submitted review per PR (including
+    // DISMISSED) so the pending pass below can skip them — a reviewer who
+    // submitted then was dismissed shouldn't reappear as pending.
+    let mut submitted_logins_by_pr: HashMap<i64, std::collections::HashSet<String>> =
+        HashMap::new();
 
-    // Submitted reviews. `LEFT JOIN users` resolves the reviewer's avatar
-    // URL (ADR 0013). Unseen logins surface `avatar_url = None`.
+    // Submitted reviews, deduplicated to one row per (PR, login). The window
+    // function picks the latest `submitted_at`; ties break by state priority
+    // (`CHANGES_REQUESTED` > `APPROVED` > `COMMENTED` > `DISMISSED` > `PENDING`)
+    // so a same-second pair surfaces the more actionable state. `LEFT JOIN
+    // users` resolves the reviewer's avatar URL (ADR 0013).
     let sql_reviews = format!(
-        "SELECT r.pull_request_id, r.reviewer_login, r.state, u.avatar_url
-           FROM reviews r
-           LEFT JOIN users u ON u.login = r.reviewer_login
-          WHERE r.pull_request_id IN ({placeholders})"
+        "WITH ranked_reviews AS (
+            SELECT
+                r.pull_request_id,
+                r.reviewer_login,
+                r.state,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.pull_request_id, r.reviewer_login
+                    ORDER BY COALESCE(r.submitted_at, 0) DESC,
+                             CASE r.state
+                                 WHEN 'CHANGES_REQUESTED' THEN 0
+                                 WHEN 'APPROVED'          THEN 1
+                                 WHEN 'COMMENTED'         THEN 2
+                                 WHEN 'DISMISSED'         THEN 3
+                                 WHEN 'PENDING'           THEN 4
+                                 ELSE 5
+                             END ASC,
+                             r.id DESC
+                ) AS rn
+              FROM reviews r
+             WHERE r.pull_request_id IN ({placeholders})
+         )
+         SELECT lr.pull_request_id, lr.reviewer_login, lr.state, u.avatar_url
+           FROM ranked_reviews lr
+           LEFT JOIN users u ON u.login = lr.reviewer_login
+          WHERE lr.rn = 1"
     );
     {
         let mut stmt = conn.prepare(&sql_reviews)?;
@@ -279,6 +311,10 @@ fn hydrate_reviewers(
             let login: String = row.get(1)?;
             let state_str: String = row.get(2)?;
             let avatar_url: Option<String> = row.get(3)?;
+            submitted_logins_by_pr
+                .entry(pr_id)
+                .or_default()
+                .insert(login.clone());
             let Some(state) = map_review_state(&state_str) else {
                 continue;
             };
@@ -294,7 +330,10 @@ fn hydrate_reviewers(
         }
     }
 
-    // Requested-but-not-submitted reviewers.
+    // Requested-but-not-submitted reviewers. A login that already has a
+    // submitted review for this PR (any state, including DISMISSED) is
+    // excluded so it surfaces once with the submitted state — or not at all
+    // if the only state was DISMISSED.
     let sql_requested = format!(
         "SELECT rr.pull_request_id, rr.login, u.avatar_url
            FROM requested_reviewers rr
@@ -304,10 +343,22 @@ fn hydrate_reviewers(
     {
         let mut stmt = conn.prepare(&sql_requested)?;
         let mut rows = stmt.query(params_from_iter(pr_ids.iter()))?;
+        let mut seen_pending: HashMap<i64, std::collections::HashSet<String>> = HashMap::new();
         while let Some(row) = rows.next()? {
             let pr_id: i64 = row.get(0)?;
             let login: String = row.get(1)?;
             let avatar_url: Option<String> = row.get(2)?;
+            if submitted_logins_by_pr
+                .get(&pr_id)
+                .is_some_and(|set| set.contains(&login))
+            {
+                continue;
+            }
+            // Guard against duplicate `requested_reviewers` rows for the same
+            // login (e.g. multiple sync passes layering on team requests).
+            if !seen_pending.entry(pr_id).or_default().insert(login.clone()) {
+                continue;
+            }
             reviewers_by_pr
                 .entry(pr_id)
                 .or_default()

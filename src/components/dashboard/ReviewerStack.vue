@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ReviewerEntry, ReviewerState } from "@/types/dashboard";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
   reviewers: readonly ReviewerEntry[];
@@ -17,8 +18,14 @@ const visible = computed<readonly ReviewerEntry[]>(() =>
   props.reviewers.slice(0, props.max),
 );
 
-const overflow = computed<number>(() =>
-  Math.max(0, props.reviewers.length - props.max),
+const hidden = computed<readonly ReviewerEntry[]>(() =>
+  props.reviewers.slice(props.max),
+);
+
+const overflow = computed<number>(() => hidden.value.length);
+
+const overflowTooltip = computed<string>(() =>
+  hidden.value.map((r) => titleFor(r)).join("\n"),
 );
 
 const approvedCount = computed<number>(
@@ -63,24 +70,31 @@ function titleFor(reviewer: ReviewerEntry): string {
     no reviewers
   </span>
   <span v-else class="reviewer-stack">
-    <PRismAvatar
+    <PRismTooltip
       v-for="reviewer in visible"
       :key="reviewer.login"
-      :login="reviewer.login"
-      :avatar-url="reviewer.avatar_url"
-      size="sm"
-      :title="titleFor(reviewer)"
-      :class="[
-        'reviewer-stack__avatar',
-        stateClass(reviewer.state),
-        reviewer.is_you && 'reviewer-stack__avatar--you',
-      ]"
-    />
-    <span
+      :text="titleFor(reviewer)"
+      :as-child="true"
+    >
+      <PRismAvatar
+        :login="reviewer.login"
+        :avatar-url="reviewer.avatar_url"
+        size="sm"
+        :title="null"
+        :class="[
+          'reviewer-stack__avatar',
+          stateClass(reviewer.state),
+          reviewer.is_you && 'reviewer-stack__avatar--you',
+        ]"
+      />
+    </PRismTooltip>
+    <PRismTooltip
       v-if="overflow > 0"
-      class="reviewer-stack__overflow"
-      :title="`${overflow} more reviewer${overflow === 1 ? '' : 's'}`"
-    >+{{ overflow }}</span>
+      :text="overflowTooltip"
+      :as-child="true"
+    >
+      <span class="reviewer-stack__overflow">+{{ overflow }}</span>
+    </PRismTooltip>
     <span class="reviewer-stack__summary">
       <span v-if="changesCount > 0" class="reviewer-stack__summary-changes">{{ changesCount }}</span>
       <span v-else-if="approvedCount > 0" class="reviewer-stack__summary-ok">{{ approvedCount }}</span>

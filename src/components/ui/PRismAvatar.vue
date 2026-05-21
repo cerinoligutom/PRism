@@ -22,13 +22,18 @@ interface Props {
   /** Cached avatar URL from the local `users` table. */
   avatarUrl?: string | null;
   size?: AvatarSize;
-  /** Optional title / tooltip text. Defaults to `login`. */
-  title?: string;
+  /**
+   * Optional title / tooltip text. Defaults to `login`. Pass `null` to
+   * suppress the native `title` attribute entirely - e.g. when the avatar is
+   * wrapped in a `PRismTooltip` to render the chip-style tooltip instead.
+   */
+  title?: string | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   avatarUrl: null,
   size: "md",
+  title: undefined,
 });
 
 // Track whether the <img> has failed to load; reset whenever the URL changes
@@ -47,7 +52,12 @@ const showImage = computed<boolean>(
 
 const fallbackInitials = computed<string>(() => initials(props.login));
 const fallbackSeed = computed<string>(() => avatarSeed(props.login));
-const tooltip = computed<string>(() => props.title ?? props.login);
+const tooltip = computed<string | undefined>(() => {
+  // Explicit null = caller wants no native title (typically because a
+  // PRismTooltip is wrapping the avatar). Undefined falls back to login.
+  if (props.title === null) return undefined;
+  return props.title ?? props.login;
+});
 
 const sizeClass = computed<string | null>(() => {
   switch (props.size) {
