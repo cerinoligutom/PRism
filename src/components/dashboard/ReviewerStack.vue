@@ -42,11 +42,29 @@ const changesCount = computed<number>(
   () => props.reviewers.filter((r) => r.state === "changes-requested").length,
 );
 
-const totalLabel = computed<string>(
-  () =>
-    `${props.reviewers.length} total ${
-      props.reviewers.length === 1 ? "reviewer" : "reviewers"
-    }`,
+const commentedCount = computed<number>(
+  () => props.reviewers.filter((r) => r.state === "commented").length,
+);
+
+const pendingCount = computed<number>(
+  () => props.reviewers.filter((r) => r.state === "pending").length,
+);
+
+interface SummaryRow {
+  readonly key: ReviewerState;
+  readonly label: string;
+  readonly count: number;
+}
+
+const summaryRows = computed<readonly SummaryRow[]>(() =>
+  (
+    [
+      { key: "approved", label: "Approved", count: approvedCount.value },
+      { key: "changes-requested", label: "Changes requested", count: changesCount.value },
+      { key: "commented", label: "Commented", count: commentedCount.value },
+      { key: "pending", label: "Pending", count: pendingCount.value },
+    ] as const
+  ).filter((row) => row.count > 0),
 );
 
 function stateClass(state: ReviewerState): string {
@@ -129,19 +147,46 @@ function statusLabel(state: ReviewerState): string {
         </ul>
       </template>
     </PRismTooltip>
-    <span class="reviewer-stack__summary">
-      <PRismTooltip :text="`${changesCount} requested changes`" :as-child="true">
+    <PRismTooltip :as-child="true">
+      <span class="reviewer-stack__summary">
         <span class="reviewer-stack__summary-changes">{{ changesCount }}</span>
-      </PRismTooltip>
-      <span aria-hidden="true">/</span>
-      <PRismTooltip :text="`${approvedCount} approved`" :as-child="true">
+        <span aria-hidden="true">/</span>
         <span class="reviewer-stack__summary-ok">{{ approvedCount }}</span>
-      </PRismTooltip>
-      <span aria-hidden="true">/</span>
-      <PRismTooltip :text="totalLabel" :as-child="true">
+        <span aria-hidden="true">/</span>
         <span class="reviewer-stack__summary-total">{{ reviewers.length }}</span>
-      </PRismTooltip>
-    </span>
+      </span>
+      <template #content>
+        <div class="reviewer-stack__breakdown">
+          <ul
+            v-if="summaryRows.length > 0"
+            class="reviewer-stack__breakdown-list"
+          >
+            <li
+              v-for="row in summaryRows"
+              :key="row.key"
+              :class="[
+                'reviewer-stack__breakdown-row',
+                `reviewer-stack__breakdown-row--${row.key}`,
+              ]"
+            >
+              <span
+                :class="[
+                  'reviewer-stack__breakdown-dot',
+                  `reviewer-stack__breakdown-dot--${row.key}`,
+                ]"
+                aria-hidden="true"
+              ></span>
+              <span class="reviewer-stack__breakdown-count">{{ row.count }}</span>
+              <span class="reviewer-stack__breakdown-label">{{ row.label }}</span>
+            </li>
+          </ul>
+          <div class="reviewer-stack__breakdown-total">
+            <span class="reviewer-stack__breakdown-count">{{ reviewers.length }}</span>
+            <span class="reviewer-stack__breakdown-label">Total</span>
+          </div>
+        </div>
+      </template>
+    </PRismTooltip>
   </span>
 </template>
 
@@ -154,7 +199,6 @@ function statusLabel(state: ReviewerState): string {
 .reviewer-stack__avatars {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
 }
 
 .reviewer-stack--empty {
@@ -167,6 +211,12 @@ function statusLabel(state: ReviewerState): string {
   position: relative;
   border-width: 1.5px;
   border-color: var(--bg-1);
+}
+
+/* Jira-style stacked deck: each avatar (and the overflow pill) crowds into
+ * the previous one. The 1.5px border in --bg-1 paints the ring-separator. */
+.reviewer-stack__avatar:not(:first-child) {
+  margin-left: -6px;
 }
 
 /* Reviewer state dot anchored to the bottom-right of each avatar. */
@@ -191,18 +241,24 @@ function statusLabel(state: ReviewerState): string {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* Locked to the `sm` avatar size (16px) so the pill reads as a peer in the
+ * stack: perfect circle at single-digit counts, horizontal capsule at two or
+ * three digits, never taller than the avatars it sits beside. */
 .reviewer-stack__overflow {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
+  box-sizing: border-box;
   height: 16px;
+  min-width: 16px;
+  margin-left: -6px;
   padding: 0 5px;
   border-radius: var(--r-pill);
   background: var(--bg-3);
-  border: 1px solid var(--border-1);
+  border: 1.5px solid var(--bg-1);
   font-family: var(--font-mono);
-  font-size: var(--fs-10);
+  font-size: var(--fs-9);
+  line-height: 1;
   color: var(--text-mute);
 }
 
@@ -212,6 +268,7 @@ function statusLabel(state: ReviewerState): string {
   font-size: var(--fs-11);
   color: var(--text-mute);
   font-variant-numeric: tabular-nums;
+  cursor: default;
 }
 
 .reviewer-stack__summary-ok { color: var(--success); }
@@ -291,5 +348,66 @@ function statusLabel(state: ReviewerState): string {
   font-size: var(--fs-10);
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* Summary breakdown: coloured dot + count + label per state, with a divider
+ * above the always-rendered total row. Same pattern as `ThreadsBar`. */
+.reviewer-stack__breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.reviewer-stack__breakdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reviewer-stack__breakdown-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-11);
+}
+
+.reviewer-stack__breakdown-row--approved { color: var(--success); }
+.reviewer-stack__breakdown-row--changes-requested { color: var(--danger); }
+.reviewer-stack__breakdown-row--commented { color: var(--info); }
+.reviewer-stack__breakdown-row--pending { color: var(--text-faint); }
+
+.reviewer-stack__breakdown-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: currentColor;
+}
+
+.reviewer-stack__breakdown-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.reviewer-stack__breakdown-label {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.reviewer-stack__breakdown-total {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 6px;
+  padding-left: 16px;
+  border-top: 1px solid var(--border-1);
+  font-size: var(--fs-11);
+  color: var(--text);
 }
 </style>
