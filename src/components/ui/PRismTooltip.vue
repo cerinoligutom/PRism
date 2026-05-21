@@ -52,27 +52,28 @@ withDefaults(defineProps<Props>(), {
   </TooltipProvider>
 </template>
 
-<style scoped>
-/*
- * Inverted palette: in dark mode the chip is near-white on dark text; in
- * light mode it's near-black on light text. `--text-strong` and `--bg-1`
- * already define the strongest contrast pair per theme, so reusing them
- * keeps the tooltip distinct from every surface tier without needing a
- * dedicated --tooltip-* token.
- */
+<!--
+  Styles are global (no `scoped`) because Reka's `TooltipPortal` teleports
+  the content node to `document.body`, and Vue's scoped `data-v-*` attribute
+  selectors don't reliably follow it across the portal. The BEM class names
+  (`prism-tooltip__content` / `prism-tooltip__arrow`) are unique enough not
+  to need scoping.
+-->
+<style>
 .prism-tooltip__content {
-  background: var(--text-strong);
-  color: var(--bg-1);
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-2);
   padding: 8px 10px;
   border-radius: var(--r-2);
   font-size: var(--fs-12);
   line-height: var(--lh-body);
   max-width: 260px;
-  box-shadow: var(--shadow-3);
+  box-shadow: var(--shadow-2);
   z-index: 50;
 }
 
 .prism-tooltip__arrow {
-  fill: var(--text-strong);
+  fill: var(--bg-3);
 }
 </style>
