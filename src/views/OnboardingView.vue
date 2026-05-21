@@ -1097,7 +1097,6 @@ onUnmounted(() => {
   letter-spacing: 0.6px;
   padding: 1px 6px;
   border-radius: var(--r-1);
-  cursor: help;
   outline: none;
   margin-left: auto;
 }

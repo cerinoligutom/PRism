@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import { avatarSeed, initials } from "@/lib/format";
 
 /**
@@ -23,9 +24,9 @@ interface Props {
   avatarUrl?: string | null;
   size?: AvatarSize;
   /**
-   * Optional title / tooltip text. Defaults to `login`. Pass `null` to
-   * suppress the native `title` attribute entirely - e.g. when the avatar is
-   * wrapped in a `PRismTooltip` to render the chip-style tooltip instead.
+   * Optional tooltip text. Defaults to `login`. Pass `null` to suppress the
+   * internal `PRismTooltip` entirely - e.g. when a caller wraps the avatar
+   * in its own outer `PRismTooltip` and doesn't want a nested chip.
    */
   title?: string | null;
 }
@@ -52,12 +53,15 @@ const showImage = computed<boolean>(
 
 const fallbackInitials = computed<string>(() => initials(props.login));
 const fallbackSeed = computed<string>(() => avatarSeed(props.login));
-const tooltip = computed<string | undefined>(() => {
-  // Explicit null = caller wants no native title (typically because a
+const tooltip = computed<string | null>(() => {
+  // Explicit null = caller wants no internal tooltip (typically because a
   // PRismTooltip is wrapping the avatar). Undefined falls back to login.
-  if (props.title === null) return undefined;
+  if (props.title === null) return null;
   return props.title ?? props.login;
 });
+const showTooltip = computed<boolean>(
+  () => tooltip.value !== null && tooltip.value !== "",
+);
 
 const sizeClass = computed<string | null>(() => {
   switch (props.size) {
@@ -77,25 +81,44 @@ function onError(): void {
 </script>
 
 <template>
-  <span
-    v-if="showImage"
-    :class="['avatar', sizeClass, 'prism-avatar', 'prism-avatar--image']"
-    :title="tooltip"
-  >
-    <img
-      :src="avatarUrl ?? undefined"
-      :alt="login"
-      class="prism-avatar__img"
-      loading="lazy"
-      decoding="async"
-      @error="onError"
-    />
-  </span>
-  <span
-    v-else
-    :class="['avatar', sizeClass, fallbackSeed, 'prism-avatar', 'prism-avatar--initials']"
-    :title="tooltip"
-  >{{ fallbackInitials }}</span>
+  <PRismTooltip v-if="showTooltip" :text="tooltip ?? ''" :as-child="true">
+    <span
+      v-if="showImage"
+      :class="['avatar', sizeClass, 'prism-avatar', 'prism-avatar--image']"
+    >
+      <img
+        :src="avatarUrl ?? undefined"
+        :alt="login"
+        class="prism-avatar__img"
+        loading="lazy"
+        decoding="async"
+        @error="onError"
+      />
+    </span>
+    <span
+      v-else
+      :class="['avatar', sizeClass, fallbackSeed, 'prism-avatar', 'prism-avatar--initials']"
+    >{{ fallbackInitials }}</span>
+  </PRismTooltip>
+  <template v-else>
+    <span
+      v-if="showImage"
+      :class="['avatar', sizeClass, 'prism-avatar', 'prism-avatar--image']"
+    >
+      <img
+        :src="avatarUrl ?? undefined"
+        :alt="login"
+        class="prism-avatar__img"
+        loading="lazy"
+        decoding="async"
+        @error="onError"
+      />
+    </span>
+    <span
+      v-else
+      :class="['avatar', sizeClass, fallbackSeed, 'prism-avatar', 'prism-avatar--initials']"
+    >{{ fallbackInitials }}</span>
+  </template>
 </template>
 
 <style scoped>

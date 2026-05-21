@@ -425,7 +425,6 @@ async function openThreadOnGitHub(url: string | null): Promise<void> {
   justify-content: center;
   margin-top: 4px;
   flex: 0 0 14px;
-  cursor: help;
 }
 
 .thread-card__state--unresolved-uninvolved {
