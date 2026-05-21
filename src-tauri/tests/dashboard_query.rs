@@ -258,8 +258,9 @@ fn is_you_marks_reviewers_matching_the_owning_account_login() {
     seed_fixture(&conn);
 
     // For alice: PR 400 has alice as both a submitted reviewer
-    // (CHANGES_REQUESTED) and a requested reviewer (pending). Both must be
-    // marked is_you.
+    // (CHANGES_REQUESTED) and a requested reviewer (pending). After
+    // dedup, exactly one alice row remains carrying the submitted state, and
+    // it must be marked is_you.
     let rows = list_pull_requests(
         &conn,
         DashboardView::Watching,
@@ -273,8 +274,9 @@ fn is_you_marks_reviewers_matching_the_owning_account_login() {
         .iter()
         .filter(|r| r.login == "alice")
         .collect();
-    assert_eq!(alice_entries.len(), 2);
-    assert!(alice_entries.iter().all(|r| r.is_you));
+    assert_eq!(alice_entries.len(), 1);
+    assert_eq!(alice_entries[0].state, ReviewerState::ChangesRequested);
+    assert!(alice_entries[0].is_you);
 }
 
 #[test]
@@ -505,6 +507,164 @@ fn threads_projects_four_buckets_when_populated() {
     assert_eq!(threads.unresolved_uninvolved, 2);
     assert_eq!(threads.resolved_involved, 1);
     assert_eq!(threads.resolved_uninvolved, 1);
+}
+
+#[test]
+fn reviewer_hydration_deduplicates_multiple_reviews_per_login() {
+    // Seed: one PR with three submitted reviews from the same login at
+    // ascending timestamps (COMMENTED -> APPROVED -> CHANGES_REQUESTED) plus
+    // a pending request for a second login. Expect exactly two reviewer
+    // entries: the latest state for the dup login, plus the pending.
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            (10, 1, 'alice', 'web', 'public', 0);
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref,
+             mergeable, review_decision, additions, deletions, changed_files,
+             ci_state, ci_total, ci_passing) VALUES
+            (100, 10, 1, 'web/#1', 'open', 0, 'alice', 0, 1000, 1000, 'main', 'feat-a',
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 1, 0, 1, 0);
+
+        -- bob submits three reviews on PR 100 at ascending timestamps.
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9001, 100, 'bob', 'COMMENTED',         500),
+            (9002, 100, 'bob', 'APPROVED',          600),
+            (9003, 100, 'bob', 'CHANGES_REQUESTED', 700);
+
+        -- carol is requested but has not submitted.
+        INSERT INTO requested_reviewers (id, pull_request_id, login, reviewer_type) VALUES
+            (8001, 100, 'carol', 'user');
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = &rows[0];
+    assert_eq!(pr.reviewers.len(), 2, "expected one bob + one carol");
+    let bob = pr.reviewers.iter().find(|r| r.login == "bob").unwrap();
+    assert_eq!(
+        bob.state,
+        ReviewerState::ChangesRequested,
+        "latest submitted_at should win"
+    );
+    let carol = pr.reviewers.iter().find(|r| r.login == "carol").unwrap();
+    assert_eq!(carol.state, ReviewerState::Pending);
+}
+
+#[test]
+fn reviewer_hydration_state_priority_tiebreak_on_equal_submitted_at() {
+    // Two reviews from the same login at the same `submitted_at`. The
+    // tie-break order is CHANGES_REQUESTED > APPROVED > COMMENTED > DISMISSED
+    // > PENDING, so CHANGES_REQUESTED must win regardless of insertion order.
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            (10, 1, 'alice', 'web', 'public', 0);
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref,
+             mergeable, review_decision, additions, deletions, changed_files,
+             ci_state, ci_total, ci_passing) VALUES
+            (100, 10, 1, 'web/#1', 'open', 0, 'alice', 0, 1000, 1000, 'main', 'feat-a',
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 1, 0, 1, 0);
+
+        -- Same login + same submitted_at; APPROVED inserted before
+        -- CHANGES_REQUESTED so a naive query would pick APPROVED.
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9001, 100, 'bob', 'APPROVED',          500),
+            (9002, 100, 'bob', 'CHANGES_REQUESTED', 500);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = &rows[0];
+    assert_eq!(pr.reviewers.len(), 1);
+    assert_eq!(pr.reviewers[0].state, ReviewerState::ChangesRequested);
+}
+
+#[test]
+fn reviewer_hydration_drops_login_whose_only_state_is_dismissed_even_when_requested() {
+    // A login with a single DISMISSED review _and_ a pending request must
+    // surface as neither a reviewer entry nor a pending entry: the submitted
+    // review wins the slot, and DISMISSED maps to None.
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            (10, 1, 'alice', 'web', 'public', 0);
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref,
+             mergeable, review_decision, additions, deletions, changed_files,
+             ci_state, ci_total, ci_passing) VALUES
+            (100, 10, 1, 'web/#1', 'open', 0, 'alice', 0, 1000, 1000, 'main', 'feat-a',
+             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at) VALUES
+            (1, 100, 1, 0, 1, 0);
+
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9001, 100, 'frank', 'DISMISSED', 500);
+
+        INSERT INTO requested_reviewers (id, pull_request_id, login, reviewer_type) VALUES
+            (8001, 100, 'frank', 'user');
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = &rows[0];
+    assert!(
+        pr.reviewers.iter().all(|r| r.login != "frank"),
+        "DISMISSED submitted review must suppress the pending re-entry"
+    );
 }
 
 #[test]
