@@ -5,9 +5,16 @@ import { RouterLink } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
+import ReauthDialog from "./ReauthDialog.vue";
 import { useAccountsStore, type Account } from "@/stores/accounts";
 
 const accountsStore = useAccountsStore();
+
+// Per-account re-auth (issue #59): when non-null, the `ReauthDialog` opens
+// targeting this account. Triggered from the card's Re-auth button and from
+// the danger banner's Re-authenticate action; closes via Cancel / Esc /
+// overlay click / successful submit.
+const reauthTarget = ref<Account | null>(null);
 
 interface ReauthRequiredPayload {
   readonly account_id: number;
@@ -103,6 +110,22 @@ function dismissReauth(account: Account): void {
   expiredAccountIds.value.delete(account.id);
 }
 
+function openReauth(account: Account): void {
+  reauthTarget.value = account;
+}
+
+function closeReauth(): void {
+  reauthTarget.value = null;
+}
+
+function onReauthSuccess(accountId: number): void {
+  // Clear any expired-marker the banner relied on so the success state is
+  // visible on the next render; the worker nudge handles waking the parked
+  // sync cycle. If the new PAT itself 401s on the next cycle the banner
+  // re-appears via the `auth://reauth-required` event.
+  expiredAccountIds.value.delete(accountId);
+}
+
 onMounted(async () => {
   await accountsStore.refresh();
   try {
@@ -150,7 +173,9 @@ onUnmounted(() => {
         </div>
         <div class="accounts-panel__banner-actions">
           <PRismButton @click="dismissReauth(account)">Dismiss</PRismButton>
-          <PRismButton variant="primary" to="/onboarding">Re-authenticate</PRismButton>
+          <PRismButton variant="primary" @click="openReauth(account)">
+            Re-authenticate
+          </PRismButton>
         </div>
       </div>
     </PRismCallout>
@@ -236,7 +261,9 @@ onUnmounted(() => {
           </div>
           <div class="account-card__actions">
             <PRismButton size="sm" @click="handleRemove(account)">Remove</PRismButton>
-            <PRismButton size="sm" variant="primary" to="/onboarding">Re-auth</PRismButton>
+            <PRismButton size="sm" variant="primary" @click="openReauth(account)">
+              Re-auth
+            </PRismButton>
           </div>
         </article>
 
@@ -252,6 +279,12 @@ onUnmounted(() => {
         {{ accountsStore.lastError }}
       </div>
     </section>
+
+    <ReauthDialog
+      :account="reauthTarget"
+      @close="closeReauth"
+      @success="onReauthSuccess"
+    />
   </div>
 </template>
 

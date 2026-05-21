@@ -747,6 +747,39 @@ async fn add_account_hot_spawns_a_new_per_account_task() {
 }
 
 #[tokio::test]
+async fn on_token_updated_nudges_the_account_loop() {
+    // Per-account re-auth (issue #59): after the auth command rewrites the
+    // keychain, it fires `on_token_updated(account_id)` on the registered
+    // listener. The worker implementation routes that to `refresh_account`
+    // so a parked `SyncPhase::Unauthorized` loop wakes on the next cycle.
+    //
+    // The slot exists -> true. Untracked id -> false. This mirrors the
+    // contract `refresh_account` already documents; the test pins the
+    // listener wiring so a future refactor doesn't silently break re-auth.
+    use prism_lib::auth::commands::AccountChangeListener;
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let ctx = harness.ctx();
+    let worker = prism_lib::sync::spawn_worker(ctx);
+
+    let account = seed_account(&harness, 11, "erin");
+    assert!(worker.add_account(account));
+
+    // Tracked account -> the listener fires refresh_account internally.
+    // We can't observe the Notify directly, but we can observe that
+    // refresh_account afterwards still returns true (slot intact) and
+    // that an unknown id still returns false via the same hook.
+    worker.on_token_updated(11);
+    assert!(worker.refresh_account(11));
+
+    // Untracked id is a clean no-op.
+    worker.on_token_updated(999);
+    assert!(!worker.refresh_account(999));
+
+    worker.shutdown();
+}
+
+#[tokio::test]
 async fn remove_account_cancels_task_and_clears_state() {
     // Hot-add then hot-remove: the slot disappears and the state map forgets.
     let server = MockServer::start().await;

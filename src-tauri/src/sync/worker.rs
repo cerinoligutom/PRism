@@ -269,6 +269,14 @@ impl crate::auth::commands::AccountChangeListener for WorkerHandle {
     fn on_removed(&self, account_id: AccountId) {
         self.remove_account(account_id);
     }
+
+    fn on_token_updated(&self, account_id: AccountId) {
+        // Per-account re-auth (issue #59): nudge the loop so a parked
+        // `SyncPhase::Unauthorized` slot exits its suspend branch and runs a
+        // cycle with the freshly-stored PAT instead of waiting for the next
+        // interval tick. Untracked accounts are a no-op.
+        self.refresh_account(account_id);
+    }
 }
 
 /// Spawn one task per currently-known account. Returns the handle the caller
