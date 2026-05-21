@@ -33,7 +33,7 @@
 }
 
 .prism-markdown p {
-  margin: 0 0 var(--s-3);
+  margin: 0 0 var(--s-1);
 }
 
 /* Headings — six levels, scaled down from GitHub's defaults to match the

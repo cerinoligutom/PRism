@@ -57,6 +57,11 @@ export interface PullRequestThread {
    * "Open in GitHub" action. `null` for rows written before the column
    * existed. */
   readonly url: string | null;
+  /** True when this thread has activity the active account hasn't seen yet.
+   * Derived by `conversation::query::list_pr_threads` against the viewer's
+   * `pull_request_viewer_relations.read_at` watermark — see issue #158.
+   * Always `false` when no account is in scope (anonymous read). */
+  readonly unread: boolean;
 }
 
 export interface CommentBreakdown {

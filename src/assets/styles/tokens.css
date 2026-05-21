@@ -55,8 +55,8 @@
    * accent dot still reads against the row. Mirrored to OKLCH-via-token here
    * so the light theme can override it without inlining values in the row
    * stylesheet. See `docs/contracts/triage-ux.md` + ADR 0015. */
-  --attention-tint:       oklch(0.2 0.02 var(--accent-h) / 0.18);
-  --attention-tint-hover: oklch(0.22 0.03 var(--accent-h) / 0.25);
+  --attention-tint:       oklch(0.32 0.07 var(--accent-h) / 0.4);
+  --attention-tint-hover: oklch(0.36 0.09 var(--accent-h) / 0.5);
 
   /* ────── Semantic / status ────── */
   --success:    oklch(0.74 0.16 145);

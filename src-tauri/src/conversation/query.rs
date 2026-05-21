@@ -33,6 +33,13 @@ pub fn list_pr_threads(
     // (ADR 0013). The join is via `t.head_comment_author_login`; threads that
     // pre-date the M3 sync or whose head author has never been seen produce a
     // NULL `avatar_url`, which the frontend renders as the initials fallback.
+    //
+    // The `LEFT JOIN pull_request_viewer_relations rel` carries the active
+    // account's `read_at` watermark so the `unread` projection can compare it
+    // against the thread's latest activity timestamp (issue #158). NULL
+    // `read_at` (never opened) plus any activity timestamp marks the thread
+    // unread; otherwise the thread is unread iff activity > read_at. With no
+    // `account_id` the projection is forced to 0 (the viewer is unknown).
     let sql = "
         SELECT
             t.id,
@@ -62,9 +69,21 @@ pub fn list_pr_threads(
                 ) THEN 1
                 ELSE 0
             END AS is_involved,
-            t.url
+            t.url,
+            CASE
+                WHEN ?2 IS NULL THEN 0
+                WHEN COALESCE(t.last_reply_at,
+                              t.head_comment_created_at,
+                              t.created_at,
+                              0)
+                     > COALESCE(rel.read_at, 0) THEN 1
+                ELSE 0
+            END AS unread
         FROM review_threads t
         LEFT JOIN users u ON u.login = t.head_comment_author_login
+        LEFT JOIN pull_request_viewer_relations rel
+               ON rel.pull_request_id = t.pull_request_id
+              AND rel.account_id      = ?2
         WHERE t.pull_request_id = ?1
         ORDER BY COALESCE(t.created_at, 0), t.id
     ";
@@ -96,6 +115,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let head_avatar_url: Option<String> = row.get(16)?;
     let is_involved: i64 = row.get(17)?;
     let url: Option<String> = row.get(18)?;
+    let unread: i64 = row.get(19)?;
 
     // The thread's `url` and the head comment's `url` are the same value
     // (the worker derives `review_threads.url` from the head comment per
@@ -138,6 +158,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
         is_resolved: is_resolved != 0,
         is_outdated: is_outdated != 0,
         url,
+        unread: unread != 0,
     })
 }
 
