@@ -388,6 +388,33 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
     assert_eq!(threads[1].4, Some(88));
     assert_eq!(threads[1].5, 2, "totalCount(3) - 1 = 2 replies");
 
+    // Issue #115: `review_threads.url` derives from the head comment's url
+    // because PullRequestReviewThread itself doesn't expose `url`. Both
+    // fixture threads carry a head comment with a discussion permalink.
+    let thread_urls: Vec<(String, Option<String>)> = {
+        let conn = harness.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT node_id, url FROM review_threads
+                  WHERE pull_request_id = 999 ORDER BY node_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        thread_urls[0].1.as_deref(),
+        Some("https://github.com/owner/repo/pull/42#discussion_r5001"),
+        "thread1's url is the head comment's url"
+    );
+    assert_eq!(
+        thread_urls[1].1.as_deref(),
+        Some("https://github.com/owner/repo/pull/42#discussion_r5002"),
+        "thread2's url is the head comment's url"
+    );
+
     let reviews: Vec<(String, String, Option<String>, String)> = {
         let conn = harness.db.lock().unwrap();
         let mut stmt = conn
@@ -972,6 +999,7 @@ fn pr_detail_body_with_threads_and_issue_comments(
                         "totalCount": {total_count},
                         "nodes": [{{
                             "id": "{node_id}_C1",
+                            "url": "https://github.com/owner/repo/pull/42#discussion_r{node_id}",
                             "author": {{ "login": "alice" }},
                             "bodyText": "head body",
                             "createdAt": "2026-05-18T10:00:00Z"

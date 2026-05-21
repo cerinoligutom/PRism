@@ -62,6 +62,10 @@ pub struct ThreadHeadComment {
     pub avatar_url: Option<String>,
     pub body_text: String,
     pub created_at: i64,
+    /// GitHub permalink for the head comment (matches the thread's url, which
+    /// is derived from this on the worker write path). `None` for rows
+    /// written before issue #115.
+    pub url: Option<String>,
 }
 
 /// Aggregated conversation stats for the stats card on the conversation
@@ -139,6 +143,10 @@ pub struct ThreadComment {
     pub created_at: i64,
     pub line: Option<i64>,
     pub side: Option<String>,
+    /// GitHub permalink for the comment; powers a per-comment "Open in
+    /// GitHub" icon button on the expanded thread view. `None` for rows
+    /// written before issue #115. See `PullRequestReviewComment.url`.
+    pub url: Option<String>,
 }
 
 /// One issue comment (PR-level, not attached to a thread). Hydrated lazily
@@ -152,6 +160,10 @@ pub struct IssueComment {
     pub avatar_url: Option<String>,
     pub body: String,
     pub created_at: i64,
+    /// GitHub permalink for the issue comment. Captured for parity; issue
+    /// comments aren't yet rendered on the conversation surface (M3
+    /// contract). See issue #115.
+    pub url: Option<String>,
 }
 
 /// Aggregate returned by `fetch_pr_conversation` — the complete conversation

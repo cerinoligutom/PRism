@@ -515,6 +515,7 @@ fn page_info(has_next: bool) -> PageInfo {
 fn make_comment(id: &str, db_id: i64, login: &str, created_at: &str) -> ReviewCommentNode {
     ReviewCommentNode {
         id: id.into(),
+        url: None,
         database_id: Some(db_id),
         author: Some(Actor::new(login)),
         body: format!("body of {id}"),
@@ -530,6 +531,7 @@ fn make_comment(id: &str, db_id: i64, login: &str, created_at: &str) -> ReviewCo
 fn make_issue(id: &str, db_id: i64, login: &str) -> IssueCommentNode {
     IssueCommentNode {
         id: id.into(),
+        url: None,
         database_id: Some(db_id),
         author: Some(Actor::new(login)),
         body: format!("issue body {id}"),

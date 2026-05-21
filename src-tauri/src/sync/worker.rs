@@ -1202,6 +1202,10 @@ fn write_review_threads(
         let head_created_at = head.and_then(|c| rfc3339_to_unix(&c.created_at));
         let head_author = head.and_then(|c| c.author.as_ref().map(|a| a.login.as_str()));
         let head_body = head.map(|c| c.body_text.as_str());
+        // `PullRequestReviewThread` has no `url` field on GitHub's GraphQL
+        // schema (issue #115). The thread permalink is the head comment's
+        // url; absent a head comment, leave the column NULL.
+        let head_url = head.and_then(|c| c.url.as_deref());
 
         let prior = existing.remove(&thread.id);
         let created_at = prior
@@ -1264,7 +1268,7 @@ fn write_review_threads(
                 head_author,
                 head_body,
                 head_created_at,
-                thread.url,
+                head_url,
             ],
         )?;
     }
@@ -1963,7 +1967,9 @@ mod tests {
         original_line: Option<i64>,
         head: Option<(&'a str, &'a str, &'a str)>,
         total_count: i64,
-        url: Option<&'a str>,
+        /// Head comment's `url`. The thread permalink is derived from this at
+        /// write time (issue #115).
+        head_url: Option<&'a str>,
     }
 
     impl<'a> ThreadSpec<'a> {
@@ -1978,7 +1984,7 @@ mod tests {
                 original_line: None,
                 head: Some(head),
                 total_count: 1,
-                url: None,
+                head_url: None,
             }
         }
 
@@ -2004,17 +2010,19 @@ mod tests {
             self
         }
 
-        fn url(mut self, url: &'a str) -> Self {
-            self.url = Some(url);
+        fn head_url(mut self, url: &'a str) -> Self {
+            self.head_url = Some(url);
             self
         }
     }
 
     fn thread(spec: ThreadSpec<'_>) -> ReviewThread {
+        let head_url = spec.head_url.map(str::to_string);
         let head_node = spec
             .head
             .map(|(id, login, created_at)| crate::github::graphql::Comment {
                 id: id.into(),
+                url: head_url,
                 author: Some(Actor::new(login)),
                 body_text: "head body".into(),
                 created_at: created_at.into(),
@@ -2027,7 +2035,6 @@ mod tests {
             line: spec.line,
             start_line: spec.start_line,
             original_line: spec.original_line,
-            url: spec.url.map(str::to_string),
             comments: GqlCommentConnection {
                 total_count: spec.total_count,
                 nodes: head_node.into_iter().collect(),
@@ -2044,7 +2051,6 @@ mod tests {
             line: None,
             start_line: None,
             original_line: None,
-            url: None,
             comments: GqlCommentConnection {
                 total_count: 0,
                 nodes: vec![],
@@ -2157,11 +2163,12 @@ mod tests {
     }
 
     #[test]
-    fn write_pr_updates_persists_review_thread_url() {
-        // Issue #102: the thread URL backs the conversation surface's per-thread
-        // "Open in GitHub" action. Confirm the worker writes it on first insert
-        // and preserves it across cycles when a later payload happens to omit
-        // it (`COALESCE(excluded.url, review_threads.url)`).
+    fn write_pr_updates_persists_review_thread_url_from_head_comment() {
+        // Issue #115: `PullRequestReviewThread` has no `url` field on GitHub's
+        // GraphQL schema, so the worker derives `review_threads.url` from the
+        // head comment's `url` at write time. Confirm the derivation happens
+        // on first insert and that a later payload with no head url leaves
+        // the previously-persisted value intact (`COALESCE` in the upsert).
         let (db, repo_id, pr_id) = seed_db_with_pr();
         let detail = detail_with_threads(
             review_threads(vec![thread(
@@ -2170,7 +2177,7 @@ mod tests {
                     "src/lib.rs",
                     ("PRRC_U1", "alice", "2026-05-18T10:00:00Z"),
                 )
-                .url("https://github.com/owner/repo/pull/1#discussion_r42"),
+                .head_url("https://github.com/owner/repo/pull/1#discussion_r42"),
             )]),
             None,
             None,
@@ -2190,8 +2197,8 @@ mod tests {
             Some("https://github.com/owner/repo/pull/1#discussion_r42")
         );
 
-        // Cycle 2: same thread, URL absent. The COALESCE in the upsert keeps the
-        // previously-persisted URL rather than blanking it on a partial payload.
+        // Cycle 2: same thread, head comment url absent. The COALESCE in the
+        // upsert keeps the previously-persisted url rather than blanking it.
         let detail2 = detail_with_threads(
             review_threads(vec![thread(ThreadSpec::open(
                 "PRRT_URL",
@@ -2214,8 +2221,31 @@ mod tests {
         assert_eq!(
             url_after.as_deref(),
             Some("https://github.com/owner/repo/pull/1#discussion_r42"),
-            "thread url must survive a payload with no url"
+            "thread url must survive a payload with no head-comment url"
         );
+    }
+
+    #[test]
+    fn write_pr_updates_thread_url_stays_null_without_head_comment() {
+        // Defensive: a thread that arrives with no head comment leaves
+        // `review_threads.url` NULL rather than blowing up.
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        let detail = detail_with_threads(
+            review_threads(vec![empty_thread("PRRT_empty_url", "x.rs")]),
+            None,
+            None,
+        );
+        write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+        let url: Option<String> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT url FROM review_threads WHERE node_id = 'PRRT_empty_url'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(url.is_none());
     }
 
     #[test]
