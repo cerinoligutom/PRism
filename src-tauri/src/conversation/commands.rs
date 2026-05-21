@@ -95,7 +95,30 @@ pub async fn fetch_pr_conversation(
 
     let payload = fetch_comments_payload(&client, &repo_coord).await?;
     persist_payload(&db, pull_request_id, &payload)?;
+    auto_mark_read(&db, pull_request_id, account.id as i64);
     hydrated_response(&db, pull_request_id, account.id as i64)
+}
+
+/// Best-effort auto-mark-on-open. Drives the same write path as
+/// `triage::commands::mark_pr_read` but runs after the hydration
+/// transaction commits so a failure can't unwind the cached payload.
+/// Errors are logged and swallowed: a mark-read failure must never break
+/// detail-surface hydration.
+fn auto_mark_read(db: &DbHandle, pull_request_id: i64, account_id: i64) {
+    if let Err(e) = mark_read_in_tx(db, pull_request_id, account_id) {
+        eprintln!("auto-mark-on-open failed (pr={pull_request_id}, account={account_id}): {e}");
+    }
+}
+
+fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Result<(), String> {
+    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+    crate::triage::query::mark_read(&tx, account_id, pull_request_id)
+        .map_err(|e| format!("mark read: {e}"))?;
+    crate::triage::query::recompute_needs_attention(&tx, account_id, pull_request_id)
+        .map_err(|e| format!("recompute needs_attention: {e}"))?;
+    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    Ok(())
 }
 
 /// Resolves the `(account, repo coordinates)` pair needed to build a client and
@@ -498,7 +521,7 @@ pub mod testing {
     }
 
     /// Drive the full hydrator path (network round-trip + persistence +
-    /// hydrated read) against a pre-built `GitHubClient`.
+    /// auto-mark-on-open + hydrated read) against a pre-built `GitHubClient`.
     pub async fn fetch(
         db: &DbHandle,
         client: &GitHubClient,
@@ -515,6 +538,7 @@ pub mod testing {
         };
         let payload = fetch_comments_payload(client, &coord).await?;
         persist_payload(db, pull_request_id, &payload)?;
+        super::auto_mark_read(db, pull_request_id, account_id);
         hydrated_response(db, pull_request_id, account_id)
     }
 }
