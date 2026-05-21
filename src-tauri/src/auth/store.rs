@@ -30,6 +30,16 @@ pub struct Account {
     /// response header, or `None` if the header was absent (classic PATs
     /// without an expiry, or fine-grained PATs the user has not set one on).
     pub expires_at: Option<String>,
+    /// GitHub avatar URL for `login`, resolved at read time via
+    /// `LEFT JOIN users ON users.login = accounts.login` (ADR 0013). The
+    /// `users` cache is account-agnostic by design (keyed on `login` alone,
+    /// with no `host` column), so the same handle on github.com and a GHE
+    /// host would collide. v1 ships single-host (github.com) per ADR 0016 so
+    /// the collision is theoretical; M5+ may add `host` to the cache once
+    /// validated GHE support lands. Field is never written via `upsert`;
+    /// `accounts` carries no `avatar_url` column.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 impl Account {
@@ -80,11 +90,17 @@ impl SqlAccountStore {
 impl AccountStore for SqlAccountStore {
     fn list(&self) -> Result<Vec<Account>, StoreError> {
         let conn = self.lock()?;
+        // `LEFT JOIN users` resolves the account's own avatar URL from the
+        // shared cache populated by the sync worker (ADR 0013). The join is
+        // on `login` alone (the `users` table has no `host` column), so a
+        // shared handle across hosts would collide. See `Account::avatar_url`.
         let mut stmt = conn
             .prepare(
-                "SELECT id, label, host, login, scopes, expires_at
-                     FROM accounts
-                     ORDER BY id",
+                "SELECT a.id, a.label, a.host, a.login, a.scopes, a.expires_at,
+                        u.avatar_url
+                     FROM accounts a
+                     LEFT JOIN users u ON u.login = a.login
+                     ORDER BY a.id",
             )
             .map_err(|e| StoreError::Io(e.to_string()))?;
         let rows = stmt
@@ -152,6 +168,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         login: row.get(3)?,
         scopes: decode_scopes(&scopes),
         expires_at: row.get(5)?,
+        avatar_url: row.get(6)?,
     })
 }
 
@@ -254,6 +271,7 @@ mod tests {
             login: "ada".into(),
             scopes: vec!["repo".into(), "read:org".into()],
             expires_at: Some("2026-09-01T00:00:00Z".into()),
+            avatar_url: None,
         }
     }
 
@@ -328,6 +346,49 @@ mod tests {
 
         store.upsert(sample(1, "Work")).unwrap();
         assert_eq!(store.next_id().unwrap(), 2);
+    }
+
+    #[test]
+    fn list_resolves_avatar_url_via_users_join_when_present() {
+        // ADR 0013: the sync worker populates `users(login, avatar_url)` for
+        // every login it sees. `list` resolves the account's own avatar via
+        // `LEFT JOIN users` so the Settings panel can render the real image
+        // instead of the palette swatch.
+        let store = fresh_store();
+        store.upsert(sample(1, "Work")).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO users (login, avatar_url, last_seen_at)
+                     VALUES (?1, ?2, ?3)",
+                params![
+                    "ada",
+                    "https://avatars.githubusercontent.com/u/1?v=4",
+                    0_i64
+                ],
+            )
+            .unwrap();
+        }
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].avatar_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/1?v=4")
+        );
+    }
+
+    #[test]
+    fn list_returns_none_avatar_when_users_row_is_absent() {
+        // An account added in this app session but not yet observed by any
+        // sync cycle has no `users` row. The LEFT JOIN must surface `None`
+        // cleanly so the UI's palette fallback can render.
+        let store = fresh_store();
+        store.upsert(sample(1, "Work")).unwrap();
+
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].avatar_url.is_none());
     }
 
     #[test]

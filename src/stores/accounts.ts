@@ -9,6 +9,13 @@ export interface Account {
   readonly login: string;
   readonly scopes: readonly string[];
   readonly expires_at: string | null;
+  /**
+   * GitHub avatar URL for `login`, resolved at read time by the backend via
+   * `LEFT JOIN users` (ADR 0013). `null` when no sync cycle has yet populated
+   * the `users` row for this login, in which case the UI falls back to the
+   * palette swatch.
+   */
+  readonly avatar_url: string | null;
 }
 
 export type PermissionState = "granted" | "missing" | "unknown";

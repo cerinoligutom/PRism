@@ -161,6 +161,9 @@ pub async fn add_account(
         login: validated.login,
         scopes: validated.scopes,
         expires_at: validated.expires_at,
+        // Avatar resolves at read time via `list_accounts`. A freshly added
+        // account has no `users` row until the first sync cycle populates it.
+        avatar_url: None,
     };
 
     let handle = account.handle();
