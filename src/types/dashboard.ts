@@ -12,7 +12,13 @@
 
 export type DashboardView = "authored" | "assigned" | "watching" | "team";
 
-export type DashboardSort = "updated";
+/**
+ * Mirrors `DashboardSort` in `src-tauri/src/dashboard/types.rs`. M2 shipped
+ * `"updated"` only; M4 (`docs/contracts/triage-ux.md`, ADR 0015) adds
+ * `"stale"` (oldest activity first) and `"needs-me"` (attention-first
+ * within the active view).
+ */
+export type DashboardSort = "updated" | "stale" | "needs-me";
 
 export type ReviewerState =
   | "approved"
@@ -95,4 +101,14 @@ export interface DashboardPullRequest {
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
   readonly account_id: number;
+  /** True when the viewer hasn't opened this PR since its last upstream
+   * update. Drives the unread dot on the dashboard row. See ADR 0015 and
+   * `docs/contracts/triage-ux.md` ("Read-state derivation"). */
+  readonly unread: boolean;
+  /** Precomputed "needs my attention" composite flag for the active account.
+   * See ADR 0015 ("Composite formula"). */
+  readonly needs_attention: boolean;
+  /** Mentions of the viewer login seen since the last read. Reset to zero
+   * by `mark_pr_read`. See ADR 0015 ("Mention detection"). */
+  readonly mentioned_count_unread: number;
 }

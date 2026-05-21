@@ -22,6 +22,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0012](0012-threads-bar-four-state-and-outdated-counted.md) | Threads-bar four-state redesign and outdated counted in the denominator | Accepted | [#98](https://github.com/cerinoligutom/PRism/issues/98) |
 | [0013](0013-user-avatars-cache.md) | User avatar caching via a `users` table | Accepted | [#99](https://github.com/cerinoligutom/PRism/issues/99) |
 | [0014](0014-comment-markdown-rendering.md) | Comment markdown rendering via GitHub `bodyHTML` + Shiki client highlighting | Accepted | [#138](https://github.com/cerinoligutom/PRism/issues/138) |
+| [0015](0015-triage-state-model.md) | Triage state model: per-account read-state, mention detection, and "needs my attention" composite | Accepted | [#144](https://github.com/cerinoligutom/PRism/issues/144) |
 
 ## Statuses
 

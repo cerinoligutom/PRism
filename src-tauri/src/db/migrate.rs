@@ -19,6 +19,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0007_review_thread_url.sql"),
     include_str!("../../migrations/0008_comment_urls.sql"),
     include_str!("../../migrations/0009_comment_body_html.sql"),
+    include_str!("../../migrations/0010_triage_state.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -142,6 +143,8 @@ mod tests {
             "idx_issue_comments_pr",
             "idx_reviews_node_id",
             "idx_reviews_pr_submitted_at",
+            // 0010 triage_state.
+            "idx_pr_viewer_relations_attention",
         ];
         for name in expected {
             let count: i64 = conn
@@ -375,6 +378,32 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tracked, 0);
+    }
+
+    #[test]
+    fn triage_columns_exist_on_pull_request_viewer_relations() {
+        let conn = fresh();
+        let expected = [
+            "read_at",
+            "read_pr_updated_at",
+            "mentioned_count_unread",
+            "mention_scan_watermark_at",
+            "needs_attention",
+        ];
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_request_viewer_relations')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in expected {
+            assert!(
+                names.iter().any(|n| n == col),
+                "missing pull_request_viewer_relations column: {col}"
+            );
+        }
     }
 
     #[test]

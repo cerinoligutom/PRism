@@ -14,10 +14,13 @@ import { useAppearanceStore, type Density } from "@/stores/appearance";
 export type DashboardView = "authored" | "assigned" | "watching" | "team";
 
 /**
- * Mirrors `DashboardSort` in `src-tauri/src/dashboard/types.rs`. M2 ships
- * `Updated` only; the union widens in M4 when the sort selector lands.
+ * Mirrors `DashboardSort` in `src-tauri/src/dashboard/types.rs`. M4 widens
+ * the union with `"stale"` and `"needs-me"` per
+ * `docs/contracts/triage-ux.md` + ADR 0015. The matching backend ORDER BYs
+ * land with Wave 3-D; the contract PR pins the wire shape so the sort
+ * selector + store can land independently.
  */
-export type DashboardSort = "updated";
+export type DashboardSort = "updated" | "stale" | "needs-me";
 
 export type DashboardGroup = "repo" | "org" | "none";
 
@@ -80,6 +83,10 @@ export interface DashboardPullRequest {
   readonly reviewers: readonly ReviewerEntry[];
   readonly repo: RepoRef;
   readonly account_id: number;
+  /** Triage signals - see ADR 0015 and `docs/contracts/triage-ux.md`. */
+  readonly unread: boolean;
+  readonly needs_attention: boolean;
+  readonly mentioned_count_unread: number;
 }
 
 export interface DashboardGroupBucket {

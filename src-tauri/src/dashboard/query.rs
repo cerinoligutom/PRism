@@ -65,8 +65,12 @@ const PR_PROJECTION_COLUMNS: &str = "
 /// Parameter order is determined by the `from_and_where` body. The caller
 /// passes the matching parameters when invoking the prepared statement.
 fn build_sql(from_and_where: &str, sort: DashboardSort) -> String {
+    // M4 (Wave 3-D) replaces this with per-variant ORDER BY clauses. The
+    // contract PR (M4-0) widens the enum so the type checks across the
+    // codebase; until Wave 3-D lands, `Stale` and `NeedsMe` reuse the
+    // `Updated` ordering so the dashboard still sorts deterministically.
     let order_by = match sort {
-        DashboardSort::Updated => {
+        DashboardSort::Updated | DashboardSort::Stale | DashboardSort::NeedsMe => {
             "ORDER BY COALESCE(pr.latest_status_change_at, pr.updated_at) DESC, pr.id DESC"
         }
     };
@@ -232,6 +236,15 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
             name: repo_name,
         },
         account_id,
+        // M4 contract PR (M4-0) widens the struct so the new triage fields
+        // are part of the wire shape from Wave 1. Wave 3-D fills in the
+        // matching SELECT projections + joins against
+        // `pull_request_viewer_relations` and flips these to read from the
+        // row. Until then, the dashboard surfaces zeros / falses so the
+        // existing behaviour is preserved. See ADR 0015.
+        unread: false,
+        needs_attention: false,
+        mentioned_count_unread: 0,
     })
 }
 
