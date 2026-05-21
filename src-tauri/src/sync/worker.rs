@@ -1305,7 +1305,215 @@ pub fn write_pr_updates(
         params![pr_id, account_id as i64],
     )?;
 
+    // Triage scan + needs_attention recompute (M4-B, ADR 0015 / issue #146).
+    // Runs after every other write in this transaction so the recompute sees
+    // the freshest threads rollup, requested-reviewers set, and review-decision.
+    // A missing relation row (PR not discovered for the active account) is a
+    // valid no-op: every UPDATE here matches by (account_id, pull_request_id)
+    // and the dashboard query LEFT JOINs the relations table.
+    scan_mentions_and_recompute_attention(&tx, account_id, pr_id)?;
+
     tx.commit()
+}
+
+/// Count new `@<viewer-login>` mentions across the PR's comment bodies since
+/// the per-(account, PR) watermark, bump the unread counter by that count,
+/// advance the watermark to now, then recompute the four-signal
+/// `needs_attention` composite. See ADR 0015 and `docs/contracts/triage-ux.md`.
+///
+/// Watermark advance runs unconditionally so a cycle with zero new comments
+/// still moves the cursor forward and the next scan starts from now.
+fn scan_mentions_and_recompute_attention(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: AccountId,
+    pr_id: i64,
+) -> Result<(), rusqlite::Error> {
+    let account_id = account_id as i64;
+
+    // Viewer login. The relation row may not exist on this account (Team-view
+    // path where the active account has no discovered relation to the PR); in
+    // that case the UPDATE matches zero rows and the scan is a clean no-op.
+    let viewer_login: Option<String> = tx
+        .query_row(
+            "SELECT login FROM accounts WHERE id = ?1",
+            params![account_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    let Some(viewer_login) = viewer_login else {
+        return Ok(());
+    };
+
+    // Read the prior watermark. NULL or missing relation row reads as 0 so the
+    // first cycle counts every comment newer than the epoch.
+    let watermark: i64 = tx
+        .query_row(
+            "SELECT COALESCE(mention_scan_watermark_at, 0)
+               FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+
+    // Pull bodies from review + issue comments newer than the watermark and
+    // not authored by the viewer. Scan in Rust (word-boundary aware) rather
+    // than via SQLite REGEXP so the worker doesn't need to register a custom
+    // SQL function. Bodies are bounded by the per-PR comment volume on the
+    // GitHub side; for v1 sizes a memory pass is cheap.
+    let mut new_mentions: i64 = 0;
+    {
+        let mut review_stmt = tx.prepare(
+            "SELECT c.body
+               FROM review_comments c
+               JOIN review_threads t ON t.id = c.review_thread_id
+              WHERE t.pull_request_id = ?1
+                AND c.author_login != ?2
+                AND c.created_at > ?3",
+        )?;
+        let bodies = review_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for body in bodies {
+            if mentions_viewer(&body?, &viewer_login) {
+                new_mentions += 1;
+            }
+        }
+    }
+    {
+        let mut issue_stmt = tx.prepare(
+            "SELECT ic.body
+               FROM issue_comments ic
+              WHERE ic.pull_request_id = ?1
+                AND ic.author_login != ?2
+                AND ic.created_at > ?3",
+        )?;
+        let bodies = issue_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for body in bodies {
+            if mentions_viewer(&body?, &viewer_login) {
+                new_mentions += 1;
+            }
+        }
+    }
+
+    // Bump counter and advance watermark. Watermark moves forward on every
+    // cycle (idempotency cursor) so re-runs without new comments stay flat.
+    let now = unix_now();
+    tx.execute(
+        "UPDATE pull_request_viewer_relations
+            SET mentioned_count_unread = mentioned_count_unread + ?1,
+                mention_scan_watermark_at = ?2
+          WHERE account_id = ?3 AND pull_request_id = ?4",
+        params![new_mentions, now, account_id, pr_id],
+    )?;
+
+    // Composite recompute. Mirrors the formula in ADR 0015. Short-lived
+    // duplication with `triage::query::recompute_needs_attention` (M4-A);
+    // ADR 0015 calls out the intentional overlap.
+    tx.execute(
+        "UPDATE pull_request_viewer_relations
+            SET needs_attention = CASE WHEN (
+                EXISTS (
+                    SELECT 1 FROM pull_requests pr
+                     JOIN accounts a ON a.login = pr.author_login
+                     WHERE pr.id = ?2
+                       AND a.id = ?1
+                       AND pr.threads_unresolved_involved > 0
+                )
+                OR EXISTS (
+                    SELECT 1 FROM requested_reviewers rr
+                     JOIN accounts a ON a.login = rr.login
+                     WHERE rr.pull_request_id = ?2
+                       AND a.id = ?1
+                )
+                OR (mentioned_count_unread > 0)
+                OR EXISTS (
+                    SELECT 1 FROM pull_requests pr
+                     JOIN accounts a ON a.login = pr.author_login
+                     WHERE pr.id = ?2
+                       AND a.id = ?1
+                       AND pr.review_decision = 'CHANGES_REQUESTED'
+                )
+            ) THEN 1 ELSE 0 END
+          WHERE account_id = ?1 AND pull_request_id = ?2",
+        params![account_id, pr_id],
+    )?;
+
+    Ok(())
+}
+
+/// Count `@<viewer>` matches in `body`, treating a match as terminated by
+/// whitespace, EOL, ASCII punctuation, or end-of-string. Case-insensitive
+/// because GitHub logins normalise that way. Rejects subword extensions like
+/// `@<viewer>-bot` or `@<viewer>123`. See ADR 0015 and the M4 contract for
+/// the word-boundary spec.
+///
+/// Returns `true` if at least one match is found. Callers count comment rows
+/// that match (so two mentions in the same comment count as one increment),
+/// matching the contract's row-count semantics in `docs/contracts/triage-ux.md`.
+fn mentions_viewer(body: &str, viewer_login: &str) -> bool {
+    if viewer_login.is_empty() || body.is_empty() {
+        return false;
+    }
+    let needle = viewer_login.to_lowercase();
+    let body_lower = body.to_lowercase();
+    let needle_bytes = needle.as_bytes();
+    let body_bytes = body_lower.as_bytes();
+    let nlen = needle_bytes.len();
+    let blen = body_bytes.len();
+
+    let mut cursor = 0;
+    while cursor < blen {
+        let Some(at_offset) = body_bytes[cursor..].iter().position(|&b| b == b'@') else {
+            return false;
+        };
+        let login_start = cursor + at_offset + 1;
+        let login_end = login_start + nlen;
+        if login_end <= blen && &body_bytes[login_start..login_end] == needle_bytes {
+            let trailing = body_bytes.get(login_end).copied();
+            if is_mention_boundary(trailing) {
+                return true;
+            }
+        }
+        // Advance past this `@` regardless of match outcome to find the next.
+        cursor = login_start;
+    }
+    false
+}
+
+/// Trailing-character predicate for the word-boundary spec. `None` means EOL.
+/// Whitespace, common ASCII punctuation, and closing brackets all terminate a
+/// mention; alphanumerics, hyphens, and underscores continue it (so
+/// `@alice-bot` rejects when viewer is `alice`). Non-ASCII bytes fall through
+/// as non-boundary to stay conservative against partial UTF-8 sequences.
+fn is_mention_boundary(c: Option<u8>) -> bool {
+    let Some(c) = c else {
+        return true;
+    };
+    matches!(
+        c,
+        b' ' | b'\t'
+            | b'\n'
+            | b'\r'
+            | b'.'
+            | b','
+            | b';'
+            | b':'
+            | b'!'
+            | b'?'
+            | b')'
+            | b']'
+            | b'}'
+            | b'\''
+            | b'"'
+            | b'`'
+            | b'/'
+            | b'\\'
+            | b'<'
+            | b'>'
+    )
 }
 
 /// Pre-aggregated CI rollup persisted to the `ci_*` columns.
@@ -3101,6 +3309,511 @@ mod tests {
         let (total, _, uu, _, _) = read_threads_rollup(&db, pr_id);
         assert_eq!(total, 1);
         assert_eq!(uu, 1);
+    }
+
+    // ===== M4-B: mention scan + needs_attention recompute (ADR 0015) =====
+    //
+    // Each test seeds a relation row directly so the scan + recompute have a
+    // target row to update. Comments are inserted by direct SQL because the
+    // worker is the one that owns the persistence path for the scan, not the
+    // hydrator. The active account's login is `me` (set by `seed_db_with_pr`).
+
+    fn seed_relation(db: &DbHandle, account_id: i64, pr_id: i64) {
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO pull_request_viewer_relations
+                    (account_id, pull_request_id, is_authored, is_review_requested,
+                     is_involved, last_seen_at, mentioned_count_unread,
+                     mention_scan_watermark_at, needs_attention)
+                    VALUES (?1, ?2, 0, 0, 0, 0, 0, 0, 0)",
+                params![account_id, pr_id],
+            )
+            .unwrap();
+    }
+
+    fn read_mention_count(db: &DbHandle, account_id: i64, pr_id: i64) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT mentioned_count_unread FROM pull_request_viewer_relations
+                  WHERE account_id = ?1 AND pull_request_id = ?2",
+                params![account_id, pr_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    fn read_watermark(db: &DbHandle, account_id: i64, pr_id: i64) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT mention_scan_watermark_at FROM pull_request_viewer_relations
+                  WHERE account_id = ?1 AND pull_request_id = ?2",
+                params![account_id, pr_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    fn read_needs_attention(db: &DbHandle, account_id: i64, pr_id: i64) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT needs_attention FROM pull_request_viewer_relations
+                  WHERE account_id = ?1 AND pull_request_id = ?2",
+                params![account_id, pr_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    // --- Word-boundary unit tests for the in-memory matcher ---
+
+    #[test]
+    fn mentions_viewer_matches_bare_login() {
+        assert!(mentions_viewer("hey @alice please review", "alice"));
+    }
+
+    #[test]
+    fn mentions_viewer_matches_at_end_of_string() {
+        assert!(mentions_viewer("ping @alice", "alice"));
+    }
+
+    #[test]
+    fn mentions_viewer_matches_with_trailing_punctuation() {
+        for body in [
+            "@alice,", "@alice.", "@alice!", "@alice?", "@alice:", "@alice;",
+        ] {
+            assert!(mentions_viewer(body, "alice"), "body {body:?} should match");
+        }
+    }
+
+    #[test]
+    fn mentions_viewer_rejects_subword_extension() {
+        assert!(!mentions_viewer("ping @alice-bot for help", "alice"));
+        assert!(!mentions_viewer("@alicia is here", "alice"));
+        assert!(!mentions_viewer("@alice_two reviewed", "alice"));
+        assert!(!mentions_viewer("@alice123", "alice"));
+    }
+
+    #[test]
+    fn mentions_viewer_is_case_insensitive() {
+        assert!(mentions_viewer("ping @ALICE today", "alice"));
+        assert!(mentions_viewer("ping @alice today", "Alice"));
+    }
+
+    #[test]
+    fn mentions_viewer_returns_false_on_empty_inputs() {
+        assert!(!mentions_viewer("", "alice"));
+        assert!(!mentions_viewer("hi @alice", ""));
+    }
+
+    #[test]
+    fn mentions_viewer_skips_past_unrelated_at_signs() {
+        assert!(mentions_viewer(
+            "email me at user@example.com or @alice",
+            "alice"
+        ));
+    }
+
+    #[test]
+    fn mentions_viewer_handles_at_near_end_without_login() {
+        assert!(!mentions_viewer("trailing @", "alice"));
+        assert!(!mentions_viewer("trailing @al", "alice"));
+    }
+
+    // --- write_pr_updates scan integration tests ---
+
+    #[test]
+    fn mention_scan_counts_new_review_comment_mentions() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_m');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES
+                    (2001, 1001, 'bob',   'hey @me what do you think', 10),
+                    (2002, 1001, 'carol', 'and @me again',             20);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_mention_count(&db, 1, pr_id), 2);
+    }
+
+    #[test]
+    fn mention_scan_counts_new_issue_comment_mentions() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES
+                    (3001, 100, 'bob',   'looks good @me',             10),
+                    (3002, 100, 'carol', 'one more nit, @me, then go', 20);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_mention_count(&db, 1, pr_id), 2);
+    }
+
+    #[test]
+    fn mention_scan_ignores_viewers_own_comments() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES
+                    (3001, 100, 'me',   'I am @me writing about myself', 10),
+                    (3002, 100, 'me',   'also @me here',                 20);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_mention_count(&db, 1, pr_id),
+            0,
+            "viewer's own comments must never increment the counter"
+        );
+    }
+
+    #[test]
+    fn mention_scan_ignores_mentions_of_other_logins() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES
+                    (3001, 100, 'bob',   '@alice please look',       10),
+                    (3002, 100, 'carol', '@dave can you take this?', 20);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_mention_count(&db, 1, pr_id), 0);
+    }
+
+    #[test]
+    fn mention_scan_word_boundary_rejects_subword_match() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES
+                    (3001, 100, 'bob', 'pinging @me-bot for CI',     10),
+                    (3002, 100, 'bob', 'and @mester is on holiday',  20),
+                    (3003, 100, 'bob', 'true mention: @me now',      30);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_mention_count(&db, 1, pr_id),
+            1,
+            "only the bare @me row counts"
+        );
+    }
+
+    #[test]
+    fn mention_scan_is_idempotent_across_cycles() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, 100, 'bob', 'hi @me', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let first = read_mention_count(&db, 1, pr_id);
+        assert_eq!(first, 1);
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        let second = read_mention_count(&db, 1, pr_id);
+        assert_eq!(
+            second, 1,
+            "second cycle with no new comments must not re-count"
+        );
+    }
+
+    #[test]
+    fn mention_scan_advances_watermark_even_without_new_mentions() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+
+        // No comments at all.
+        assert_eq!(read_watermark(&db, 1, pr_id), 0);
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        let watermark = read_watermark(&db, 1, pr_id);
+        assert!(
+            watermark > 0,
+            "watermark must move forward every cycle (got {watermark})"
+        );
+    }
+
+    #[test]
+    fn mention_scan_only_counts_comments_after_watermark() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+
+        // Pin the watermark forward of the older comment so only the newer
+        // one is counted on this cycle.
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE pull_request_viewer_relations
+                    SET mention_scan_watermark_at = 15
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+            )
+            .unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES
+                    (3001, 100, 'bob', 'older @me before watermark', 10),
+                    (3002, 100, 'bob', 'newer @me after  watermark', 20);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_mention_count(&db, 1, pr_id),
+            1,
+            "only the post-watermark comment should count"
+        );
+    }
+
+    // --- needs_attention recompute tests (four signals, ADR 0015) ---
+
+    #[test]
+    fn needs_attention_stays_zero_when_no_signal_fires() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+    }
+
+    #[test]
+    fn needs_attention_fires_on_unresolved_thread_for_pr_author() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+
+        // Make 'me' the PR author and add an unresolved + involved thread.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+                 INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (1001, 100, 0, 0, 'RT_n');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES (2001, 1001, 'me', 'reply', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+    }
+
+    #[test]
+    fn needs_attention_fires_when_viewer_is_requested_reviewer() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (100, 'me', 'user');",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+    }
+
+    #[test]
+    fn needs_attention_fires_on_unread_mention() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, 100, 'bob', 'ping @me when free', 10);",
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_mention_count(&db, 1, pr_id), 1);
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+    }
+
+    #[test]
+    fn needs_attention_fires_on_changes_requested_for_pr_author() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE pull_requests
+                    SET author_login = 'me',
+                        review_decision = 'CHANGES_REQUESTED'
+                  WHERE id = ?1",
+                params![pr_id],
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+    }
+
+    #[test]
+    fn needs_attention_does_not_fire_on_changes_requested_for_other_author() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE pull_requests
+                    SET author_login = 'someone-else',
+                        review_decision = 'CHANGES_REQUESTED'
+                  WHERE id = ?1",
+                params![pr_id],
+            )
+            .unwrap();
+
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 1, pr_id),
+            0,
+            "CHANGES_REQUESTED only matters when the viewer is the author"
+        );
+    }
+
+    #[test]
+    fn needs_attention_clears_when_signal_disappears() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                    VALUES (100, 'me', 'user');",
+            )
+            .unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM requested_reviewers", [])
+            .unwrap();
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention(&db, 1, pr_id),
+            0,
+            "removing the only signal must clear the flag"
+        );
+    }
+
+    #[test]
+    fn sync_cycle_flips_needs_attention_via_new_mention() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        seed_relation(&db, 1, pr_id);
+
+        // Cycle 1: no comments, no signals — flag stays 0.
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+        let watermark_after_first = read_watermark(&db, 1, pr_id);
+        assert!(watermark_after_first > 0);
+
+        // A new mention lands after the first cycle (created_at > watermark).
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, ?1, 'bob', 'heads up @me', ?2)",
+                params![pr_id, watermark_after_first + 60],
+            )
+            .unwrap();
+
+        // Cycle 2 picks it up and flips the composite.
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+        assert_eq!(read_mention_count(&db, 1, pr_id), 1);
+        assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+    }
+
+    #[test]
+    fn mention_scan_is_a_noop_when_relation_row_missing() {
+        let (db, repo_id, pr_id) = seed_db_with_pr();
+        // Deliberately no `seed_relation` — Team-view path where this account
+        // has no discovered relation to the PR.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO issue_comments
+                    (id, pull_request_id, author_login, body, created_at)
+                    VALUES (3001, 100, 'bob', 'hi @me', 10);",
+            )
+            .unwrap();
+
+        // Should not error even with no relation row to update.
+        write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "missing relation row must remain missing");
     }
 
     // ===== timeline_events persistence tests =====
