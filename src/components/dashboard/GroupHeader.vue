@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { formatRelativeAgo } from "@/lib/format";
+import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 
 interface Props {
   /** Plain label rendered when `org` is null (e.g. when grouping by `none`). */
@@ -46,8 +46,6 @@ const repoOnly = computed<string>(() => {
   const slash = props.label.indexOf("/");
   return slash === -1 ? props.label : props.label.slice(slash + 1).trim();
 });
-
-const relativeUpdated = computed<string>(() => formatRelativeAgo(props.latestUpdatedAt));
 
 function toggle(): void {
   if (!props.collapsible) return;
@@ -99,7 +97,7 @@ function toggle(): void {
       </span>
       <span class="group-header__metric">
         <span aria-hidden="true">↑</span>
-        {{ relativeUpdated }}
+        <PRismRelativeTime :value="latestUpdatedAt" />
       </span>
     </span>
   </div>

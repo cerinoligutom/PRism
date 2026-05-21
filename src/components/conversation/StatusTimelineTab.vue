@@ -5,8 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DashboardPullRequest } from "@/types/dashboard";
 import type { TimelineEventRecord } from "@/types/conversation";
 
-import { formatRelativeAgo } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 
 interface Props {
   pullRequest: DashboardPullRequest;
@@ -32,7 +32,8 @@ interface TimelineRow {
   /** Bare GitHub login for the avatar lookup (no leading `@`). */
   readonly whoLogin: string | null;
   readonly whoAvatarUrl: string | null;
-  readonly when: string;
+  /** Unix seconds for the event; rendered via `PRismRelativeTime`. */
+  readonly when: number;
   readonly state: "done" | "current";
 }
 
@@ -80,7 +81,7 @@ watch(
  * whose row falls back to the dashboard-DTO heuristic.
  */
 function persistedRow(event: TimelineEventRecord, index: number): TimelineRow {
-  const when = formatRelativeAgo(event.created_at);
+  const when = event.created_at;
   const who = event.actor_login !== null ? `@${event.actor_login}` : null;
   const whoLogin = event.actor_login;
   const whoAvatarUrl = event.actor_avatar_url;
@@ -154,7 +155,7 @@ function synthesisedRows(): TimelineRow[] {
     who: `@${pr.author_login}`,
     whoLogin: pr.author_login,
     whoAvatarUrl: pr.author_avatar_url,
-    when: formatRelativeAgo(pr.created_at),
+    when: pr.created_at,
     state: "done",
   });
 
@@ -166,10 +167,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when:
-        pr.latest_status_change_at !== null
-          ? formatRelativeAgo(pr.latest_status_change_at)
-          : formatRelativeAgo(pr.created_at),
+      when: pr.latest_status_change_at ?? pr.created_at,
       state: "done",
     });
   }
@@ -182,7 +180,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "done",
     });
   } else if (pr.review_decision === "CHANGES_REQUESTED") {
@@ -193,7 +191,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "done",
     });
   }
@@ -207,7 +205,7 @@ function synthesisedRows(): TimelineRow[] {
         who: null,
         whoLogin: null,
         whoAvatarUrl: null,
-        when: formatRelativeAgo(pr.updated_at),
+        when: pr.updated_at,
         state: "done",
       });
     } else if (pr.ci.state === "SUCCESS") {
@@ -218,7 +216,7 @@ function synthesisedRows(): TimelineRow[] {
         who: null,
         whoLogin: null,
         whoAvatarUrl: null,
-        when: formatRelativeAgo(pr.updated_at),
+        when: pr.updated_at,
         state: "done",
       });
     }
@@ -232,7 +230,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "current",
     });
   } else if (pr.state === "closed") {
@@ -243,7 +241,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "current",
     });
   } else if (pr.is_draft) {
@@ -254,7 +252,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "current",
     });
   } else if (pr.mergeable === "CONFLICTING") {
@@ -265,7 +263,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "current",
     });
   } else if (pr.mergeable === "MERGEABLE") {
@@ -276,7 +274,7 @@ function synthesisedRows(): TimelineRow[] {
       who: null,
       whoLogin: null,
       whoAvatarUrl: null,
-      when: formatRelativeAgo(pr.updated_at),
+      when: pr.updated_at,
       state: "current",
     });
   }
@@ -305,7 +303,7 @@ const rows = computed<readonly TimelineRow[]>(() => {
     who: `@${pr.author_login}`,
     whoLogin: pr.author_login,
     whoAvatarUrl: pr.author_avatar_url,
-    when: formatRelativeAgo(pr.created_at),
+    when: pr.created_at,
     state: "done",
   };
   const persisted: TimelineRow[] = events.value.map((e, i) => persistedRow(e, i));
@@ -410,7 +408,7 @@ const showFallbackNote = computed(() => events.value.length === 0 && loadError.v
               <span class="timeline-row__who">{{ row.who }}</span>
             </span>
           </div>
-          <div class="timeline-row__when">{{ row.when }}</div>
+          <PRismRelativeTime :value="row.when" class="timeline-row__when" />
         </div>
         <div v-if="idx < rows.length - 1" class="timeline-tab__rule" aria-hidden="true">
           <div class="timeline-tab__line"></div>

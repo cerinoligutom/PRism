@@ -2,8 +2,9 @@
 import { computed } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { DashboardPullRequest, RowDensity } from "@/types/dashboard";
-import { formatRelativeAgo, secondsSince } from "@/lib/format";
+import { secondsSince } from "@/lib/format";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
@@ -100,10 +101,6 @@ const linesDeletions = computed<string | null>(() =>
 
 const changedFiles = computed<number | null>(
   () => props.pullRequest.changed_files,
-);
-
-const updatedRelative = computed<string>(() =>
-  formatRelativeAgo(props.pullRequest.updated_at),
 );
 
 const sinceLabel = computed<string>(() => sinceLabelFor(props.pullRequest));
@@ -245,7 +242,10 @@ function openOnGitHub(event: MouseEvent): void {
     </div>
 
     <div :class="['pr-row__time', isStale && 'pr-row__time--stale']">
-      <span class="pr-row__time-value">{{ updatedRelative }}</span>
+      <PRismRelativeTime
+        :value="pullRequest.updated_at"
+        class="pr-row__time-value"
+      />
       <span class="pr-row__time-since">{{ sinceLabel }}</span>
     </div>
 
