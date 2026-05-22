@@ -23,7 +23,7 @@ import {
   type DashboardSort,
   type DashboardView as DashboardViewName,
 } from "@/stores/dashboard";
-import type { ChipKey } from "@/types/dashboard";
+import type { AccountMarker, ChipKey } from "@/types/dashboard";
 import type { Density } from "@/stores/appearance";
 
 const route = useRoute();
@@ -33,6 +33,36 @@ const accounts = useAccountsStore();
 const appearance = useAppearanceStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
+
+/**
+ * Shared lookup from account id to a render-ready marker. Computed once at
+ * the view level so all rows can resolve `pullRequest.account_ids` without
+ * each one wiring up the accounts store. See ADR 0016 ("Dashboard row shape
+ * - option 1") for the merged-row contract that surfaces these markers.
+ */
+const accountMarkersById = computed<ReadonlyMap<number, AccountMarker>>(() => {
+  const map = new Map<number, AccountMarker>();
+  for (const a of accounts.accounts) {
+    map.set(a.id, {
+      id: a.id,
+      label: a.label,
+      login: a.login,
+      avatar_url: a.avatar_url,
+    });
+  }
+  return map;
+});
+
+/**
+ * True when the dashboard scope is one specific account. In that mode rows
+ * suppress the account marker entirely - the picker already names the scope,
+ * so a marker per row would be redundant noise. Unified scope renders the
+ * marker on every row (full stack for multi-account PRs, single muted dot
+ * for single-relation PRs).
+ */
+const isSingleAccountScope = computed<boolean>(
+  () => dashboard.accountFilter !== null,
+);
 
 // Counter semantics per the contract: the first segment reflects the
 // post-search PR count so it tracks the visible list as the user types.
@@ -355,6 +385,8 @@ watch(() => route.meta?.dashboardView, () => {
           :density="dashboard.density"
           :unread="pr.unread"
           :needs-attention="pr.needs_attention"
+          :accounts-by-id="accountMarkersById"
+          :single-account-scope="isSingleAccountScope"
           @open="openPullRequest"
           @mark-unread="onMarkUnread"
         />
