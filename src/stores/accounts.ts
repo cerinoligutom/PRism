@@ -46,6 +46,12 @@ type AuthCommandError =
   | { kind: "network"; host: string }
   | { kind: "not_found" }
   | { kind: "login_mismatch"; expected_login: string; actual_login: string }
+  | {
+      kind: "duplicate_account";
+      existing_label: string;
+      login: string;
+      host: string;
+    }
   | { kind: "internal" };
 
 /**
@@ -67,6 +73,8 @@ function formatAuthError(raw: unknown): string {
         return "Account not found.";
       case "login_mismatch":
         return `This token authenticates as ${err.actual_login}, but the account is ${err.expected_login}. To switch identity, remove the account and add it again.`;
+      case "duplicate_account":
+        return `An account for ${err.login} on ${err.host} is already connected (${err.existing_label}). Remove it before adding a new PAT for this user, or extend its scopes instead.`;
       case "internal":
         return "Something went wrong saving the account. Check the application logs.";
     }
