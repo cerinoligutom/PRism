@@ -502,6 +502,173 @@ fn stats_zero_threads_returns_baseline() {
     assert_eq!(stats.avg_response_seconds, None);
     assert_eq!(stats.resolution_rate, 0.0);
     assert_eq!(stats.comment_breakdown.total, 0);
+    assert_eq!(stats.participants, 0);
+    assert_eq!(stats.reviews_summary.total, 0);
+    assert_eq!(stats.last_activity_at, None);
+}
+
+#[test]
+fn stats_participants_unions_distinct_authors_across_surfaces() {
+    // The fixture has review_comments from bob, alice, carol (three logins),
+    // no issue_comments, and reviews from bob, carol, dave, eve. The union
+    // dedupes by login: alice, bob, carol, dave, eve = 5 participants.
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    assert_eq!(stats.participants, 5);
+}
+
+#[test]
+fn stats_participants_dedupes_repeat_authors() {
+    // A reviewer who's also commented on review threads only counts once.
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref)
+            VALUES (700, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
+         INSERT INTO review_threads
+            (id, pull_request_id, is_resolved, is_outdated, original_line,
+             path, node_id, created_at, reply_count)
+            VALUES (1, 700, 0, 0, 1, 'f', 'A', 100, 0);
+         INSERT INTO review_comments
+            (id, review_thread_id, author_login, body, created_at)
+            VALUES (1, 1, 'bob', 'h1', 100);
+         INSERT INTO issue_comments
+            (id, pull_request_id, author_login, body, created_at)
+            VALUES (2, 700, 'bob', 'i1', 110);
+         INSERT INTO reviews
+            (id, pull_request_id, reviewer_login, state, submitted_at, body, node_id)
+            VALUES (3, 700, 'bob', 'COMMENTED', 200, 'r1', 'REV_X');",
+    )
+    .unwrap();
+    let stats = query::get_conversation_stats(&conn, 700).unwrap();
+    assert_eq!(stats.participants, 1, "bob counts once across all surfaces");
+}
+
+#[test]
+fn stats_participants_excludes_pending_reviewers() {
+    // Pending reviews aren't surfaced to anyone else yet, so the reviewer
+    // doesn't count as a participant on their pending review alone.
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref)
+            VALUES (701, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
+         INSERT INTO reviews
+            (id, pull_request_id, reviewer_login, state, submitted_at, body, node_id)
+            VALUES (1, 701, 'alice', 'PENDING', NULL, NULL, 'REV_P');",
+    )
+    .unwrap();
+    let stats = query::get_conversation_stats(&conn, 701).unwrap();
+    assert_eq!(stats.participants, 0);
+}
+
+#[test]
+fn stats_reviews_summary_buckets_by_submitted_state() {
+    // Fixture reviews: APPROVED bob, CHANGES_REQUESTED carol, COMMENTED dave,
+    // COMMENTED eve. Pending rows aren't in the fixture; total is the sum
+    // of the four submitted-state buckets.
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    let summary = &stats.reviews_summary;
+    assert_eq!(summary.approved, 1);
+    assert_eq!(summary.changes_requested, 1);
+    assert_eq!(summary.commented, 2);
+    assert_eq!(summary.dismissed, 0);
+    assert_eq!(summary.total, 4);
+}
+
+#[test]
+fn stats_reviews_summary_excludes_pending() {
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref)
+            VALUES (800, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
+         INSERT INTO reviews
+            (id, pull_request_id, reviewer_login, state, submitted_at, body, node_id) VALUES
+            (1, 800, 'bob',   'APPROVED', 100, 'lgtm', 'R_A'),
+            (2, 800, 'carol', 'PENDING',  NULL, NULL,  'R_P'),
+            (3, 800, 'dave',  'DISMISSED', 200, NULL,  'R_D');",
+    )
+    .unwrap();
+    let stats = query::get_conversation_stats(&conn, 800).unwrap();
+    let summary = &stats.reviews_summary;
+    assert_eq!(summary.approved, 1);
+    assert_eq!(summary.dismissed, 1);
+    assert_eq!(summary.total, 2, "pending review excluded from total");
+}
+
+#[test]
+fn stats_last_activity_picks_max_across_comments_issues_reviews() {
+    // Fixture: review_comments max ts = 2500 (thread 1003 head from carol),
+    // issue_comments has none, reviews max submitted_at = 2300 (eve).
+    // Last activity = 2500.
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    assert_eq!(stats.last_activity_at, Some(2500));
+}
+
+#[test]
+fn stats_last_activity_uses_issue_comments_when_newest() {
+    let db = fresh_db();
+    seed_fixture(&db);
+    // Insert an issue comment newer than every fixture timestamp; the stat
+    // should track it.
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at)
+              VALUES (900001, 100, 'frank', 'late', 4000)",
+            [],
+        )
+        .unwrap();
+    let conn = db.lock().unwrap();
+    let stats = query::get_conversation_stats(&conn, PR_ID).unwrap();
+    assert_eq!(stats.last_activity_at, Some(4000));
+}
+
+#[test]
+fn stats_last_activity_none_when_no_activity() {
+    let db = fresh_db();
+    let conn = db.lock().unwrap();
+    conn.execute_batch(
+        "INSERT INTO accounts (id, label, host, login, created_at)
+            VALUES (1, 'a', 'github.com', 'me', 0);
+         INSERT INTO repos (id, account_id, owner, name, visibility)
+            VALUES (10, 1, 'a', 'r', 'public');
+         INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref)
+            VALUES (900, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');",
+    )
+    .unwrap();
+    let stats = query::get_conversation_stats(&conn, 900).unwrap();
+    assert_eq!(stats.last_activity_at, None);
 }
 
 #[test]

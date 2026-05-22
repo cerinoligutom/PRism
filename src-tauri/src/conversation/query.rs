@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, Row};
 
 use crate::conversation::types::{
     CommentBreakdown, ConversationStats, IssueComment, PullRequestReview, PullRequestThread,
-    ThreadComment, ThreadHeadComment, ThreadState, TimelineEventRecord,
+    ReviewsSummary, ThreadComment, ThreadHeadComment, ThreadState, TimelineEventRecord,
 };
 
 /// List per-thread state for a PR, joined to the head-comment snapshot. The
@@ -165,8 +165,8 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     })
 }
 
-/// Compute the four-tile conversation stats for a PR. All math runs at read
-/// time; the worker doesn't pre-aggregate these.
+/// Compute the conversation stats card for a PR. All math runs at read time;
+/// the worker doesn't pre-aggregate these.
 pub fn get_conversation_stats(
     conn: &Connection,
     pull_request_id: i64,
@@ -177,6 +177,9 @@ pub fn get_conversation_stats(
     let avg_response_seconds = avg_time_to_response(conn, pull_request_id)?;
     let resolution_rate = compute_resolution_rate(counts.resolved, counts.total);
     let breakdown = comment_breakdown(conn, pull_request_id)?;
+    let participants = participant_count(conn, pull_request_id)?;
+    let reviews_summary = reviews_summary(conn, pull_request_id)?;
+    let last_activity_at = last_activity(conn, pull_request_id)?;
 
     Ok(ConversationStats {
         threads_total: counts.total,
@@ -191,6 +194,9 @@ pub fn get_conversation_stats(
         avg_response_seconds,
         resolution_rate,
         comment_breakdown: breakdown,
+        participants,
+        reviews_summary,
+        last_activity_at,
     })
 }
 
@@ -379,6 +385,89 @@ fn compute_resolution_rate(resolved: i64, total: i64) -> f64 {
     } else {
         (resolved as f64) / (total as f64)
     }
+}
+
+/// Distinct authors across review comments, issue comments, and submitted
+/// reviews. The union runs on `author_login` (and `reviews.reviewer_login`)
+/// so a participant who commented in two surfaces still counts once. Authors
+/// with `pending` reviews are excluded because the review isn't visible to
+/// reviewers until it's submitted.
+fn participant_count(conn: &Connection, pull_request_id: i64) -> Result<i64, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT c.author_login AS login
+               FROM review_comments c
+               JOIN review_threads t ON t.id = c.review_thread_id
+              WHERE t.pull_request_id = ?1
+             UNION
+             SELECT ic.author_login AS login
+               FROM issue_comments ic
+              WHERE ic.pull_request_id = ?1
+             UNION
+             SELECT r.reviewer_login AS login
+               FROM reviews r
+              WHERE r.pull_request_id = ?1
+                AND r.state <> 'PENDING'
+         )",
+        params![pull_request_id],
+        |row| row.get(0),
+    )
+}
+
+/// Per-state count of submitted reviews. Pending reviews are excluded; the
+/// surface only summarises reviews the author has submitted. State values
+/// match the GraphQL `PullRequestReviewState` enum verbatim.
+fn reviews_summary(
+    conn: &Connection,
+    pull_request_id: i64,
+) -> Result<ReviewsSummary, rusqlite::Error> {
+    conn.query_row(
+        "SELECT
+             SUM(CASE WHEN state = 'APPROVED' THEN 1 ELSE 0 END),
+             SUM(CASE WHEN state = 'CHANGES_REQUESTED' THEN 1 ELSE 0 END),
+             SUM(CASE WHEN state = 'COMMENTED' THEN 1 ELSE 0 END),
+             SUM(CASE WHEN state = 'DISMISSED' THEN 1 ELSE 0 END),
+             SUM(CASE WHEN state <> 'PENDING' THEN 1 ELSE 0 END)
+           FROM reviews
+          WHERE pull_request_id = ?1",
+        params![pull_request_id],
+        |row| {
+            Ok(ReviewsSummary {
+                approved: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                changes_requested: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                commented: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                dismissed: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                total: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            })
+        },
+    )
+}
+
+/// Most recent activity timestamp on the PR's conversation: the max of any
+/// review comment, issue comment, or submitted-review timestamp. `None` when
+/// none of those tables have a row for the PR. The conversation stats card
+/// renders this relative ("3h ago"). Push / merge / close events live in
+/// `timeline_events` and aren't included here — the stat is conversational
+/// activity, not state changes.
+fn last_activity(conn: &Connection, pull_request_id: i64) -> Result<Option<i64>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT MAX(ts) FROM (
+             SELECT MAX(c.created_at) AS ts
+               FROM review_comments c
+               JOIN review_threads t ON t.id = c.review_thread_id
+              WHERE t.pull_request_id = ?1
+             UNION ALL
+             SELECT MAX(ic.created_at) AS ts
+               FROM issue_comments ic
+              WHERE ic.pull_request_id = ?1
+             UNION ALL
+             SELECT MAX(r.submitted_at) AS ts
+               FROM reviews r
+              WHERE r.pull_request_id = ?1
+         )",
+        params![pull_request_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
 }
 
 /// Every thread comment for a PR, ordered by `created_at`. Returned alongside
