@@ -138,6 +138,12 @@ const budgetLabel = computed<string | null>(() => {
   const limit = sync.rateLimit;
   return limit === null ? `API budget · ${used}%` : `API budget · ${used}% / ${limit}/hr`;
 });
+
+/**
+ * Refresh hint glyph. Matches the binding installed by `useKeyboardShortcuts`:
+ * Cmd on macOS, Ctrl elsewhere. Mirrors the pattern in `DashboardSearch.vue`.
+ */
+const refreshGlyph = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 </script>
 
 <template>
@@ -169,9 +175,9 @@ const budgetLabel = computed<string | null>(() => {
       {{ budgetLabel }}
     </span>
     <span class="status-bar__spacer" />
-    <!-- Hidden until polish stage wires real keyboard shortcuts. See #134. -->
+    <!-- Cmd+K Search and Cmd+, Settings hints land with their M7 bindings. -->
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span> -->
-    <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>R</kbd> Refresh</span> -->
+    <span class="status-bar__item status-bar__item--hint"><kbd>{{ refreshGlyph }}</kbd><kbd>R</kbd> Refresh</span>
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span> -->
 
     <Teleport to="body">
