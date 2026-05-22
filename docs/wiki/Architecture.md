@@ -61,9 +61,9 @@ Each view supports grouping (org, repo, org→repo nested, or flat), sorting (ne
 
 Any PR the user touches (author, assignee, reviewer, commenter, mentionee, reactor, subscriber) is automatically tracked and appears in the "Watching / participated" view (PRD §5.5).
 
-- 30-day inactivity TTL: closed/merged PRs auto-archive after 30 days inactive.
+- 30-day inactivity TTL: closed/merged PRs auto-archive after 30 days inactive (`pull_requests.updated_at` as the clock).
 - Open PRs go stale visually after 30 days but stay visible behind a "Stale" filter chip.
-- Closed/merged retention is 14 days by default (configurable) before archive.
+- Archive is reversible (Unarchive from the Archive view); manual archive is also available from the PR row overflow menu. See ADR 0018.
 
 ## Notifications
 

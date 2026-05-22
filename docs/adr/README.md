@@ -25,6 +25,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0015](0015-triage-state-model.md) | Triage state model: per-account read-state, mention detection, and "needs my attention" composite | Accepted | [#144](https://github.com/cerinoligutom/PRism/issues/144) |
 | [0016](0016-unified-multi-account-dashboard.md) | Unified multi-account dashboard: dedupe-and-merge, query-time threads rollup, per-account failure isolation | Accepted | [#163](https://github.com/cerinoligutom/PRism/issues/163) |
 | [0017](0017-desktop-notifications.md) | Desktop notifications: triggers, app-wide preferences, macOS-only dock badge, deferred permission prompt | Accepted | [#188](https://github.com/cerinoligutom/PRism/issues/188) |
+| [0018](0018-archive-and-ttl.md) | Archive bucket: per-(account, PR) `archived_at`, 30-day inactivity TTL, manual + auto, reversible | Accepted | [#189](https://github.com/cerinoligutom/PRism/issues/189) |
 
 ## Statuses
 
