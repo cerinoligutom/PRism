@@ -54,14 +54,15 @@ const accountMarkersById = computed<ReadonlyMap<number, AccountMarker>>(() => {
 });
 
 /**
- * True when the dashboard scope is one specific account. In that mode rows
- * suppress the account marker entirely - the picker already names the scope,
- * so a marker per row would be redundant noise. Unified scope renders the
- * marker on every row (full stack for multi-account PRs, single muted dot
- * for single-relation PRs).
+ * True when there's no meaningful multi-account context to communicate -
+ * either the dashboard is scoped to one specific account (the picker
+ * already names the scope) or fewer than two accounts are connected
+ * (the marker can't tell the user anything they don't already know).
+ * In both cases the row marker is suppressed as redundant noise. Unified
+ * scope with 2+ accounts renders the marker per ADR 0016.
  */
 const isSingleAccountScope = computed<boolean>(
-  () => dashboard.accountFilter !== null,
+  () => dashboard.accountFilter !== null || accounts.accounts.length < 2,
 );
 
 // Counter semantics per the contract: the first segment reflects the
