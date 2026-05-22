@@ -334,26 +334,6 @@ function onMarkUnread(): void {
           :review-decision="pullRequest.review_decision"
           :is-draft="pullRequest.is_draft"
         />
-        <PRismTooltip
-          v-if="showAccountMarker"
-          :text="accountTooltipText"
-          :as-child="true"
-        >
-          <span
-            :class="[
-              'pr-row__accounts',
-              isSingleRelation && 'pr-row__accounts--single',
-            ]"
-            :aria-label="accountTooltipText"
-          >
-            <PRismAvatarStack
-              :users="accountStackUsers"
-              :max="2"
-              size="sm"
-              layout="overlap"
-            />
-          </span>
-        </PRismTooltip>
       </div>
       <div class="pr-row__meta-row">
         <PRismTooltip
@@ -402,6 +382,49 @@ function onMarkUnread(): void {
           </span>
         </template>
       </div>
+    </div>
+
+    <div class="pr-row__accounts-col">
+      <PRismTooltip v-if="showAccountMarker" :as-child="true">
+        <span
+          :class="[
+            'pr-row__accounts',
+            isSingleRelation && 'pr-row__accounts--single',
+          ]"
+          :aria-label="accountTooltipText"
+        >
+          <PRismAvatarStack
+            :users="accountStackUsers"
+            :max="3"
+            size="sm"
+            layout="overlap"
+          />
+        </span>
+        <template #content>
+          <div class="pr-row__accounts-tooltip">
+            <div class="pr-row__accounts-tooltip-header">
+              Visible from
+            </div>
+            <ul class="pr-row__accounts-tooltip-list">
+              <li
+                v-for="account in accountMarkers"
+                :key="account.id"
+                class="pr-row__accounts-tooltip-row"
+              >
+                <PRismAvatar
+                  :login="account.login"
+                  :avatar-url="account.avatar_url"
+                  size="sm"
+                  :title="null"
+                />
+                <span class="pr-row__accounts-tooltip-label">
+                  {{ account.label || account.login }}
+                </span>
+              </li>
+            </ul>
+          </div>
+        </template>
+      </PRismTooltip>
     </div>
 
     <div class="pr-row__threads">
@@ -495,7 +518,7 @@ function onMarkUnread(): void {
   /* Columns: [dot] [state icon + edge] [#num] [title] [threads] [reviewers] */
   /* [ci] [time] [github] [kebab] */
   display: grid;
-  grid-template-columns: 10px 22px 54px 1fr 144px 180px 80px 80px 24px 28px;
+  grid-template-columns: 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 28px;
   align-items: center;
   gap: 14px;
   padding: 0 var(--s-6) 0 var(--s-3);
@@ -625,13 +648,22 @@ function onMarkUnread(): void {
   flex: 0 1 auto;
 }
 
-/* Account marker. Sits at the right of the title row when the dashboard is
- * in unified scope, hinting at which account(s) saw the PR. Pushed to the
- * trailing edge via `auto` margin so it stays clear of the title ellipsis.
- * Single-relation rows render at reduced opacity so the marker reads as a
- * scope hint without competing with the title or the reviewer stack. */
+/* Account marker. Sits in its own grid column right before the threads bar
+ * in unified scope, hinting at which account(s) saw the PR. Right-aligned
+ * within the column with a small gutter so the marker's right edge meets
+ * the threads bar's left edge consistently across every row, regardless of
+ * title length or density. Single-relation rows render at reduced opacity
+ * so the marker reads as a scope hint without competing with the title or
+ * the reviewer stack. */
+.pr-row__accounts-col {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  padding-right: var(--s-2);
+}
+
 .pr-row__accounts {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -643,6 +675,44 @@ function onMarkUnread(): void {
 
 .pr-row:hover .pr-row__accounts--single {
   opacity: 0.8;
+}
+
+.pr-row__accounts-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 240px;
+}
+
+.pr-row__accounts-tooltip-header {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pr-row__accounts-tooltip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pr-row__accounts-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--text);
+}
+
+.pr-row__accounts-tooltip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Unread rows lean on the title weight as the primary signal; the left-edge
