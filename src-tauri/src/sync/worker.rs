@@ -610,6 +610,13 @@ pub async fn run_one_cycle(
             account.id,
             cycle_start,
         );
+        // Run the auto-archive sweep even on the empty-repos path: the
+        // predicate reads global `pull_requests.state` + `updated_at`, so
+        // another account's cycle may have refreshed the state of PRs
+        // whose relations also live under this empty-repo account. Skipping
+        // the sweep here would leave a single-account-no-repos viewer with
+        // stale archive coverage.
+        run_auto_archive_sweep(&ctx.db);
         let finished_at = SystemTime::now();
         finish_completed(ctx, account, client, finished_at);
         emit_activity_cycle_completed(ctx, account, 0, "no repos tracked");
@@ -697,6 +704,16 @@ pub async fn run_one_cycle(
         format!("removed {pruned} stale relation(s)"),
     );
 
+    // Auto-archive sweep (ADR 0018). The predicate is account-agnostic - it
+    // reads `pull_requests.state` and `updated_at`, which every cycle writes
+    // to from its own per-account perspective. Running once per cycle (even
+    // when N accounts are tracked, that's N runs per global cycle) is fine
+    // because the `archived_at IS NULL` predicate makes the sweep idempotent:
+    // the second account's cycle skips rows the first account's cycle
+    // already archived. A failed sweep is logged and the cycle still
+    // completes; the next cycle retries.
+    run_auto_archive_sweep(&ctx.db);
+
     let finished_at = SystemTime::now();
     finish_completed(ctx, account, client, finished_at);
     emit_activity_cycle_completed(
@@ -706,6 +723,40 @@ pub async fn run_one_cycle(
         format!("synced {enriched} pull request(s)"),
     );
     finalise_with_budget(report, client, pre_used, pre_remaining)
+}
+
+/// Wrap [`crate::triage::query::auto_archive_sweep`] in a transaction and
+/// log the affected row count at INFO level (the project's `eprintln!` is
+/// the current logging convention; structured `tracing` is on the M7
+/// polish list). A failure inside the sweep is logged and swallowed: the
+/// archive sweep is cosmetic and the next cycle retries.
+fn run_auto_archive_sweep(db: &DbHandle) {
+    let mut conn = match db.lock() {
+        Ok(g) => g,
+        Err(err) => {
+            eprintln!("auto-archive sweep: db poisoned: {err}");
+            return;
+        }
+    };
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            eprintln!("auto-archive sweep: begin tx: {err}");
+            return;
+        }
+    };
+    let archived = match crate::triage::query::auto_archive_sweep(&tx) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("auto-archive sweep: update: {err}");
+            return;
+        }
+    };
+    if let Err(err) = tx.commit() {
+        eprintln!("auto-archive sweep: commit: {err}");
+        return;
+    }
+    eprintln!("auto-archive sweep complete: archived={archived}");
 }
 
 fn count_prs_across_repos(db: &DbHandle, repos: &[RepoRow]) -> u32 {
