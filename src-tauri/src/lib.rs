@@ -9,6 +9,7 @@
 //! - `repos`: repo discovery + Team-tracked opt-in (M2-D)
 //! - `conversation`: per-thread state, conversation stats, lazy hydrator (M3)
 //! - `triage`: per-account read-state, mention counters, "needs my attention" (M4)
+//! - `settings`: app-wide settings singleton (notification prefs, M6 foundation)
 
 pub mod auth;
 pub mod conversation;
@@ -16,6 +17,7 @@ pub mod dashboard;
 pub mod db;
 pub mod github;
 pub mod repos;
+pub mod settings;
 pub mod sync;
 pub mod triage;
 
