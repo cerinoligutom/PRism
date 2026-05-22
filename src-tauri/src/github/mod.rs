@@ -22,7 +22,7 @@ pub use auth::{AccountHandle, AccountId, AuthError, StaticTokenSource, TokenSour
 pub use client::{Conditional, GitHubClient, GitHubClientBuilder};
 pub use error::{GitHubError, GraphqlError};
 pub use etag::{graphql_key, rest_key, EtagEntry, EtagStore, InMemoryEtagStore};
-pub use rate_limit::{RateBudget, RateSnapshot};
+pub use rate_limit::{RateBudget, RateResource, RateSnapshot, ResourceSnapshot};
 pub use rest::{
     list_pr_timeline, list_user_repos, ListRepos, ListTimeline, RepoCoord, RepoNode, RepoOwner,
     MAX_REPOS_PER_REFRESH,
