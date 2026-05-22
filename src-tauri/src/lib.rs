@@ -25,13 +25,45 @@ pub mod triage;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager, WindowEvent};
+
+const NOTIFICATION_OPEN_PR_EVENT: &str = "notification://open-pr";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .on_window_event(|window, event| {
+            // Toast clicks activate the originating app on every desktop OS,
+            // which surfaces as `WindowEvent::Focused(true)` on the main
+            // window. The notification sink enqueued a payload before each
+            // toast fired; drain the queue and replay each as
+            // `notification://open-pr` so the frontend's
+            // `useNotificationRouter` composable can deep-link. The TTL
+            // inside `PendingPayloadQueue::drain_fresh` bounds the false
+            // positive when the user focuses the app for an unrelated
+            // reason (dock click, alt-tab) past the TTL.
+            //
+            // The desktop `tauri-plugin-notification` v2.3.3 surface ships
+            // no per-notification action callback and no global click hook
+            // (issue #201 - see `notify::pending` for the constraint
+            // narrative); this focus-driven replay is the contract-faithful
+            // path that keeps the frontend listener unchanged.
+            let WindowEvent::Focused(true) = event else {
+                return;
+            };
+            if window.label() != "main" {
+                return;
+            }
+            let app = window.app_handle();
+            let queue = app.state::<notify::PendingPayloadQueueHandle>();
+            for payload in queue.drain_fresh() {
+                if let Err(err) = app.emit(NOTIFICATION_OPEN_PR_EVENT, &payload) {
+                    eprintln!("notify: emit {NOTIFICATION_OPEN_PR_EVENT} failed: {err}");
+                }
+            }
+        })
         .setup(|app| {
             let db_handle = db::init(app.handle())?;
             app.manage(db_handle.clone());
@@ -65,11 +97,19 @@ pub fn run() {
             // worker + triage commands share the same `Arc`.
             let permission_asker =
                 Arc::new(notify::PluginPermissionAsker::new(app.handle().clone()));
+            // Shared pending-payload queue (issue #201): sink enqueues on
+            // each dispatched toast, the `on_window_event` hook above drains
+            // it on the next main-window focus event and emits
+            // `notification://open-pr` for each entry.
+            let pending_queue: notify::PendingPayloadQueueHandle =
+                notify::PendingPayloadQueue::new();
+            app.manage(pending_queue.clone());
             let notify_sink: notify::NotificationSinkHandle =
                 Arc::new(notify::TauriNotificationSink::new(
                     app.handle().clone(),
                     db_handle.clone(),
                     permission_asker,
+                    pending_queue.clone(),
                 ));
             app.manage(notify_sink.clone());
 
@@ -107,6 +147,7 @@ pub fn run() {
             conversation::commands::get_pr_conversation_stats,
             conversation::commands::list_pr_threads,
             conversation::commands::list_pr_timeline_events,
+            dashboard::commands::get_pr_route_metadata,
             dashboard::commands::list_dashboard_pull_requests,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,

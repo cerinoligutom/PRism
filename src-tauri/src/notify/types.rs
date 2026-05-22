@@ -64,7 +64,9 @@ pub struct NotificationTrigger {
 ///
 /// `payload` is forwarded to the frontend when the user clicks the toast
 /// (issue #201). Conventionally `{ account_id, pull_request_id }` so the
-/// router can push onto the PR detail surface; the sink doesn't inspect it.
+/// router can push onto the PR detail surface; the sink enqueues it onto
+/// [`super::pending::PendingPayloadQueue`] before firing the toast and
+/// doesn't otherwise inspect it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     pub title: String,
