@@ -10,12 +10,14 @@
 //! - `conversation`: per-thread state, conversation stats, lazy hydrator (M3)
 //! - `triage`: per-account read-state, mention counters, "needs my attention" (M4)
 //! - `settings`: app-wide settings singleton (notification prefs, M6 foundation)
+//! - `notify`: OS notification dispatch sink (M6 plumbing; ADR 0017)
 
 pub mod auth;
 pub mod conversation;
 pub mod dashboard;
 pub mod db;
 pub mod github;
+pub mod notify;
 pub mod repos;
 pub mod settings;
 pub mod sync;
@@ -29,6 +31,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let db_handle = db::init(app.handle())?;
             app.manage(db_handle.clone());
@@ -90,6 +93,8 @@ pub fn run() {
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_team_tracked,
+            settings::commands::get_app_settings,
+            settings::commands::update_app_settings,
             sync::commands::get_sync_status,
             sync::commands::list_recent_activity,
             sync::commands::refresh_now,

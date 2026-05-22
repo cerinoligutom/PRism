@@ -10,6 +10,7 @@
 //! The Tauri commands (`get_app_settings` / `update_app_settings`) and the
 //! `NotificationSink` plumbing land in the follow-up issues (#191, #192).
 
+pub mod commands;
 pub mod types;
 
 pub use types::{AppSettings, NotificationPermissionState};
