@@ -62,6 +62,12 @@ export interface PullRequestThread {
    * `pull_request_viewer_relations.read_at` watermark — see issue #158.
    * Always `false` when no account is in scope (anonymous read). */
   readonly unread: boolean;
+  /** Unified-diff hunk GitHub attaches to every inline review comment in the
+   * thread. Persisted once per thread by the lazy hydrator; rendered as the
+   * file-context block above each thread card. `null` until the hydrator has
+   * run for the PR (legacy rows + PRs whose drawer has never been opened).
+   * See issue #162. */
+  readonly diff_hunk: string | null;
 }
 
 export interface CommentBreakdown {

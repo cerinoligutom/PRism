@@ -231,6 +231,16 @@ ALTER TABLE review_threads ADD COLUMN url TEXT;
 
 The worker writes the URL from `reviewThreads.nodes.url` in `PR_DETAIL_QUERY`. Rows written before this migration carry NULL and the frontend hides the "Open in GitHub" button for them - the next sync cycle backfills the URL.
 
+**Extended by `0014_diff_hunk.sql` (issue #162).** Adds a single `diff_hunk TEXT` column to `review_threads` to carry the unified-diff hunk GitHub attaches to every inline review comment:
+
+```sql
+-- src-tauri/migrations/0014_diff_hunk.sql
+
+ALTER TABLE review_threads ADD COLUMN diff_hunk TEXT;
+```
+
+The hunk lives at the comment level on GitHub but every comment in a thread shares the same value (it's the code context the thread is about). The conversation hydrator extends `PR_COMMENTS_QUERY` to select `diffHunk` and writes it once per thread on the head-comment write path; subsequent per-comment upserts skip it. Rows written before the first lazy hydration carry NULL and the frontend hides the diff-hunk block - opening the drawer / route persists the value. The hydrator's UPDATE uses `COALESCE(?, diff_hunk)` so a paginated re-fetch that omits the field can't blank an existing value.
+
 ### Rationale for the schema choices
 
 - **`node_id TEXT` as the upsert key.** GitHub's GraphQL `ReviewThread` exposes only the global node ID (a string); there's no `databaseId`. Keeping the existing `INTEGER PRIMARY KEY` for cheap foreign keys and adding `node_id TEXT UNIQUE` for upserts is cleaner than rewriting the PK. The same pattern extends to `review_comments`, `issue_comments`, and `reviews` for consistency.

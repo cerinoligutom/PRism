@@ -78,7 +78,8 @@ pub fn list_pr_threads(
                               0)
                      > COALESCE(rel.read_at, 0) THEN 1
                 ELSE 0
-            END AS unread
+            END AS unread,
+            t.diff_hunk
         FROM review_threads t
         LEFT JOIN users u ON u.login = t.head_comment_author_login
         LEFT JOIN pull_request_viewer_relations rel
@@ -116,6 +117,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
     let is_involved: i64 = row.get(17)?;
     let url: Option<String> = row.get(18)?;
     let unread: i64 = row.get(19)?;
+    let diff_hunk: Option<String> = row.get(20)?;
 
     // The thread's `url` and the head comment's `url` are the same value
     // (the worker derives `review_threads.url` from the head comment per
@@ -159,6 +161,7 @@ fn project_thread_row(row: &Row<'_>) -> Result<PullRequestThread, rusqlite::Erro
         is_outdated: is_outdated != 0,
         url,
         unread: unread != 0,
+        diff_hunk,
     })
 }
 

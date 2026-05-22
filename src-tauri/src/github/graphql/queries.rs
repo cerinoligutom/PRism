@@ -177,6 +177,7 @@ query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: 
               path
               line
               originalLine
+              diffHunk
             }
           }
         }
@@ -546,6 +547,14 @@ pub struct ReviewCommentNode {
     pub original_line: Option<i64>,
     #[serde(default)]
     pub side: Option<String>,
+    /// Unified-diff hunk GitHub attaches to every inline review comment.
+    /// All comments in a thread share the same value (it's the code
+    /// context the thread is about), so the conversation hydrator persists
+    /// it once per thread on the head-comment write path. `None` for legacy
+    /// fixtures and for queries that don't request `diffHunk`. See issue
+    /// #162.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1091,12 +1100,43 @@ mod tests {
             // Comment-level permalinks for both review and issue comments
             // (issue #115).
             "url",
+            // Unified-diff hunk for the file-context block above each
+            // thread card (issue #162).
+            "diffHunk",
         ] {
             assert!(
                 PR_COMMENTS_QUERY.contains(field),
                 "pr comments query missing field: {field}"
             );
         }
+    }
+
+    #[test]
+    fn review_comment_node_deserialises_with_diff_hunk() {
+        let json = serde_json::json!({
+            "id": "PRRC_1",
+            "databaseId": 4242,
+            "author": { "login": "alice" },
+            "body": "nit: wrap this",
+            "bodyText": "nit: wrap this",
+            "createdAt": "2026-05-19T10:00:00Z",
+            "diffHunk": "@@ -1,3 +1,4 @@\n fn main() {\n-    println!(\"hi\");\n+    println!(\"hello\");\n+    println!(\"world\");"
+        });
+        let comment: ReviewCommentNode = serde_json::from_value(json).unwrap();
+        assert!(comment.diff_hunk.as_deref().unwrap().contains("@@"));
+        assert!(comment.diff_hunk.as_deref().unwrap().contains("println!"));
+    }
+
+    #[test]
+    fn review_comment_node_deserialises_with_missing_diff_hunk_as_none() {
+        let json = serde_json::json!({
+            "id": "PRRC_legacy",
+            "body": "plain",
+            "bodyText": "plain",
+            "createdAt": "2026-05-19T10:00:00Z"
+        });
+        let comment: ReviewCommentNode = serde_json::from_value(json).unwrap();
+        assert!(comment.diff_hunk.is_none());
     }
 
     #[test]

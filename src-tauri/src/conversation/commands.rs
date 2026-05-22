@@ -393,6 +393,17 @@ fn persist_payload(
             // headers). Skip its comments rather than orphan-insert.
             continue;
         };
+        // Persist `diff_hunk` once per thread from the head comment, before
+        // the per-comment upserts. Every comment in a thread shares the same
+        // hunk (it's the code context the thread is about), so writing it
+        // once on `review_threads` rather than per-row on `review_comments`
+        // keeps the hot path cheap. `COALESCE(?, ...)` is no-op when the
+        // payload omits the field, preserving any previously-persisted
+        // value (issue #162).
+        if let Some(head) = thread.comments.nodes.first() {
+            update_thread_diff_hunk(&tx, thread_id, head.diff_hunk.as_deref())
+                .map_err(|e| internal(&format!("update diff hunk: {e}")))?;
+        }
         for comment in &thread.comments.nodes {
             upsert_review_comment(&tx, thread_id, comment)
                 .map_err(|e| internal(&format!("upsert review comment: {e}")))?;
@@ -419,6 +430,25 @@ fn resolve_thread_id(
         |row| row.get::<_, i64>(0),
     )
     .optional()
+}
+
+/// Update `review_threads.diff_hunk` for the given thread. The
+/// `COALESCE(?1, review_threads.diff_hunk)` form preserves any value
+/// already on the row when the payload omits the field, so a paginated
+/// re-fetch that drops `diffHunk` (or a legacy fixture that never carried
+/// it) can't blank an existing hunk.
+fn update_thread_diff_hunk(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: i64,
+    diff_hunk: Option<&str>,
+) -> Result<(), rusqlite::Error> {
+    tx.execute(
+        "UPDATE review_threads
+            SET diff_hunk = COALESCE(?1, diff_hunk)
+          WHERE id = ?2",
+        params![diff_hunk, thread_id],
+    )?;
+    Ok(())
 }
 
 fn upsert_review_comment(
@@ -678,6 +708,7 @@ mod tests {
             line: None,
             original_line: None,
             side: None,
+            diff_hunk: None,
         }
     }
 

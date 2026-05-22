@@ -20,7 +20,8 @@
                     "createdAt": "2026-05-19T10:00:00Z",
                     "path": "src/lib.rs",
                     "line": 42,
-                    "originalLine": 42
+                    "originalLine": 42,
+                    "diffHunk": "@@ -40,3 +40,4 @@ fn run() {\n     let cfg = load_cfg();\n-    let svc = Service::new();\n+    let svc = Service::new(cfg);\n+    svc.start();"
                   },
                   {
                     "id": "PRRC_r1",

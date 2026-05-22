@@ -271,6 +271,145 @@ async fn hydrator_repeated_call_writes_idempotently() {
 }
 
 #[tokio::test]
+async fn hydrator_persists_diff_hunk_on_thread_from_head_comment() {
+    // Issue #162: the hydrator writes `review_threads.diff_hunk` once per
+    // thread from the head comment's `diffHunk`. The fixture's head comment
+    // carries a unified-diff hunk; the projection through `list_pr_threads`
+    // surfaces it on the DTO so the frontend can render the file-context
+    // block above the thread card.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(PR_COMMENTS_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let db = fresh_db();
+    seed_pr_with_thread(&db);
+    let client = client_against(&server).await;
+
+    let hydrated = commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("hydrator");
+
+    let thread = hydrated
+        .threads
+        .iter()
+        .find(|t| t.id == 1000)
+        .expect("seeded thread");
+    let hunk = thread.diff_hunk.as_deref().expect("hunk persisted");
+    assert!(hunk.starts_with("@@"), "diff hunk header preserved");
+    assert!(
+        hunk.contains("Service::new(cfg)"),
+        "diff hunk body preserved"
+    );
+
+    // Idempotency: a second hydrator call must keep the hunk intact.
+    commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("second open");
+    let hydrated = commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("third open");
+    let thread = hydrated.threads.iter().find(|t| t.id == 1000).unwrap();
+    assert!(
+        thread
+            .diff_hunk
+            .as_deref()
+            .unwrap()
+            .contains("Service::new(cfg)"),
+        "hunk survives repeated hydration",
+    );
+}
+
+#[tokio::test]
+async fn hydrator_preserves_existing_diff_hunk_when_payload_omits_it() {
+    // A paginated re-fetch that drops the `diffHunk` field (legacy schema /
+    // a downstream payload that doesn't request it) must not blank a hunk
+    // already on the row. The `COALESCE(?, diff_hunk)` form in the update
+    // statement keeps the prior value.
+    let fixture = r#"
+    {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": [
+                            {
+                                "id": "PRRT_fix1",
+                                "comments": {
+                                    "pageInfo": { "hasNextPage": false, "endCursor": null },
+                                    "nodes": [
+                                        {
+                                            "id": "PRRC_no_hunk",
+                                            "databaseId": 99,
+                                            "author": { "login": "alice" },
+                                            "body": "follow-up",
+                                            "bodyText": "follow-up",
+                                            "createdAt": "2026-05-19T10:10:00Z"
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    "issueComments": {
+                        "pageInfo": { "hasNextPage": false, "endCursor": null },
+                        "nodes": []
+                    }
+                }
+            }
+        }
+    }
+    "#;
+    let db = fresh_db();
+    seed_pr_with_thread(&db);
+    // Pre-seed the diff_hunk on the thread (simulating a prior hydration
+    // that landed the hunk). The omitted-field fetch must leave it intact.
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE review_threads SET diff_hunk = '@@ -1 +1 @@\n-old\n+new'
+              WHERE id = 1000",
+            [],
+        )
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(fixture.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let client = client_against(&server).await;
+
+    commands_testing::fetch(&db, &client, 100, "owner", "repo", 42, 1)
+        .await
+        .expect("hydrator");
+
+    let kept: Option<String> = db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT diff_hunk FROM review_threads WHERE id = 1000",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        kept.as_deref(),
+        Some("@@ -1 +1 @@\n-old\n+new"),
+        "an omitted diffHunk must not blank a previously-persisted value",
+    );
+}
+
+#[tokio::test]
 async fn hydrator_skips_unknown_threads_without_aborting() {
     // The seed leaves thread node id 'PRRT_fix1' on the DB. Mock returns one
     // known thread + one unknown thread. The unknown one should be silently
