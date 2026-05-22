@@ -13,8 +13,8 @@ import type {
   DashboardPullRequest,
   RowDensity,
 } from "@/types/dashboard";
-import { secondsSince } from "@/lib/format";
 import { useToastStore } from "@/stores/toast";
+import { useNowSeconds } from "@/composables/useNowSeconds";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
@@ -91,6 +91,13 @@ type RowStrip =
 const STALE_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
 /**
+ * Shared reactive unix-seconds ref - one ticker across every row, broadcast
+ * at 60s. Reading from this inside computeds means the strip / stale label
+ * flip on clock progression alone, with no surrounding store change needed.
+ */
+const nowSeconds = useNowSeconds();
+
+/**
  * Left strip colour. Mirrors the priority order in the artboard:
  *   draft > changes-requested > stale (no activity 7d+) > needs-review (you)
  *     > approved > none.
@@ -103,7 +110,7 @@ const stripClass = computed<RowStrip>(() => {
   if (pr.is_draft) return "row-strip-draft";
   if (pr.review_decision === "CHANGES_REQUESTED") return "row-strip-changes";
 
-  const updatedSeconds = Math.floor(Date.now() / 1000) - pr.updated_at;
+  const updatedSeconds = nowSeconds.value - pr.updated_at;
   if (updatedSeconds > STALE_THRESHOLD_SECONDS) return "row-strip-stale";
 
   if (props.needsAttention) return "row-strip-needs";
@@ -152,10 +159,13 @@ const changedFiles = computed<number | null>(
   () => props.pullRequest.changed_files,
 );
 
-const sinceLabel = computed<string>(() => sinceLabelFor(props.pullRequest));
+const sinceLabel = computed<string>(() =>
+  sinceLabelFor(props.pullRequest, nowSeconds.value),
+);
 
 const isStale = computed<boolean>(
-  () => secondsSince(props.pullRequest.updated_at) > STALE_THRESHOLD_SECONDS,
+  () =>
+    nowSeconds.value - props.pullRequest.updated_at > STALE_THRESHOLD_SECONDS,
 );
 
 /**
@@ -200,10 +210,10 @@ function formatNumber(value: number): string {
   return value.toLocaleString("en-AU");
 }
 
-function sinceLabelFor(pr: DashboardPullRequest): string {
+function sinceLabelFor(pr: DashboardPullRequest, now: number): string {
   if (pr.is_draft) return "opened";
   if (pr.mergeable === "CONFLICTING") return "conflicts";
-  if (secondsSince(pr.updated_at) > STALE_THRESHOLD_SECONDS) return "stale";
+  if (now - pr.updated_at > STALE_THRESHOLD_SECONDS) return "stale";
   if (pr.ci?.state === "FAILURE" || pr.ci?.state === "ERROR")
     return "CI failed";
   if (pr.review_decision === "CHANGES_REQUESTED") return "changes";
