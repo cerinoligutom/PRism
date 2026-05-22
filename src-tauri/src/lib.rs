@@ -60,6 +60,19 @@ pub fn run() {
             let activity_buffer: sync::ActivityBuffer = sync::new_activity_buffer();
             app.manage(activity_buffer.clone());
 
+            // Notification sink (ADR 0017, issue #192). Production sink wraps
+            // `tauri-plugin-notification` via the `PluginPermissionAsker`; the
+            // worker + triage commands share the same `Arc`.
+            let permission_asker =
+                Arc::new(notify::PluginPermissionAsker::new(app.handle().clone()));
+            let notify_sink: notify::NotificationSinkHandle =
+                Arc::new(notify::TauriNotificationSink::new(
+                    app.handle().clone(),
+                    db_handle.clone(),
+                    permission_asker,
+                ));
+            app.manage(notify_sink.clone());
+
             let ctx = sync::WorkerContext {
                 db: db_handle.clone(),
                 accounts: account_store,
@@ -69,6 +82,7 @@ pub fn run() {
                 emit: Arc::new(sync::AppHandleEmitter::new(app.handle().clone())),
                 reauth: Arc::new(sync::AppHandleReauth::new(app.handle().clone())),
                 activity: activity_buffer,
+                notify_sink: notify_sink.clone(),
             };
             let worker = Arc::new(sync::spawn_worker(ctx));
             // Hook the worker into the auth commands so add/remove account

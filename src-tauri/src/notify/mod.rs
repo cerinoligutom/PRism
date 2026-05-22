@@ -16,12 +16,14 @@
 //! No trigger emitter, formatter, click-to-open routing, or dock badge
 //! ships here - those are tracked by issues #192, #195, #199, #201.
 
+pub mod formatter;
 pub mod runtime;
 pub mod sink;
 pub mod types;
 
+pub use formatter::format_trigger;
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};
-pub use sink::{NotificationSink, PermissionAsker};
+pub use sink::{NotificationSink, NotificationSinkHandle, PermissionAsker};
 pub use types::{Notification, NotificationKind, NotificationTrigger};
 
 #[cfg(test)]

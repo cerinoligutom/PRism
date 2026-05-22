@@ -154,12 +154,19 @@ fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Resu
             );
             continue;
         }
-        if let Err(e) = crate::triage::query::recompute_needs_attention(&tx, owner, pull_request_id)
-        {
-            eprintln!(
+        // Auto-mark triggers (ADR 0017 decision 1) are intentionally not
+        // dispatched from this code path. The drawer is currently open on
+        // the PR, so a toast for "needs your attention" would point at a
+        // surface the user is already viewing; the in-app badge already
+        // tracks the rare 0 -> 1 flip the mark-read recompute can produce
+        // (e.g. a fresh mention landed while the drawer was opening). A
+        // future ADR can revisit if user feedback flags missed signals.
+        match crate::triage::query::recompute_needs_attention(&tx, owner, pull_request_id, None) {
+            Ok(_triggers) => {}
+            Err(e) => eprintln!(
                 "auto-mark-on-open recompute failed (pr={pull_request_id}, \
                  account={owner}): {e}"
-            );
+            ),
         }
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;

@@ -18,6 +18,8 @@
 //! sink enforces against the `app_settings.notification_permission_state`
 //! column.
 
+use std::sync::Arc;
+
 use crate::notify::types::Notification;
 use crate::settings::NotificationPermissionState;
 
@@ -31,6 +33,12 @@ use crate::settings::NotificationPermissionState;
 pub trait NotificationSink: Send + Sync {
     fn dispatch(&self, notification: &Notification);
 }
+
+/// Shared handle to the production [`NotificationSink`]. Mounted via
+/// `tauri::Builder::manage` so the triage commands + conversation hydrator can
+/// dispatch triggers without going through the sync worker. The sync worker
+/// holds the same `Arc` on its [`crate::sync::WorkerContext`].
+pub type NotificationSinkHandle = Arc<dyn NotificationSink>;
 
 /// Minimal slice of the `tauri-plugin-notification` permission surface.
 ///
