@@ -1521,4 +1521,113 @@ mod tests {
             "threads rollup must scope by ?1; SQL: {sql}"
         );
     }
+
+    // ===== M7 perf: review_comments.author_login index (issue #231) =====
+
+    /// Seed enough review_comments rows that the planner can prefer an
+    /// index-driven path over a SCAN. With a tiny `review_comments` (a few
+    /// rows) SQLite picks SCAN as the cheaper option regardless of available
+    /// indexes; the production DB carries thousands of rows where the planner
+    /// flips to SEARCH. Padding the fixture to ~200 rows is enough to mirror
+    /// that shape so the test reflects the production plan, not the toy one.
+    fn seed_for_explain(conn: &mut Connection) {
+        crate::db::migrate::run(conn).unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'alice', 'github.com', 'alice', 0);
+            INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+                (10, 1, 'alice', 'web', 'public');
+            INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'x', 'open', 'alice', 0, 100, 'main', 'feat');
+            INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at) VALUES
+                (1, 100, 1, 0, 1, 0);
+            INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+                (1001, 100, 0, 0, 'RT_1');
+            "#,
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        // ~200 review_comments rows spread across distinct author_logins so
+        // the new index is selective enough for the planner to pick it.
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO review_comments
+                        (id, review_thread_id, author_login, body, created_at)
+                     VALUES (?1, 1001, ?2, 'body', ?3)",
+                )
+                .unwrap();
+            for i in 0..200i64 {
+                let login = format!("user_{i}");
+                stmt.execute(rusqlite::params![3000 + i, login, i]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+        conn.execute_batch("ANALYZE;").unwrap();
+    }
+
+    /// Issue #231 acceptance: with `idx_review_comments_author_login` in place
+    /// (migration 0015), the dashboard query's `thread_buckets` involvement
+    /// EXISTS clauses must SEARCH `review_comments` via the new index rather
+    /// than SCAN the table. SQLite's `EXPLAIN QUERY PLAN` emits a `detail`
+    /// column per loop whose text either starts with `SEARCH <name> USING
+    /// INDEX <idx>` (index-driven) or `SCAN <name>` (full table walk), where
+    /// `<name>` is the alias when one is set. The thread-buckets subquery
+    /// aliases `review_comments` as `c`, so the negative guard checks no plan
+    /// row equals `SCAN c` and the positive one checks at least one row
+    /// references `idx_review_comments_author_login`.
+    fn assert_review_comments_uses_author_index(conn: &Connection, sql: &str, params: &[i64]) {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut stmt = conn.prepare(&explain).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let full_plan = plan.join("\n");
+        for detail in &plan {
+            // `SCAN c` is the alias-driven full scan that the index must
+            // replace; `SCAN review_comments` is the fallback shape if the
+            // alias ever gets dropped. Either form fails the guard.
+            assert!(
+                detail.trim() != "SCAN c" && !detail.contains("SCAN review_comments"),
+                "dashboard query must not full-scan review_comments after \
+                 migration 0015; plan row: {detail}\nFull plan:\n{full_plan}",
+            );
+        }
+        assert!(
+            full_plan.contains("idx_review_comments_author_login"),
+            "expected at least one plan row to drive review_comments via \
+             idx_review_comments_author_login; full plan:\n{full_plan}",
+        );
+    }
+
+    #[test]
+    fn dashboard_query_does_not_scan_review_comments_under_single_account_scope() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        seed_for_explain(&mut conn);
+        let (sql, params) = view_query(
+            DashboardView::Watching,
+            DashboardSort::Updated,
+            Some(1),
+            &[],
+        );
+        assert_review_comments_uses_author_index(&conn, &sql, &params);
+    }
+
+    #[test]
+    fn dashboard_query_does_not_scan_review_comments_under_union_scope() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        seed_for_explain(&mut conn);
+        let (sql, params) = view_query(DashboardView::Watching, DashboardSort::Updated, None, &[]);
+        assert_review_comments_uses_author_index(&conn, &sql, &params);
+    }
 }

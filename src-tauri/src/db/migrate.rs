@@ -24,6 +24,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0012_archive_and_settings.sql"),
     include_str!("../../migrations/0013_rename_team_tracked.sql"),
     include_str!("../../migrations/0014_diff_hunk.sql"),
+    include_str!("../../migrations/0015_index_review_comments_author_login.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -153,6 +154,8 @@ mod tests {
             "idx_pr_viewer_relations_attention",
             // 0012 archive + settings.
             "idx_relations_archived_at",
+            // 0015 dashboard thread_buckets involvement (ADR 0016, issue #231).
+            "idx_review_comments_author_login",
         ];
         for name in expected {
             let count: i64 = conn
@@ -425,6 +428,67 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tracked, 1, "opt-in must survive the column rename");
+    }
+
+    /// Migration 0015 adds an index over `review_comments.author_login`. It
+    /// must apply cleanly on top of an existing post-M6 schema that already
+    /// holds review_comments rows (the same shape every installed binary
+    /// will see when it upgrades). Replays up through 0014, seeds two
+    /// comments, runs the migration to latest, and reads back via the new
+    /// index to prove both the CREATE INDEX and the underlying rows survive.
+    #[test]
+    fn index_review_comments_author_login_applies_against_post_m6_schema() {
+        // 0015 sits at zero-index 14 (NNNN numbers start at 0001), so
+        // `take(14)` lands every migration up through 0014.
+        const PRE_INDEX_PREFIX: usize = 14;
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_index = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(PRE_INDEX_PREFIX)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_index.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');
+             INSERT INTO review_threads (id, pull_request_id, is_resolved, node_id)
+                VALUES (1001, 100, 0, 'RT_1');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (2001, 1001, 'alice', 'a', 1),
+                       (2002, 1001, 'bob',   'b', 2);",
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_review_comments_author_login'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_exists, 1, "0015 must create the new index");
+
+        let alice_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_comments WHERE author_login = 'alice'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alice_count, 1, "existing rows must remain readable");
     }
 
     #[test]
