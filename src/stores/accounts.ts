@@ -52,6 +52,8 @@ type AuthCommandError =
       login: string;
       host: string;
     }
+  | { kind: "keychain_unavailable"; hint: string }
+  | { kind: "keychain_access_denied" }
   | { kind: "internal" };
 
 /**
@@ -75,6 +77,13 @@ function formatAuthError(raw: unknown): string {
         return `This token authenticates as ${err.actual_login}, but the account is ${err.expected_login}. To switch identity, remove the account and add it again.`;
       case "duplicate_account":
         return `An account for ${err.login} on ${err.host} is already connected (${err.existing_label}). Remove it before adding a new PAT for this user, or extend its scopes instead.`;
+      case "keychain_unavailable":
+        // Hint copy is OS-specific and assembled by the Rust keychain layer
+        // (`backend_unavailable_hint`); render it verbatim so the frontend
+        // doesn't need to know the host platform.
+        return `Couldn't reach the OS credential store. ${err.hint}`;
+      case "keychain_access_denied":
+        return "The OS credential store refused access. Approve the keychain prompt, or re-grant PRism access in your system settings.";
       case "internal":
         return "Something went wrong saving the account. Check the application logs.";
     }

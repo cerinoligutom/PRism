@@ -35,13 +35,11 @@ impl<B: KeychainBackend> KeychainTokenSource<B> {
     pub fn store(&self, account: &AccountHandle, token: &str) -> Result<(), AuthError> {
         self.backend
             .set(&account.id, token)
-            .map_err(|e| AuthError::Keychain(e.to_string()))
+            .map_err(AuthError::from)
     }
 
     pub fn remove(&self, account: &AccountHandle) -> Result<(), AuthError> {
-        self.backend
-            .delete(&account.id)
-            .map_err(|e| AuthError::Keychain(e.to_string()))
+        self.backend.delete(&account.id).map_err(AuthError::from)
     }
 }
 
@@ -56,7 +54,7 @@ impl<B: KeychainBackend> TokenSource for KeychainTokenSource<B> {
         match self.backend.get(&account.id) {
             Ok(Some(secret)) => Ok(secret),
             Ok(None) => Err(AuthError::Missing(account.id)),
-            Err(e) => Err(AuthError::Keychain(e.to_string())),
+            Err(e) => Err(AuthError::from(e)),
         }
     }
 }

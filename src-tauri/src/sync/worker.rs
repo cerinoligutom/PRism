@@ -4839,7 +4839,11 @@ mod tests {
 
     #[test]
     fn sync_repo_error_keeps_auth_keychain_on_generic_failure_path() {
-        let err = GitHubError::Auth(AuthError::Keychain("libsecret unavailable".into()));
+        let err = GitHubError::Auth(AuthError::Keychain(
+            crate::auth::keychain::KeychainError::BackendUnavailable {
+                hint: "libsecret unavailable".into(),
+            },
+        ));
         let mapped = SyncRepoError::from_err_for(err, RateResource::Core);
         assert!(matches!(mapped, SyncRepoError::Other(_)));
     }

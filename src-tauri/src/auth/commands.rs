@@ -98,6 +98,16 @@ pub enum AuthCommandError {
         login: String,
         host: String,
     },
+    /// The OS credential store backend isn't reachable (libsecret missing on
+    /// Linux, macOS keychain locked, Windows Credential Manager service
+    /// stopped). Carries a platform-specific hint string assembled by the
+    /// keychain layer so the renderer doesn't need to know the host OS.
+    #[error("keychain backend unavailable: {hint}")]
+    KeychainUnavailable { hint: String },
+    /// The keychain refused access (user denied the OS prompt, or the
+    /// application's keychain ACL has been revoked).
+    #[error("keychain access denied.")]
+    KeychainAccessDenied,
     #[error("an unexpected error occurred. Try again, or check the application logs.")]
     Internal,
 }
@@ -109,6 +119,29 @@ impl From<ValidationError> for AuthCommandError {
             ValidationError::Forbidden => AuthCommandError::Forbidden,
             ValidationError::Network { host, .. } => AuthCommandError::Network { host },
             ValidationError::Unexpected(_) => AuthCommandError::Internal,
+        }
+    }
+}
+
+/// Threads typed `KeychainError` arms through `AuthError::Keychain` onto the
+/// renderer-facing `AuthCommandError`. `Missing` and `Empty` collapse onto
+/// `Unauthorized` because the rendered copy ("token rejected; check it hasn't
+/// expired") matches the reauth path the user is already on.
+impl From<crate::github::auth::AuthError> for AuthCommandError {
+    fn from(value: crate::github::auth::AuthError) -> Self {
+        use crate::auth::keychain::KeychainError;
+        use crate::github::auth::AuthError;
+        match value {
+            AuthError::Missing(_) | AuthError::Empty(_) => AuthCommandError::Unauthorized,
+            AuthError::Keychain(KeychainError::BackendUnavailable { hint }) => {
+                AuthCommandError::KeychainUnavailable { hint }
+            }
+            AuthError::Keychain(KeychainError::AccessDenied) => {
+                AuthCommandError::KeychainAccessDenied
+            }
+            // `Corrupted` and `Other` carry no actionable user-facing copy
+            // beyond "something went wrong"; fold to the opaque internal arm.
+            AuthError::Keychain(_) => AuthCommandError::Internal,
         }
     }
 }
@@ -216,10 +249,10 @@ pub async fn add_account(
     };
 
     let handle = account.handle();
-    state
-        .token_source
-        .store(&handle, secret_as_str(&secret))
-        .map_err(|_| AuthCommandError::Internal)?;
+    // `?` flows the typed `AuthError` through `From<AuthError>` so a
+    // `BackendUnavailable` arm surfaces as a platform-specific hint rather
+    // than the generic `Internal` arm.
+    state.token_source.store(&handle, secret_as_str(&secret))?;
 
     if let Err(e) = state.store.upsert(account.clone()) {
         // Roll the keychain write back so the account doesn't half-exist.
@@ -250,10 +283,9 @@ pub fn remove_account(state: State<'_, AuthState>, id: AccountId) -> Result<(), 
     let handle = account.handle();
     // Remove the keychain entry first; if it fails the metadata stays so the
     // user can retry. The reverse order would leave a token with no owner.
-    state
-        .token_source
-        .remove(&handle)
-        .map_err(|_| AuthCommandError::Internal)?;
+    // `?` flows typed `AuthError` through `From<AuthError>` for the same
+    // hint-aware surface `add_account` returns.
+    state.token_source.remove(&handle)?;
 
     state
         .store
@@ -302,7 +334,7 @@ pub async fn update_token(
             state
                 .token_source
                 .store(handle, token)
-                .map_err(|_| AuthCommandError::Internal)
+                .map_err(AuthCommandError::from)
         },
         &account,
         &validated,
@@ -761,5 +793,146 @@ mod tests {
 
         let got = find_duplicate(store.as_ref(), "github.com", "grace").unwrap();
         assert!(got.is_none());
+    }
+
+    // ────── AuthError -> AuthCommandError mapping (issue #240) ──────
+
+    #[test]
+    fn auth_command_error_from_backend_unavailable_preserves_hint() {
+        // The renderer keys on `kind: "keychain_unavailable"` to show a
+        // platform-specific install hint. The hint string must survive the
+        // From<AuthError> conversion verbatim.
+        use crate::auth::keychain::KeychainError;
+        use crate::github::auth::AuthError;
+        let err: AuthCommandError = AuthError::Keychain(KeychainError::BackendUnavailable {
+            hint: "Install libsecret/gnome-keyring and ensure it's running.".into(),
+        })
+        .into();
+        match err {
+            AuthCommandError::KeychainUnavailable { hint } => {
+                assert!(hint.contains("libsecret"));
+            }
+            other => panic!("expected KeychainUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_command_error_from_access_denied_maps_to_distinct_arm() {
+        use crate::auth::keychain::KeychainError;
+        use crate::github::auth::AuthError;
+        let err: AuthCommandError = AuthError::Keychain(KeychainError::AccessDenied).into();
+        assert!(matches!(err, AuthCommandError::KeychainAccessDenied));
+    }
+
+    #[test]
+    fn auth_command_error_from_corrupted_falls_back_to_internal() {
+        // `Corrupted` carries no actionable user-facing copy beyond
+        // "something went wrong"; the renderer surfaces the generic line.
+        use crate::auth::keychain::KeychainError;
+        use crate::github::auth::AuthError;
+        let err: AuthCommandError = AuthError::Keychain(KeychainError::Corrupted).into();
+        assert!(matches!(err, AuthCommandError::Internal));
+    }
+
+    #[test]
+    fn auth_command_error_from_other_falls_back_to_internal() {
+        use crate::auth::keychain::KeychainError;
+        use crate::github::auth::AuthError;
+        let err: AuthCommandError =
+            AuthError::Keychain(KeychainError::Other("unspecified".into())).into();
+        assert!(matches!(err, AuthCommandError::Internal));
+    }
+
+    #[test]
+    fn auth_command_error_from_missing_maps_to_unauthorized() {
+        use crate::github::auth::AuthError;
+        let err: AuthCommandError = AuthError::Missing(1).into();
+        assert!(matches!(err, AuthCommandError::Unauthorized));
+    }
+
+    // ────── End-to-end: KeychainTokenSource + MockKeychain failure ──────
+
+    #[test]
+    fn store_token_surfaces_backend_unavailable_through_typed_chain() {
+        // Drives the full chain: MockKeychain returns BackendUnavailable,
+        // KeychainTokenSource wraps it in AuthError::Keychain, the command
+        // boundary's `?` flows it through From<AuthError> to AuthCommandError.
+        // This guards against regressions in the typed propagation across
+        // any of the three hops.
+        use crate::auth::keychain::MockFailure;
+        use crate::auth::token_source::KeychainTokenSource;
+        use crate::github::auth::AccountHandle;
+
+        let mock = MockKeychain::new();
+        mock.inject_failure(MockFailure::BackendUnavailable {
+            hint: "Install libsecret/gnome-keyring and ensure it's running.".into(),
+        });
+        let src = KeychainTokenSource::new(mock);
+        let handle = AccountHandle::new(1, "github.com", "ada");
+
+        let auth_err = src.store(&handle, "tok").expect_err("expected failure");
+        let cmd_err: AuthCommandError = auth_err.into();
+        match cmd_err {
+            AuthCommandError::KeychainUnavailable { hint } => {
+                assert!(hint.contains("libsecret"));
+            }
+            other => panic!("expected KeychainUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn store_token_surfaces_access_denied_through_typed_chain() {
+        use crate::auth::keychain::MockFailure;
+        use crate::auth::token_source::KeychainTokenSource;
+        use crate::github::auth::AccountHandle;
+
+        let mock = MockKeychain::new();
+        mock.inject_failure(MockFailure::AccessDenied);
+        let src = KeychainTokenSource::new(mock);
+        let handle = AccountHandle::new(1, "github.com", "ada");
+
+        let auth_err = src.store(&handle, "tok").expect_err("expected failure");
+        let cmd_err: AuthCommandError = auth_err.into();
+        assert!(matches!(cmd_err, AuthCommandError::KeychainAccessDenied));
+    }
+
+    #[test]
+    fn token_get_surfaces_corrupted_through_typed_chain() {
+        // `Corrupted` collapses to Internal at the command boundary because
+        // there's no actionable user-facing copy. This test guards the
+        // collapse so a future variant addition doesn't accidentally route
+        // the wrong arm.
+        use crate::auth::keychain::MockFailure;
+        use crate::auth::token_source::KeychainTokenSource;
+        use crate::github::auth::{AccountHandle, TokenSource};
+
+        let mock = MockKeychain::new();
+        mock.inject_failure(MockFailure::Corrupted);
+        let src = KeychainTokenSource::new(mock);
+        let handle = AccountHandle::new(1, "github.com", "ada");
+
+        let auth_err = src.token(&handle).expect_err("expected failure");
+        let cmd_err: AuthCommandError = auth_err.into();
+        assert!(matches!(cmd_err, AuthCommandError::Internal));
+    }
+
+    #[test]
+    fn keychain_unavailable_serialises_with_snake_case_kind_and_hint() {
+        // Smoke-test the serialised shape the renderer keys on. If the serde
+        // tag rename or the field name changes, this test catches it before
+        // the renderer silently falls through to its generic branch.
+        let err = AuthCommandError::KeychainUnavailable {
+            hint: "Install libsecret/gnome-keyring and ensure it's running.".into(),
+        };
+        let json = serde_json::to_value(&err).expect("serialise");
+        assert_eq!(json["kind"], "keychain_unavailable");
+        assert!(json["hint"].as_str().unwrap().contains("libsecret"));
+    }
+
+    #[test]
+    fn keychain_access_denied_serialises_with_snake_case_kind() {
+        let err = AuthCommandError::KeychainAccessDenied;
+        let json = serde_json::to_value(&err).expect("serialise");
+        assert_eq!(json["kind"], "keychain_access_denied");
     }
 }
