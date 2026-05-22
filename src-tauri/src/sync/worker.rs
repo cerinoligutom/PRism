@@ -566,7 +566,10 @@ pub async fn run_one_cycle(
                 format!("discovered {} pull request(s)", discovered.len()),
             );
         }
-        Err(DiscoveryError::GitHub(GitHubError::Unauthorized)) => {
+        Err(DiscoveryError::GitHub(GitHubError::Unauthorized))
+        | Err(DiscoveryError::GitHub(GitHubError::Auth(
+            crate::github::auth::AuthError::Missing(_) | crate::github::auth::AuthError::Empty(_),
+        ))) => {
             let state = ctx.state.update(account.id, |s| {
                 s.phase = SyncPhase::Unauthorized;
                 s.message = Some("token rejected; reauthenticate".into());
@@ -1112,6 +1115,10 @@ impl From<GitHubError> for SyncRepoError {
     fn from(err: GitHubError) -> Self {
         match err {
             GitHubError::Unauthorized => SyncRepoError::Unauthorized,
+            GitHubError::Auth(
+                crate::github::auth::AuthError::Missing(_)
+                | crate::github::auth::AuthError::Empty(_),
+            ) => SyncRepoError::Unauthorized,
             GitHubError::RateLimited { retry_after } => SyncRepoError::RateLimited { retry_after },
             other => SyncRepoError::Other(other.to_string()),
         }
@@ -4375,5 +4382,56 @@ mod tests {
             read_user(&db, "alice").as_deref(),
             Some("https://avatars/new.png"),
         );
+    }
+
+    // --- SyncRepoError::From<GitHubError> auth routing (issue #236) ---
+    //
+    // A missing or empty keychain entry surfaces as `GitHubError::Auth(...)`
+    // from `attach_auth`, which the worker must route through the same
+    // `Unauthorized` path as a 401 so the reauth dialog opens. An OS-level
+    // keychain failure (`AuthError::Keychain`) stays on the generic-failure
+    // path so a transient libsecret blip doesn't trigger reauth.
+
+    use crate::auth::keychain::MockKeychain;
+    use crate::auth::token_source::KeychainTokenSource;
+    use crate::github::auth::{AccountHandle, AuthError, TokenSource};
+
+    #[test]
+    fn sync_repo_error_routes_auth_missing_to_unauthorized() {
+        let err = GitHubError::Auth(AuthError::Missing(1));
+        let mapped: SyncRepoError = err.into();
+        assert!(matches!(mapped, SyncRepoError::Unauthorized));
+    }
+
+    #[test]
+    fn sync_repo_error_routes_auth_empty_to_unauthorized() {
+        let err = GitHubError::Auth(AuthError::Empty(1));
+        let mapped: SyncRepoError = err.into();
+        assert!(matches!(mapped, SyncRepoError::Unauthorized));
+    }
+
+    #[test]
+    fn sync_repo_error_keeps_auth_keychain_on_generic_failure_path() {
+        let err = GitHubError::Auth(AuthError::Keychain("libsecret unavailable".into()));
+        let mapped: SyncRepoError = err.into();
+        assert!(matches!(mapped, SyncRepoError::Other(_)));
+    }
+
+    #[test]
+    fn mock_keychain_none_chains_to_sync_repo_unauthorized() {
+        // Reproduces the worker-level discovery flow: `KeychainTokenSource`
+        // wrapping a `MockKeychain` that returns `Ok(None)` produces
+        // `AuthError::Missing`, which `attach_auth` wraps in
+        // `GitHubError::Auth(...)`. The `SyncRepoError` conversion must
+        // funnel that into the `Unauthorized` arm.
+        let src = KeychainTokenSource::new(MockKeychain::new());
+        let handle = AccountHandle::new(1, "github.com", "me");
+
+        let auth_err = src.token(&handle).expect_err("missing keychain entry");
+        assert!(matches!(auth_err, AuthError::Missing(1)));
+
+        let github_err = GitHubError::Auth(auth_err);
+        let mapped: SyncRepoError = github_err.into();
+        assert!(matches!(mapped, SyncRepoError::Unauthorized));
     }
 }
