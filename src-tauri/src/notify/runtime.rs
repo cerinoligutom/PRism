@@ -29,6 +29,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 
 use crate::db::DbHandle;
+use crate::notify::pending::PendingPayloadQueueHandle;
 use crate::notify::sink::{NotificationSink, PermissionAsker};
 use crate::notify::types::Notification;
 use crate::settings::{AppSettings, NotificationPermissionState};
@@ -38,11 +39,22 @@ pub struct TauriNotificationSink<R: Runtime, A: PermissionAsker> {
     app: AppHandle<R>,
     db: DbHandle,
     asker: Arc<A>,
+    pending: PendingPayloadQueueHandle,
 }
 
 impl<R: Runtime, A: PermissionAsker> TauriNotificationSink<R, A> {
-    pub fn new(app: AppHandle<R>, db: DbHandle, asker: Arc<A>) -> Self {
-        Self { app, db, asker }
+    pub fn new(
+        app: AppHandle<R>,
+        db: DbHandle,
+        asker: Arc<A>,
+        pending: PendingPayloadQueueHandle,
+    ) -> Self {
+        Self {
+            app,
+            db,
+            asker,
+            pending,
+        }
     }
 }
 
@@ -51,10 +63,16 @@ impl<R: Runtime, A: PermissionAsker> NotificationSink for TauriNotificationSink<
         if !decide_dispatch(&self.db, self.asker.as_ref()) {
             return;
         }
-        // Hand the formatted unit to the plugin. The payload is intentionally
-        // not included on the toast itself yet - the click-to-open contract
-        // (ADR 0017 decision 4) lands in issue #201, at which point the
-        // payload will move onto a custom event the click handler emits.
+        // Enqueue the deep-link payload before the toast fires. The
+        // window-event hook in `lib.rs` drains the queue on the next
+        // `WindowEvent::Focused(true)` and emits `notification://open-pr`
+        // for each entry - the OS-native click-activates-app behaviour
+        // surfaces as a focus event on every desktop platform, and the
+        // `tauri-plugin-notification` v2.3.3 desktop API doesn't expose a
+        // per-notification action callback. See `notify::pending` for the
+        // TTL bound on stale-focus false positives.
+        self.pending.enqueue(notification.payload.clone());
+
         use tauri_plugin_notification::NotificationExt;
         if let Err(err) = self
             .app

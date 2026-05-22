@@ -11,17 +11,21 @@
 //!   `tauri-plugin-notification` permission surface so the gating + persist
 //!   flow is testable without a live Tauri runtime;
 //! * [`runtime::TauriNotificationSink`] - production sink wired to the
-//!   plugin, persisting permission state to `app_settings`.
+//!   plugin, persisting permission state to `app_settings`;
+//! * [`pending::PendingPayloadQueue`] - shared queue the sink uses to stage
+//!   deep-link payloads ahead of the OS toast firing. The `lib.rs`
+//!   window-event hook drains it on the next main-window focus event and
+//!   emits `notification://open-pr` per entry, since the plugin's desktop
+//!   v2.3.3 API exposes no per-notification or global click callback
+//!   (ADR 0017 decision 4, issue #201).
 //!
 //! The macOS dock badge lives alongside the toast plumbing in [`badge`]:
 //! same OS-signal surface area, same `AppHandle` dependency, so colocating
 //! keeps the M6 notification module cohesive.
-//!
-//! No trigger emitter, formatter, or click-to-open routing ships here -
-//! those are tracked by issues #192, #195, #201.
 
 pub mod badge;
 pub mod formatter;
+pub mod pending;
 pub mod runtime;
 pub mod sink;
 pub mod types;
@@ -30,6 +34,7 @@ pub use badge::{
     count_global_needs_attention, refresh_from_db, update_badge, AppHandleBadge, BadgeSink,
 };
 pub use formatter::format_trigger;
+pub use pending::{PendingPayloadQueue, PendingPayloadQueueHandle};
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};
 pub use sink::{NotificationSink, NotificationSinkHandle, PermissionAsker};
 pub use types::{Notification, NotificationKind, NotificationTrigger};
