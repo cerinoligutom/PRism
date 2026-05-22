@@ -64,6 +64,11 @@ pub struct DiscoveryReport {
     pub pages_fetched: usize,
     /// Number of queries that hit the 200-result cap and stopped early.
     pub truncated_queries: usize,
+    /// Number of pages skipped via the GraphQL body-hash cache (issue #234).
+    /// A skipped page burned the rate-limit unit but bypassed the per-node
+    /// ingest loop because the upstream response matched the last cycle's
+    /// body byte-for-byte.
+    pub pages_skipped_via_cache: usize,
 }
 
 /// Identifies a PR row written by discovery. The caller folds these into the
@@ -127,6 +132,45 @@ impl<'a> DiscoveryAccumulator<'a> {
         }
         Ok(())
     }
+
+    /// Body-hash cache hit path (issue #234). The page response matched the
+    /// previous cycle's body byte-for-byte, so the relations the per-node
+    /// ingest path would have rewritten are already in the DB from last cycle.
+    /// All we need is to lift `last_seen_at` on the matching relation rows so
+    /// the prune phase doesn't drop them as stale; the heavy upserts are
+    /// elided entirely. The relation flag itself doesn't need re-OR'ing —
+    /// an unchanged response means the same flag set as last cycle, which is
+    /// already on the row. Each entry still counts towards `nodes_seen` /
+    /// `distinct_prs` so the report mirrors the wire-payload shape.
+    fn touch_cached_nodes(&mut self, prs: &[&DiscoveryPullRequest]) -> Result<(), DiscoveryError> {
+        if prs.is_empty() {
+            return Ok(());
+        }
+        let conn = self.db.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(
+            "UPDATE pull_request_viewer_relations
+                SET last_seen_at = ?1
+              WHERE account_id = ?2 AND pull_request_id = ?3",
+        )?;
+        for pr in prs {
+            self.report.nodes_seen += 1;
+            stmt.execute(params![
+                self.cycle_start,
+                self.account_id as i64,
+                pr.database_id,
+            ])?;
+            if self.seen_ids.insert(pr.database_id) {
+                self.discovered.push(DiscoveredPr {
+                    pull_request_id: pr.database_id,
+                    repo_id: pr.repository.database_id,
+                    number: pr.number,
+                    owner: pr.repository.owner.login.clone(),
+                    repo_name: pr.repository.name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Run all three discovery queries for one account and persist the results.
@@ -134,10 +178,14 @@ impl<'a> DiscoveryAccumulator<'a> {
 /// `cycle_start` is the unix-seconds timestamp the cycle began; it's written
 /// as `last_seen_at` on every confirmed relation row so the pruning phase can
 /// identify stale entries with a single `<` comparison.
+///
+/// `viewer_login` keys the GraphQL body-hash cache (ADR 0004, issue #234) so
+/// a byte-identical second discovery skips the per-node ingest writes.
 pub async fn discover_account(
     db: &DbHandle,
     client: &GitHubClient,
     account_id: AccountId,
+    viewer_login: &str,
     cycle_start: i64,
 ) -> Result<(Vec<DiscoveredPr>, DiscoveryReport), DiscoveryError> {
     let mut acc = DiscoveryAccumulator::new(db, account_id, cycle_start);
@@ -147,15 +195,32 @@ pub async fn discover_account(
         DiscoveryRelation::ReviewRequested,
         DiscoveryRelation::Involves,
     ] {
-        run_relation_query(client, relation, &mut acc).await?;
+        run_relation_query(client, relation, viewer_login, &mut acc).await?;
     }
 
     Ok(acc.finish())
 }
 
+/// Build the GraphQL body-cache key for one discovery page. Per-relation +
+/// per-cursor so a quiet account at any page index can short-circuit ingest
+/// independently. The cursor segment is `"first"` for the lead page so the
+/// key matches across cycles when the page-1 response is stable.
+fn discovery_cache_key(
+    viewer_login: &str,
+    relation: DiscoveryRelation,
+    cursor: Option<&str>,
+) -> String {
+    let cursor = cursor.unwrap_or("first");
+    format!(
+        "discovery:{viewer_login}:{}:{cursor}",
+        relation.query_string()
+    )
+}
+
 async fn run_relation_query(
     client: &GitHubClient,
     relation: DiscoveryRelation,
+    viewer_login: &str,
     acc: &mut DiscoveryAccumulator<'_>,
 ) -> Result<(), DiscoveryError> {
     let mut cursor: Option<String> = None;
@@ -163,15 +228,37 @@ async fn run_relation_query(
 
     for page in 0..MAX_DISCOVERY_PAGES {
         let vars = json!({ "q": query_string, "after": cursor });
-        let data: DiscoveryData = client.graphql(DISCOVERY_QUERY, vars).await?;
+        let (data, body): (DiscoveryData, _) =
+            client.graphql_with_raw(DISCOVERY_QUERY, vars).await?;
 
         acc.report.pages_fetched += 1;
 
-        for node in &data.search.nodes {
-            let DiscoveryNode::PullRequest(pr) = node else {
-                continue;
-            };
-            acc.ingest_node(relation, pr.as_ref())?;
+        let cache_key = discovery_cache_key(viewer_login, relation, cursor.as_deref());
+        let cache_hit = client.graphql_body_unchanged(&cache_key, &body);
+
+        if cache_hit {
+            // Body matched last cycle. Lift `last_seen_at` on the relations
+            // the cached page would have re-stamped, then skip the heavy
+            // per-node upserts. The prune phase keys off `last_seen_at`, so
+            // bumping it is what keeps these rows alive across this cycle.
+            let prs: Vec<&DiscoveryPullRequest> = data
+                .search
+                .nodes
+                .iter()
+                .filter_map(|n| match n {
+                    DiscoveryNode::PullRequest(pr) => Some(pr.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            acc.touch_cached_nodes(&prs)?;
+            acc.report.pages_skipped_via_cache += 1;
+        } else {
+            for node in &data.search.nodes {
+                let DiscoveryNode::PullRequest(pr) = node else {
+                    continue;
+                };
+                acc.ingest_node(relation, pr.as_ref())?;
+            }
         }
 
         if !data.search.page_info.has_next_page {

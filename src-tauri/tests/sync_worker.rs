@@ -1918,3 +1918,207 @@ async fn cycle_dispatches_no_triggers_when_no_transitions_happen() {
         "no trigger when the recompute is steady-state at zero"
     );
 }
+
+// ===== GraphQL body-hash cache (issue #234, ADR 0004) =====
+//
+// The next cycle in a quiet account must skip the per-node ingest writes when
+// the upstream GraphQL responses are byte-identical to the last cycle. The
+// rate-budget delta still ticks (HTTP round-trips happen) but the heavy DB
+// writes are elided. Two assertions cover this:
+//
+//   1. Discovery body cache: an authored PR appears in cycle 1. The same
+//      fixture replays on cycle 2; the PR row's `updated_at` does not move
+//      because discovery's per-node upserts are short-circuited. The relation
+//      row's `last_seen_at` advances to the new cycle's start so the prune
+//      phase keeps it.
+//   2. Detail body cache: the PR detail call on cycle 2 hashes to the cached
+//      slot, so the detail-driven columns (`title`, `mergeable`, CI rollup)
+//      are not rewritten - they keep cycle 1's value even when the fixture
+//      would have produced them on a fresh write. The `phase_completed`
+//      activity event surfaces a non-zero `cache_skips` payload.
+
+#[tokio::test]
+async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+
+    // Authored discovery returns one PR; the other two relations return
+    // empty. Same shape across both cycles - the body hashes match.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .and(body_string_contains("author:@me"))
+        .respond_with(rate_headers(4999, 5000).set_body_raw(
+            DISCOVERY_ONE_AUTHORED_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("DiscoverPrs"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            DISCOVERY_EMPTY_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4997, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4996, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    // Snapshot the PR row's audit columns after cycle 1.
+    let after_cycle1 = {
+        let conn = harness.db.lock().unwrap();
+        conn.query_row(
+            "SELECT updated_at, title, mergeable, last_seen_at
+               FROM pull_requests p
+               JOIN pull_request_viewer_relations r ON r.pull_request_id = p.id
+              WHERE p.id = 999 AND r.account_id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    // Force the PR row's `updated_at` to a recognisable sentinel so cycle 2's
+    // potential overwrite is observable. If the discovery upsert runs again,
+    // it lifts `updated_at` back to the fixture value; if it skips, the
+    // sentinel survives.
+    let sentinel: i64 = -424_242;
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests SET updated_at = ?1 WHERE id = 999",
+            params![sentinel],
+        )
+        .unwrap();
+
+    let cycle2_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let report2 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report2.outcome, CycleOutcome::Completed);
+
+    let after_cycle2 = {
+        let conn = harness.db.lock().unwrap();
+        conn.query_row(
+            "SELECT updated_at, title, mergeable, last_seen_at
+               FROM pull_requests p
+               JOIN pull_request_viewer_relations r ON r.pull_request_id = p.id
+              WHERE p.id = 999 AND r.account_id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+
+    // Cycle 2's byte-identical discovery + detail must NOT rewrite the
+    // sentinel - the per-node upserts are skipped. Same for the
+    // detail-driven `title` / `mergeable` columns.
+    assert_eq!(
+        after_cycle2.0, sentinel,
+        "discovery upsert must not run when the response body matches the cache"
+    );
+    assert_eq!(
+        after_cycle2.1, after_cycle1.1,
+        "detail-driven title must not be rewritten on a cached cycle"
+    );
+    assert_eq!(
+        after_cycle2.2, after_cycle1.2,
+        "detail-driven mergeable must not be rewritten on a cached cycle"
+    );
+    // `last_seen_at` advances on the skip path so the prune phase doesn't
+    // drop the relation row.
+    assert!(
+        after_cycle2.3 >= cycle2_start,
+        "last_seen_at must advance to the new cycle start (got {}, cycle started at {})",
+        after_cycle2.3,
+        cycle2_start,
+    );
+
+    // The relation row survives - the prune phase respected the bumped
+    // `last_seen_at`.
+    let relation_count: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pull_request_viewer_relations
+              WHERE account_id = 1 AND pull_request_id = 999",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        relation_count, 1,
+        "the relation row survives the prune because last_seen_at was lifted"
+    );
+
+    // Activity feed surfaces a non-zero `cache_skips` payload on cycle 2's
+    // discovery + enrichment `phase_completed` events.
+    let phase_completed_events: Vec<serde_json::Value> = harness
+        .emit
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(name, payload)| {
+            if name != "sync://activity" {
+                return None;
+            }
+            let kind = payload.get("kind")?.as_str()?;
+            if kind == "phase_completed" {
+                Some(payload.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let any_with_skips = phase_completed_events
+        .iter()
+        .any(|e| e.get("cache_skips").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
+    assert!(
+        any_with_skips,
+        "expected at least one phase_completed event with a non-zero cache_skips payload, got {:?}",
+        phase_completed_events,
+    );
+}

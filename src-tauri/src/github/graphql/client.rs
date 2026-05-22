@@ -4,6 +4,7 @@
 //! handle pagination for timeline events. Anything more bespoke should call
 //! `GitHubClient::post_graphql` directly.
 
+use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -28,8 +29,20 @@ impl GitHubClient {
         &self,
         coord: PrCoord<'_>,
     ) -> Result<Option<PullRequestDetail>, GitHubError> {
-        let data: PrDetailData = self
-            .post_graphql(
+        let (detail, _body) = self.pr_detail_with_raw(coord).await?;
+        Ok(detail)
+    }
+
+    /// Variant of [`pr_detail`] that returns the raw response bytes alongside
+    /// the parsed detail. The sync worker hashes the bytes against the cache
+    /// (issue #234) to skip the per-PR DB writes when the upstream response is
+    /// byte-identical to last cycle.
+    pub async fn pr_detail_with_raw(
+        &self,
+        coord: PrCoord<'_>,
+    ) -> Result<(Option<PullRequestDetail>, Bytes), GitHubError> {
+        let (data, body): (PrDetailData, Bytes) = self
+            .post_graphql_with_raw(
                 PR_DETAIL_QUERY,
                 json!({
                     "owner": coord.owner,
@@ -38,7 +51,7 @@ impl GitHubClient {
                 }),
             )
             .await?;
-        Ok(data.repository.and_then(|r| r.pull_request))
+        Ok((data.repository.and_then(|r| r.pull_request), body))
     }
 
     /// Fetch a single page of timeline events.
@@ -112,6 +125,20 @@ impl GitHubClient {
         T: DeserializeOwned,
     {
         self.post_graphql(query, vars).await
+    }
+
+    /// Body-capturing variant of [`graphql`]. Discovery (issue #234) uses this
+    /// to hash the raw response against the GraphQL body cache before deciding
+    /// whether to run the per-node ingest path.
+    pub async fn graphql_with_raw<T>(
+        &self,
+        query: &str,
+        vars: serde_json::Value,
+    ) -> Result<(T, Bytes), GitHubError>
+    where
+        T: DeserializeOwned,
+    {
+        self.post_graphql_with_raw(query, vars).await
     }
 }
 
