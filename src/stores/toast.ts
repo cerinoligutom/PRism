@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 
 /**
- * Reusable transient toast system. Toasts render in a bottom-centre viewport
+ * Reusable transient toast system. Toasts render in a bottom-right viewport
  * mounted once in `App.vue` (see `PRismToastViewport.vue`); any component
  * can call `useToastStore().show(...)` to enqueue one. Toasts auto-dismiss
  * after their configured `duration` and are also click-to-dismiss.

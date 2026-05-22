@@ -35,19 +35,18 @@ function variantClass(v: ToastVariant): string {
 .toast-viewport {
   position: fixed;
   bottom: 44px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 20px;
   z-index: 100;
   pointer-events: none;
   width: max-content;
-  max-width: calc(100vw - 64px);
+  max-width: calc(100vw - 40px);
 }
 
 .toast-stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  align-items: center;
+  align-items: flex-end;
 }
 
 .toast-item {
@@ -117,7 +116,7 @@ function variantClass(v: ToastVariant): string {
 
 .toast-enter-from {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateX(12px);
 }
 
 .toast-leave-to {
