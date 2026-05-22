@@ -30,6 +30,9 @@ use crate::github::{
     list_pr_timeline, AccountHandle, AccountId, EtagStore, GitHubClient, GitHubError, ListTimeline,
     RepoCoord,
 };
+use crate::notify::{
+    format_trigger, NotificationKind, NotificationSinkHandle, NotificationTrigger,
+};
 use crate::sync::activity::{
     record as record_activity, ActivityBuffer, ActivityEventBuilder, ActivityKind, ActivityLevel,
     SyncPhaseLabel,
@@ -166,6 +169,13 @@ pub struct WorkerContext {
     /// status-bar panel sees real-time phase / per-PR / error events alongside
     /// the existing status / error events.
     pub activity: ActivityBuffer,
+    /// Notification dispatch sink (ADR 0017, issue #192). The per-PR
+    /// enrichment write path collects triggers from
+    /// [`crate::triage::query::recompute_needs_attention`] and hands them to
+    /// this sink after the DB transaction commits. The sink owns master
+    /// switch + per-trigger gating + permission state (ADR 0017 decision 5);
+    /// the worker only forwards.
+    pub notify_sink: NotificationSinkHandle,
 }
 
 /// Public handle to the running worker pool. Holds the per-account
@@ -1109,7 +1119,7 @@ async fn sync_repo(
         };
 
         // Persist whatever new data we have.
-        write_pr_updates(
+        let triggers = write_pr_updates(
             &ctx.db,
             account.id,
             repo.id,
@@ -1118,6 +1128,14 @@ async fn sync_repo(
             events.as_deref(),
         )
         .map_err(|e| SyncRepoError::Other(format!("persist PR #{}: {e}", pr.number)))?;
+
+        // Dispatch notification triggers after the per-PR transaction
+        // commits. Running the formatter + plugin call outside the
+        // transaction keeps the DB lock short - the sink owns its own
+        // gating (master switch + per-trigger toggle + permission state)
+        // and the formatter only reads the freshly-committed rows. A
+        // formatter miss or sink failure is logged inside the helper.
+        dispatch_triggers(&ctx.db, &ctx.notify_sink, &triggers);
 
         // Activity feed: emit the per-PR detail event, then a phase progress
         // tick. Detail's URL is the canonical deep-link target; fall back to
@@ -1207,7 +1225,7 @@ pub fn write_pr_updates(
     pr_id: i64,
     detail: Option<&crate::github::graphql::PullRequestDetail>,
     events: Option<&[crate::sync::status_timeline::TimelineEvent]>,
-) -> Result<(), rusqlite::Error> {
+) -> Result<Vec<NotificationTrigger>, rusqlite::Error> {
     let mut conn = db.lock().expect("db poisoned");
     let tx = conn.transaction()?;
 
@@ -1332,9 +1350,57 @@ pub fn write_pr_updates(
     // active account) is a valid no-op: every UPDATE here matches by
     // (account_id, pull_request_id) and the dashboard query LEFT JOINs the
     // relations table.
-    scan_mentions_and_recompute_attention(&tx, account_id, pr_id)?;
+    //
+    // Returns the (possibly empty) notification triggers for the two ADR 0017
+    // transitions observed in this cycle. The caller dispatches after commit.
+    let triggers = scan_mentions_and_recompute_attention(&tx, account_id, pr_id)?;
 
-    tx.commit()
+    tx.commit()?;
+    Ok(triggers)
+}
+
+/// Format any [`NotificationTrigger`] produced by the per-PR write path and
+/// hand the result to the sink. Runs outside the enclosing write transaction
+/// so a plugin call can't block the DB lock; the formatter takes a separate
+/// short-lived `&Connection`. A formatter miss (PR row deleted in the gap
+/// between commit and dispatch) is logged and skipped; the in-app badge keeps
+/// surfacing attention.
+fn dispatch_triggers(
+    db: &DbHandle,
+    sink: &NotificationSinkHandle,
+    triggers: &[NotificationTrigger],
+) {
+    if triggers.is_empty() {
+        return;
+    }
+    let formatted: Vec<_> = {
+        let conn = match db.lock() {
+            Ok(g) => g,
+            Err(err) => {
+                eprintln!("notify dispatch: db poisoned: {err}");
+                return;
+            }
+        };
+        triggers
+            .iter()
+            .map(|t| (t, format_trigger(&conn, t)))
+            .collect()
+    };
+    for (trigger, notification) in formatted {
+        match notification {
+            Some(n) => {
+                eprintln!(
+                    "notify dispatch: kind={:?} account={} pr={}",
+                    trigger.kind, trigger.account_id, trigger.pull_request_id,
+                );
+                sink.dispatch(&n);
+            }
+            None => eprintln!(
+                "notify dispatch: skipping, PR row missing (account={}, pr={})",
+                trigger.account_id, trigger.pull_request_id,
+            ),
+        }
+    }
 }
 
 /// Count new `@<viewer-login>` mentions across the PR's comment bodies since
@@ -1357,7 +1423,7 @@ fn scan_mentions_and_recompute_attention(
     tx: &rusqlite::Transaction<'_>,
     account_id: AccountId,
     pr_id: i64,
-) -> Result<(), rusqlite::Error> {
+) -> Result<Vec<NotificationTrigger>, rusqlite::Error> {
     let account_id = account_id as i64;
 
     // Viewer (login, host). The relation row may not exist on this account
@@ -1372,7 +1438,7 @@ fn scan_mentions_and_recompute_attention(
         )
         .ok();
     let Some((viewer_login, viewer_host)) = viewer else {
-        return Ok(());
+        return Ok(Vec::new());
     };
 
     // PR's owning host: the host of the account that owns the repo. Used to
@@ -1391,11 +1457,27 @@ fn scan_mentions_and_recompute_attention(
         )
         .ok();
     let Some(pr_owner_host) = pr_owner_host else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     if viewer_host != pr_owner_host {
-        return Ok(());
+        return Ok(Vec::new());
     }
+
+    // Snapshot the row before the scan + recompute so we can spot the two
+    // ADR 0017 transitions (0 -> 1 on `needs_attention`, strict increase on
+    // `mentioned_count_unread`). The mention counter snapshot has to come
+    // _before_ the UPDATE below bumps it; the attention snapshot can come
+    // either side of that bump since the recompute UPDATE that follows is
+    // the only thing that writes `needs_attention`.
+    let before: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT needs_attention, mentioned_count_unread
+               FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .ok();
 
     // Read the prior watermark. NULL or missing relation row reads as 0 so the
     // first cycle counts every comment newer than the epoch.
@@ -1520,7 +1602,40 @@ fn scan_mentions_and_recompute_attention(
         params![account_id, pr_id, viewer_login, viewer_host],
     )?;
 
-    Ok(())
+    // Compare to the pre-write snapshot. A missing relation row before the
+    // write means the recompute UPDATE matched zero rows; no trigger fires.
+    let Some((before_attention, before_mentions)) = before else {
+        return Ok(Vec::new());
+    };
+    let after: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT needs_attention, mentioned_count_unread
+               FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .ok();
+    let Some((after_attention, after_mentions)) = after else {
+        return Ok(Vec::new());
+    };
+
+    let mut triggers = Vec::new();
+    if before_attention == 0 && after_attention == 1 {
+        triggers.push(NotificationTrigger {
+            account_id,
+            pull_request_id: pr_id,
+            kind: NotificationKind::NeedsAttention,
+        });
+    }
+    if after_mentions > before_mentions {
+        triggers.push(NotificationTrigger {
+            account_id,
+            pull_request_id: pr_id,
+            kind: NotificationKind::Mention,
+        });
+    }
+    Ok(triggers)
 }
 
 /// Count `@<viewer>` matches in `body`, treating a match as terminated by

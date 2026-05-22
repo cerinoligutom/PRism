@@ -20,6 +20,7 @@ use prism_lib::db::{open_at, DbHandle};
 use prism_lib::github::{
     AccountHandle, EtagStore, GitHubClient, GitHubError, InMemoryEtagStore, StaticTokenSource,
 };
+use prism_lib::notify::{Notification, NotificationSink, NotificationSinkHandle};
 use prism_lib::sync::{
     new_activity_buffer, AccountSyncState, ActivityBuffer, ClientFactory, CycleOutcome, EmitSink,
     ReauthNotifier, SchedulerConfig, SkipReason, SyncStateMap, WorkerContext,
@@ -108,6 +109,33 @@ impl ClientFactory for MockServerFactory {
     }
 }
 
+/// Captures every dispatched [`Notification`] so tests can assert on the
+/// triggers produced by a sync cycle. Cheap to clone (an `Arc<Self>`).
+#[derive(Default)]
+struct RecordingNotificationSink {
+    dispatched: Mutex<Vec<Notification>>,
+}
+
+impl RecordingNotificationSink {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn count(&self) -> usize {
+        self.dispatched.lock().unwrap().len()
+    }
+
+    fn snapshot(&self) -> Vec<Notification> {
+        self.dispatched.lock().unwrap().clone()
+    }
+}
+
+impl NotificationSink for RecordingNotificationSink {
+    fn dispatch(&self, notification: &Notification) {
+        self.dispatched.lock().unwrap().push(notification.clone());
+    }
+}
+
 struct Harness {
     _tmp: TempDir,
     db: DbHandle,
@@ -118,10 +146,12 @@ struct Harness {
     config: Arc<SchedulerConfig>,
     factory: Arc<MockServerFactory>,
     activity: ActivityBuffer,
+    notify_sink: Arc<RecordingNotificationSink>,
 }
 
 impl Harness {
     fn ctx(&self) -> WorkerContext {
+        let sink: NotificationSinkHandle = self.notify_sink.clone();
         WorkerContext {
             db: self.db.clone(),
             accounts: self.accounts.clone(),
@@ -131,6 +161,7 @@ impl Harness {
             emit: self.emit.clone(),
             reauth: self.reauth.clone(),
             activity: self.activity.clone(),
+            notify_sink: sink,
         }
     }
 }
@@ -155,6 +186,7 @@ fn setup_harness(server: &MockServer) -> Harness {
             etags: Arc::new(InMemoryEtagStore::new()),
         }),
         activity: new_activity_buffer(),
+        notify_sink: RecordingNotificationSink::new(),
     }
 }
 
@@ -1736,5 +1768,130 @@ async fn rate_budget_guard_emits_rate_limit_pause_activity() {
     assert!(
         kinds.contains(&"rate_limit_pause".to_string()),
         "rate_limit_pause must be emitted: {kinds:?}"
+    );
+}
+
+// ===== ADR 0017 notification trigger dispatch (issue #192) =====
+
+/// A sync cycle that flips a PR into the needs-attention bucket dispatches
+/// exactly one `NeedsAttention` trigger to the sink. The PR detail fixture
+/// requests `dave` as a reviewer; seeding the active viewer as `dave` with a
+/// relation row at baseline `needs_attention = 0` makes the cycle's
+/// enrichment write flip the column 0 -> 1 (signal 2 from ADR 0015) and emit
+/// the trigger.
+#[tokio::test]
+async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "dave");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    // Baseline relation row for dave on PR 999: not yet attention, no mentions.
+    // The fixture's `dave` requestedReviewer entry will flip signal 2 on
+    // recompute.
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention)
+                VALUES (1, 999, 0, 1, 0, strftime('%s','now'), 0)",
+            [],
+        )
+        .unwrap();
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    let dispatched = harness.notify_sink.snapshot();
+    assert_eq!(dispatched.len(), 1, "exactly one trigger on a 0 -> 1 flip");
+    assert_eq!(dispatched[0].title, "Needs your attention");
+    assert!(
+        dispatched[0].body.contains("owner/repo"),
+        "body carries the repo slug: {:?}",
+        dispatched[0].body
+    );
+    assert!(
+        dispatched[0].body.contains("#42"),
+        "body carries the PR number: {:?}",
+        dispatched[0].body
+    );
+}
+
+/// A cycle that doesn't move the row across either trigger boundary
+/// dispatches nothing - the recompute is steady-state.
+#[tokio::test]
+async fn cycle_dispatches_no_triggers_when_no_transitions_happen() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    // Alice has no review request on the fixture, no unresolved thread
+    // involvement, and no mentions - all four ADR 0015 signals miss. The
+    // recompute will write `needs_attention = 0` (no change from baseline).
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at, needs_attention)
+                VALUES (1, 999, 0, 0, 1, strftime('%s','now'), 0)",
+            [],
+        )
+        .unwrap();
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+    assert_eq!(
+        harness.notify_sink.count(),
+        0,
+        "no trigger when the recompute is steady-state at zero"
     );
 }

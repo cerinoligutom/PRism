@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::dashboard::DashboardView;
 use crate::db::DbHandle;
+use crate::notify::{format_trigger, NotificationSinkHandle, NotificationTrigger};
 use crate::triage::query;
 use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 
@@ -52,24 +53,34 @@ pub fn mark_pr_read(
     pull_request_id: i64,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
+    notify_sink: State<'_, NotificationSinkHandle>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+    let mut triggers: Vec<NotificationTrigger> = Vec::new();
     match account_id {
         Some(id) => {
             query::mark_read(&tx, id, pull_request_id).map_err(|e| format!("mark read: {e}"))?;
-            query::recompute_needs_attention(&tx, id, pull_request_id)
+            // mark_read zeroed the counter, so any Mention transition is a
+            // clear (5 -> 0), not an increase. Pass `None` to disable Mention
+            // detection - clearing reads doesn't surface as a notification
+            // (ADR 0017 decision 1).
+            let new = query::recompute_needs_attention(&tx, id, pull_request_id, None)
                 .map_err(|e| format!("recompute needs_attention: {e}"))?;
+            triggers.extend(new);
         }
         None => {
             apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
                 query::mark_read(tx, acct, pull_request_id)?;
-                query::recompute_needs_attention(tx, acct, pull_request_id)
+                let new = query::recompute_needs_attention(tx, acct, pull_request_id, None)?;
+                triggers.extend(new);
+                Ok(())
             })
             .map_err(|e| format!("mark read multi: {e}"))?;
         }
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    dispatch_triggers(&conn, notify_sink.inner(), &triggers);
     Ok(())
 }
 
@@ -92,25 +103,34 @@ pub fn mark_pr_unread(
     pull_request_id: i64,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
+    notify_sink: State<'_, NotificationSinkHandle>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+    let mut triggers: Vec<NotificationTrigger> = Vec::new();
     match account_id {
         Some(id) => {
             query::mark_unread(&tx, id, pull_request_id)
                 .map_err(|e| format!("mark unread: {e}"))?;
-            query::recompute_needs_attention(&tx, id, pull_request_id)
+            // mark_unread leaves `mentioned_count_unread` untouched, so the
+            // pre-call counter equals the post-UPDATE value. No Mention
+            // transition is possible from this path.
+            let new = query::recompute_needs_attention(&tx, id, pull_request_id, None)
                 .map_err(|e| format!("recompute needs_attention: {e}"))?;
+            triggers.extend(new);
         }
         None => {
             apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
                 query::mark_unread(tx, acct, pull_request_id)?;
-                query::recompute_needs_attention(tx, acct, pull_request_id)
+                let new = query::recompute_needs_attention(tx, acct, pull_request_id, None)?;
+                triggers.extend(new);
+                Ok(())
             })
             .map_err(|e| format!("mark unread multi: {e}"))?;
         }
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    dispatch_triggers(&conn, notify_sink.inner(), &triggers);
     Ok(())
 }
 
@@ -171,6 +191,29 @@ pub fn mark_pr_unarchived<R: Runtime>(
 fn emit_dashboard_refresh<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = app.emit(DASHBOARD_REFRESH_EVENT, ()) {
         eprintln!("failed to emit {DASHBOARD_REFRESH_EVENT}: {err}");
+    }
+}
+
+/// Format any triggers produced by the recompute pair and hand them to the
+/// notification sink one at a time. Runs after the enclosing transaction
+/// commits so a plugin failure can't roll back the read-state write, and the
+/// connection is borrowed for the formatter lookup only - the sink owns
+/// gating + permission state via its own internal locks (ADR 0017 decision
+/// 5). A formatter miss (PR row vanished between the commit and the
+/// dispatch) is logged and skipped; the in-app badge picks up the slack.
+fn dispatch_triggers(
+    conn: &rusqlite::Connection,
+    sink: &NotificationSinkHandle,
+    triggers: &[NotificationTrigger],
+) {
+    for trigger in triggers {
+        match format_trigger(conn, trigger) {
+            Some(notification) => sink.dispatch(&notification),
+            None => eprintln!(
+                "notify: skipping dispatch, PR row missing (account={}, pr={})",
+                trigger.account_id, trigger.pull_request_id,
+            ),
+        }
     }
 }
 
@@ -339,7 +382,7 @@ mod tests {
         let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
         query::mark_read(&tx, account, pr).map_err(|e| format!("mark read: {e}"))?;
-        query::recompute_needs_attention(&tx, account, pr)
+        query::recompute_needs_attention(&tx, account, pr, None)
             .map_err(|e| format!("recompute needs_attention: {e}"))?;
         tx.commit().map_err(|e| format!("commit tx: {e}"))?;
         Ok(())
@@ -350,7 +393,7 @@ mod tests {
         let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
         query::mark_unread(&tx, account, pr).map_err(|e| format!("mark unread: {e}"))?;
-        query::recompute_needs_attention(&tx, account, pr)
+        query::recompute_needs_attention(&tx, account, pr, None)
             .map_err(|e| format!("recompute needs_attention: {e}"))?;
         tx.commit().map_err(|e| format!("commit tx: {e}"))?;
         Ok(())
