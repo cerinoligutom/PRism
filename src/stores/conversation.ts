@@ -75,7 +75,31 @@ export const useConversationStore = defineStore("conversation", () => {
   };
 });
 
+/**
+ * Discriminated union mirroring `ConversationCommandError` in
+ * `src-tauri/src/conversation/commands.rs`. The shape comes from
+ * `#[serde(tag = "kind", rename_all = "snake_case")]`.
+ */
+type ConversationCommandError =
+  | { kind: "not_found" }
+  | { kind: "internal" };
+
+/**
+ * Translates the structured Rust error into a single user-facing message.
+ * Mirrors `formatAuthError` in `src/stores/accounts.ts`. Falls back to the
+ * generic conversation message when the payload isn't one of the kinds we
+ * know about so a future variant doesn't render the raw object.
+ */
 function formatError(err: unknown): string {
+  if (typeof err === "object" && err !== null && "kind" in err) {
+    const tagged = err as ConversationCommandError;
+    switch (tagged.kind) {
+      case "not_found":
+        return "This pull request is no longer available.";
+      case "internal":
+        return "Couldn't load conversation. Check the application logs.";
+    }
+  }
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   return "Couldn't load conversation.";
