@@ -6,30 +6,17 @@ import PRismInput from "@/components/ui/PRismInput.vue";
 import PRismSwitch from "@/components/ui/PRismSwitch.vue";
 import { useAccountsStore, type Account } from "@/stores/accounts";
 import { useReposStore, type RepoSummary } from "@/stores/repos";
+import { useToastStore } from "@/stores/toast";
 
 const accountsStore = useAccountsStore();
 const reposStore = useReposStore();
+const toastStore = useToastStore();
 
 const search = ref("");
 
 // Per-org collapsed state, keyed by `${accountId}:${owner}`. A Set in a ref so
 // toggling triggers reactivity via reassignment.
 const collapsedOrgs = ref<Set<string>>(new Set());
-
-interface ToastState {
-  readonly kind: "success" | "info";
-  readonly text: string;
-}
-const toast = ref<ToastState | null>(null);
-let toastTimer: number | null = null;
-function showToast(text: string, kind: "success" | "info" = "success"): void {
-  toast.value = { kind, text };
-  if (toastTimer !== null) window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    toast.value = null;
-    toastTimer = null;
-  }, 2200);
-}
 
 const totalTeamTracked = computed(() => {
   let count = 0;
@@ -129,10 +116,11 @@ async function toggleTeamTracked(repo: RepoSummary): Promise<void> {
   const next = !repo.is_team_tracked;
   try {
     await reposStore.setTeamTracked(repo.id, next);
-    showToast(
+    toastStore.show(
       next
         ? `Tracking ${repo.owner}/${repo.name}`
         : `Untracked ${repo.owner}/${repo.name}`,
+      { variant: "success" },
     );
   } catch {
     // Store routed the error into `lastError`; the panel surfaces that
@@ -148,10 +136,11 @@ async function toggleOrgTracked(group: OrgGroup): Promise<void> {
   if (work.length === 0) return;
   try {
     await Promise.all(work.map((r) => reposStore.setTeamTracked(r.id, target)));
-    showToast(
+    toastStore.show(
       target
         ? `Tracking ${work.length} repo${work.length === 1 ? "" : "s"} under ${group.owner}`
         : `Untracked ${work.length} repo${work.length === 1 ? "" : "s"} under ${group.owner}`,
+      { variant: "success" },
     );
   } catch {
     // Partial failure - lastError already populated by the store.
@@ -194,18 +183,6 @@ watch(
       data for repos you opt in. Discovery uses GitHub's
       <code class="repositories-panel__code">/user/repos</code> endpoint.
     </p>
-
-    <Transition name="repo-toast">
-      <div
-        v-if="toast"
-        class="repositories-panel__toast"
-        :class="`repositories-panel__toast--${toast.kind}`"
-        role="status"
-        aria-live="polite"
-      >
-        {{ toast.text }}
-      </div>
-    </Transition>
 
     <div v-if="accountsStore.isEmpty" class="repositories-panel__empty">
       <p class="repositories-panel__empty-copy">Connect a GitHub account to discover repositories.</p>
@@ -419,28 +396,6 @@ watch(
   background: var(--bg-3);
   border-radius: var(--r-1);
   color: var(--text);
-}
-
-.repositories-panel__toast {
-  margin: calc(-1 * var(--s-3)) 0 var(--s-4);
-  padding: 8px 14px;
-  border-radius: var(--r-2);
-  background: var(--accent-bg);
-  color: var(--accent-strong);
-  font-size: var(--fs-12);
-  font-weight: 500;
-  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
-}
-
-.repo-toast-enter-active,
-.repo-toast-leave-active {
-  transition: opacity 0.2s, transform 0.2s;
-}
-
-.repo-toast-enter-from,
-.repo-toast-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 
 .repositories-panel__empty {
