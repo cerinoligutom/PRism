@@ -1,7 +1,23 @@
 /* PRism — Design Tokens
- * Dark (default), light, accent picker. WCAG AA targets:
- *   text-strong ≥ 12:1, text ≥ 7:1, text-mute ≥ 4.5:1 on app bg.
- *   text-faint reserved for ≥18px / 14px bold only.
+ * Dark (default), light, accent picker.
+ *
+ * WCAG AA contrast — measured against --bg-1 (page) AND --bg-3 (raised
+ * cards / stat tiles / dropdowns), so the floor holds on the most common
+ * raised surface, not just the page bg.
+ *
+ *   Dark theme                vs bg-1    vs bg-3
+ *   --text-strong  #f4f4f7    17.78:1    14.19:1
+ *   --text         #d4d4dc    13.25:1    10.57:1
+ *   --text-mute    #c4c4cd    11.27:1     8.99:1
+ *   --text-faint   #a0a0b0     7.58:1     6.04:1
+ *
+ *   Light theme               vs bg-1    vs bg-3
+ *   --text-strong  #0a0a0d    19.77:1    17.54:1
+ *   --text         #1e1e25    16.57:1    14.70:1
+ *   --text-mute    #3e3e48    10.57:1     9.37:1
+ *   --text-faint   #5a5a66     6.80:1     6.03:1
+ *
+ * Floor: AA body text 4.5:1, large text 3:1.
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -24,11 +40,11 @@
   --border-2: #3d3d49;        /* default border / input outline */
   --border-3: #50505d;        /* strong border / input focus */
 
-  /* ────── Text (contrast measured vs --bg-1 #0c0c10) ────── */
-  --text-strong: #f4f4f7;     /* 17.5 : 1   — primary */
-  --text:        #d4d4dc;     /* 12.4 : 1   — body */
-  --text-mute:   #9a9aa6;     /* 6.8  : 1   — secondary */
-  --text-faint:  #6c6c78;     /* 3.6  : 1   — large-only / icons */
+  /* ────── Text (see header for full vs bg-1 / vs bg-3 table) ────── */
+  --text-strong: #f4f4f7;     /* 17.78 vs bg-1 / 14.19 vs bg-3 */
+  --text:        #d4d4dc;     /* 13.25 vs bg-1 / 10.57 vs bg-3 */
+  --text-mute:   #c4c4cd;     /* 11.27 vs bg-1 /  8.99 vs bg-3 */
+  --text-faint:  #a0a0b0;     /*  7.58 vs bg-1 /  6.04 vs bg-3 */
   --text-disabled:#454552;
 
   /* ────── Accent (user-pickable; default magenta) ────── */
@@ -59,17 +75,19 @@
   --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --fs-9:  9px;
-  --fs-10: 10px;
-  --fs-11: 11px;
-  --fs-12: 12px;
-  --fs-13: 13px;
-  --fs-14: 14px;
-  --fs-16: 16px;
-  --fs-20: 20px;
-  --fs-24: 24px;
-  --fs-32: 32px;
-  --fs-48: 48px;
+  /* Rem-based so users' browser font-size preferences scale the app.
+   * Small-end values bumped up ~1px vs the legacy 14px-anchored scale. */
+  --fs-9:  0.625rem;   /* 10px */
+  --fs-10: 0.6875rem;  /* 11px */
+  --fs-11: 0.75rem;    /* 12px */
+  --fs-12: 0.8125rem;  /* 13px */
+  --fs-13: 0.875rem;   /* 14px */
+  --fs-14: 0.9375rem;  /* 15px */
+  --fs-16: 1rem;       /* 16px — body */
+  --fs-20: 1.25rem;    /* 20px */
+  --fs-24: 1.5rem;     /* 24px */
+  --fs-32: 2rem;       /* 32px */
+  --fs-48: 3rem;       /* 48px */
 
   --lh-tight: 1.15;
   --lh-snug:  1.35;
@@ -121,11 +139,11 @@
   --border-2: #dadade;
   --border-3: #b8b8bf;
 
-  /* contrast vs #ffffff */
-  --text-strong: #0a0a0d;      /* 19.6 : 1 */
-  --text:        #1e1e25;      /* 15.6 : 1 */
-  --text-mute:   #595963;      /* 6.6 : 1  */
-  --text-faint:  #7a7a85;      /* 4.5 : 1  (text-mute floor) */
+  /* contrast: see header for full vs bg-1 / vs bg-3 table */
+  --text-strong: #0a0a0d;      /* 19.77 vs bg-1 / 17.54 vs bg-3 */
+  --text:        #1e1e25;      /* 16.57 vs bg-1 / 14.70 vs bg-3 */
+  --text-mute:   #3e3e48;      /* 10.57 vs bg-1 /  9.37 vs bg-3 */
+  --text-faint:  #5a5a66;      /*  6.80 vs bg-1 /  6.03 vs bg-3 */
   --text-disabled:#b0b0b8;
 
   --accent:        oklch(0.55 var(--accent-c) var(--accent-h));
@@ -153,6 +171,9 @@
   --shadow-window: 0 24px 64px rgba(0,0,0,.18), 0 4px 12px rgba(0,0,0,.08);
 }
 
+/* No explicit font-size — html inherits the browser default (100% / 16px)
+ * so user font-size preferences scale the app. All sizing flows from the
+ * rem-based --fs-* tokens above. */
 html, body {
   margin: 0;
   padding: 0;
@@ -162,7 +183,6 @@ html, body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-size: 13px;
   line-height: var(--lh-body);
 }
 * { box-sizing: border-box; }
