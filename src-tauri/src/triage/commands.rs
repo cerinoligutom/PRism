@@ -20,7 +20,10 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::dashboard::DashboardView;
 use crate::db::DbHandle;
-use crate::notify::{format_trigger, NotificationSinkHandle, NotificationTrigger};
+use crate::notify::{
+    format_trigger, refresh_from_db as refresh_badge_from_db, NotificationSinkHandle,
+    NotificationTrigger,
+};
 use crate::triage::query;
 use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 
@@ -49,11 +52,12 @@ pub const DASHBOARD_REFRESH_EVENT: &str = "dashboard://refresh";
 /// The composite `needs_attention` flag is recomputed for each touched
 /// `(account, PR)` pair inside the same transaction.
 #[tauri::command]
-pub fn mark_pr_read(
+pub fn mark_pr_read<R: Runtime>(
     pull_request_id: i64,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
     notify_sink: State<'_, NotificationSinkHandle>,
+    app_handle: AppHandle<R>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
@@ -81,6 +85,8 @@ pub fn mark_pr_read(
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
     dispatch_triggers(&conn, notify_sink.inner(), &triggers);
+    drop(conn);
+    refresh_badge_from_db(&app_handle, &db);
     Ok(())
 }
 
@@ -99,11 +105,12 @@ pub fn mark_pr_read(
 /// never get a row" and marking such a PR unread is not a meaningful
 /// operation.
 #[tauri::command]
-pub fn mark_pr_unread(
+pub fn mark_pr_unread<R: Runtime>(
     pull_request_id: i64,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
     notify_sink: State<'_, NotificationSinkHandle>,
+    app_handle: AppHandle<R>,
 ) -> Result<(), String> {
     let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
@@ -131,6 +138,8 @@ pub fn mark_pr_unread(
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
     dispatch_triggers(&conn, notify_sink.inner(), &triggers);
+    drop(conn);
+    refresh_badge_from_db(&app_handle, &db);
     Ok(())
 }
 
@@ -159,7 +168,9 @@ pub fn mark_pr_archived<R: Runtime>(
     query::mark_archived(&tx, account_id, pull_request_id)
         .map_err(|e| format!("mark archived: {e}"))?;
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    drop(conn);
     emit_dashboard_refresh(&app_handle);
+    refresh_badge_from_db(&app_handle, &db);
     Ok(())
 }
 
@@ -181,7 +192,9 @@ pub fn mark_pr_unarchived<R: Runtime>(
     query::mark_unarchived(&tx, account_id, pull_request_id)
         .map_err(|e| format!("mark unarchived: {e}"))?;
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    drop(conn);
     emit_dashboard_refresh(&app_handle);
+    refresh_badge_from_db(&app_handle, &db);
     Ok(())
 }
 

@@ -81,6 +81,10 @@ pub fn run() {
                 state: sync::SyncStateMap::new(),
                 emit: Arc::new(sync::AppHandleEmitter::new(app.handle().clone())),
                 reauth: Arc::new(sync::AppHandleReauth::new(app.handle().clone())),
+                badge: Arc::new(notify::AppHandleBadge::new(
+                    app.handle().clone(),
+                    db_handle.clone(),
+                )),
                 activity: activity_buffer,
                 notify_sink: notify_sink.clone(),
             };

@@ -20,7 +20,7 @@ use prism_lib::db::{open_at, DbHandle};
 use prism_lib::github::{
     AccountHandle, EtagStore, GitHubClient, GitHubError, InMemoryEtagStore, StaticTokenSource,
 };
-use prism_lib::notify::{Notification, NotificationSink, NotificationSinkHandle};
+use prism_lib::notify::{BadgeSink, Notification, NotificationSink, NotificationSinkHandle};
 use prism_lib::sync::{
     new_activity_buffer, AccountSyncState, ActivityBuffer, ClientFactory, CycleOutcome, EmitSink,
     ReauthNotifier, SchedulerConfig, SkipReason, SyncStateMap, WorkerContext,
@@ -86,6 +86,26 @@ impl ReauthNotifier for CountingReauth {
     }
 }
 
+/// In-process `BadgeSink` that counts refresh calls. The worker invokes this
+/// once per cycle after the auto-archive sweep; tests assert the call lands
+/// without booting Tauri.
+#[derive(Default)]
+struct CountingBadge {
+    refreshed: AtomicUsize,
+}
+
+impl CountingBadge {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl BadgeSink for CountingBadge {
+    fn refresh(&self) {
+        self.refreshed.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Build a `ClientFactory` that points every account at the mock server.
 struct MockServerFactory {
     rest: Url,
@@ -143,6 +163,7 @@ struct Harness {
     state: SyncStateMap,
     emit: Arc<CapturingEmitter>,
     reauth: Arc<CountingReauth>,
+    badge: Arc<CountingBadge>,
     config: Arc<SchedulerConfig>,
     factory: Arc<MockServerFactory>,
     activity: ActivityBuffer,
@@ -160,6 +181,7 @@ impl Harness {
             state: self.state.clone(),
             emit: self.emit.clone(),
             reauth: self.reauth.clone(),
+            badge: self.badge.clone(),
             activity: self.activity.clone(),
             notify_sink: sink,
         }
@@ -179,6 +201,7 @@ fn setup_harness(server: &MockServer) -> Harness {
         state: SyncStateMap::new(),
         emit: CapturingEmitter::new(),
         reauth: CountingReauth::new(),
+        badge: CountingBadge::new(),
         config: Arc::new(SchedulerConfig::default()),
         factory: Arc::new(MockServerFactory {
             rest: base.join("/").unwrap(),

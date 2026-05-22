@@ -31,7 +31,7 @@ use crate::github::{
     RepoCoord,
 };
 use crate::notify::{
-    format_trigger, NotificationKind, NotificationSinkHandle, NotificationTrigger,
+    format_trigger, BadgeSink, NotificationKind, NotificationSinkHandle, NotificationTrigger,
 };
 use crate::sync::activity::{
     record as record_activity, ActivityBuffer, ActivityEventBuilder, ActivityKind, ActivityLevel,
@@ -165,6 +165,10 @@ pub struct WorkerContext {
     pub state: SyncStateMap,
     pub emit: Arc<dyn EmitSink>,
     pub reauth: Arc<dyn ReauthNotifier>,
+    /// macOS dock badge sink (ADR 0017 decision 3). Refreshed once per cycle
+    /// after the auto-archive sweep so the per-account fan-out and the sweep
+    /// both feed into a single post-cycle update. Non-macOS impls no-op.
+    pub badge: Arc<dyn BadgeSink>,
     /// Diagnostic activity buffer (issue #122). Cloned into every cycle so the
     /// status-bar panel sees real-time phase / per-PR / error events alongside
     /// the existing status / error events.
@@ -627,6 +631,7 @@ pub async fn run_one_cycle(
         // the sweep here would leave a single-account-no-repos viewer with
         // stale archive coverage.
         run_auto_archive_sweep(&ctx.db);
+        ctx.badge.refresh();
         let finished_at = SystemTime::now();
         finish_completed(ctx, account, client, finished_at);
         emit_activity_cycle_completed(ctx, account, 0, "no repos tracked");
@@ -723,6 +728,12 @@ pub async fn run_one_cycle(
     // already archived. A failed sweep is logged and the cycle still
     // completes; the next cycle retries.
     run_auto_archive_sweep(&ctx.db);
+
+    // Dock badge refresh (ADR 0017 decision 3). Sits after the sweep so the
+    // count reflects both the per-account fan-out and the archive flip in a
+    // single update. The non-macOS sink is a no-op; the macOS sink writes
+    // the global `needs_attention` count to the main window.
+    ctx.badge.refresh();
 
     let finished_at = SystemTime::now();
     finish_completed(ctx, account, client, finished_at);
