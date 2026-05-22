@@ -5,7 +5,9 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::dashboard::query;
-use crate::dashboard::types::{DashboardPullRequest, DashboardSort, DashboardView};
+use crate::dashboard::types::{
+    DashboardPullRequest, DashboardSort, DashboardView, DashboardViewCounts,
+};
 use crate::db::DbHandle;
 use crate::triage::types::ChipKey;
 
@@ -28,6 +30,23 @@ pub fn list_dashboard_pull_requests(
     let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
     let chips = active_chips.unwrap_or_default();
     query::list_pull_requests(&conn, view, sort, account_id, &chips).map_err(|err| err.to_string())
+}
+
+/// Return the five view row counts for the active account scope in one SQL
+/// round-trip (M7 perf, issue #230). Mirrors the predicate shapes of
+/// `list_dashboard_pull_requests` so each field equals the length of the
+/// matching per-view call.
+///
+/// Replaces the dashboard store's five-way `Promise.all` fan-out: the sidebar
+/// chips stay honest while the SQL planner walks the row scope once per view
+/// instead of executing the full projection, hydration, and ordering for each.
+#[tauri::command]
+pub fn list_dashboard_view_counts(
+    account_id: Option<i64>,
+    db: State<'_, DbHandle>,
+) -> Result<DashboardViewCounts, String> {
+    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    query::list_view_counts(&conn, account_id).map_err(|err| err.to_string())
 }
 
 /// Row metadata the frontend needs to push onto the `pr-detail` route after a

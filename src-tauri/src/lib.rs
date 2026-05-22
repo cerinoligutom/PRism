@@ -149,6 +149,7 @@ pub fn run() {
             conversation::commands::list_pr_timeline_events,
             dashboard::commands::get_pr_route_metadata,
             dashboard::commands::list_dashboard_pull_requests,
+            dashboard::commands::list_dashboard_view_counts,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_team_tracked,
