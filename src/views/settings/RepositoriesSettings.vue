@@ -179,13 +179,13 @@ watch(
     </header>
 
     <p class="repositories-panel__intro">
-      Pick which repositories appear in the <strong>Tracked</strong> view. PRism only fetches data for
-      repos you opt in. Discovery uses GitHub's
-      <code class="repositories-panel__code">/user/repos</code> endpoint.
+      Pick which repositories appear in your <strong>Tracked</strong> view.
+      PRism only watches the repos you opt in, so your connected accounts
+      stay focused on what you actually care about.
     </p>
 
     <div v-if="accountsStore.isEmpty" class="repositories-panel__empty">
-      <p class="repositories-panel__empty-copy">Connect a GitHub account to discover repositories.</p>
+      <p class="repositories-panel__empty-copy">Connect a GitHub account to see your repositories.</p>
       <PRismButton to="/onboarding" variant="primary">Connect an account</PRismButton>
     </div>
 
@@ -240,14 +240,14 @@ watch(
         v-else-if="reposStore.getRepos(account.id).length === 0"
         class="repo-account__empty"
       >
-        <p class="repo-account__empty-copy">No repositories discovered yet.</p>
+        <p class="repo-account__empty-copy">We haven't loaded any repositories yet.</p>
         <PRismButton
           size="sm"
           variant="primary"
           :disabled="reposStore.isRefreshing(account.id)"
           @click="refreshAccount(account.id)"
         >
-          Discover repositories
+          Load repositories
         </PRismButton>
       </div>
 
