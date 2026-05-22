@@ -130,6 +130,10 @@ const isFilteredEmpty = computed<boolean>(() => {
   );
 });
 
+function isGroupCollapsed(bucketKey: string): boolean {
+  return dashboard.collapsedGroups.has(bucketKey);
+}
+
 function routeView(): DashboardViewName | null {
   const meta = route.meta?.dashboardView;
   return typeof meta === "string" ? (meta as DashboardViewName) : null;
@@ -456,8 +460,15 @@ watch(() => route.meta?.dashboardView, () => {
           :count="bucket.items.length"
           :failing="bucket.failingCount"
           :latest-updated-at="bucket.latestUpdatedAt"
+          :collapsed="isGroupCollapsed(bucket.key)"
+          @update:collapsed="(value: boolean) => dashboard.setGroupCollapsed(bucket.key, value)"
         />
-        <TransitionGroup name="dashboard-row" tag="div" class="dashboard__rows">
+        <TransitionGroup
+          v-show="!isGroupCollapsed(bucket.key)"
+          name="dashboard-row"
+          tag="div"
+          class="dashboard__rows"
+        >
           <PullRequestRow
             v-for="pr in bucket.items"
             :key="`${pr.account_ids.join('-')}:${pr.id}`"

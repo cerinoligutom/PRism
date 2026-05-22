@@ -52,17 +52,30 @@ function toggle(): void {
   internalCollapsed.value = !internalCollapsed.value;
   emit("update:collapsed", internalCollapsed.value);
 }
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!props.collapsible) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  // Stop Space from scrolling the list.
+  event.preventDefault();
+  toggle();
+}
 </script>
 
 <template>
-  <div class="group-header">
-    <button
+  <div
+    :class="['group-header', collapsible && 'group-header--collapsible']"
+    :role="collapsible ? 'button' : undefined"
+    :tabindex="collapsible ? 0 : undefined"
+    :aria-expanded="collapsible ? !isCollapsed : undefined"
+    :aria-label="collapsible ? (isCollapsed ? 'Expand group' : 'Collapse group') : undefined"
+    @click="toggle"
+    @keydown="onKeydown"
+  >
+    <span
       v-if="collapsible"
-      type="button"
       class="group-header__chev"
-      :aria-expanded="!isCollapsed"
-      :aria-label="isCollapsed ? 'Expand group' : 'Collapse group'"
-      @click="toggle"
+      aria-hidden="true"
     >
       <svg
         :class="['group-header__chev-icon', isCollapsed && 'group-header__chev-icon--collapsed']"
@@ -71,7 +84,7 @@ function toggle(): void {
       >
         <path d="M5 4l5 4-5 4" />
       </svg>
-    </button>
+    </span>
 
     <span class="group-header__name">
       <template v-if="org !== null">
@@ -115,23 +128,24 @@ function toggle(): void {
   z-index: 2;
 }
 
+.group-header--collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+.group-header--collapsible:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--r-1);
+}
+
 .group-header__chev {
-  background: transparent;
-  border: 0;
-  padding: 0;
   width: 16px;
   height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-faint);
-  cursor: pointer;
-}
-
-.group-header__chev:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: var(--r-1);
 }
 
 .group-header__chev-icon {

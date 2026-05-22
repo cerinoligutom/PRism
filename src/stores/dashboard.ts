@@ -223,6 +223,20 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // reads this ref directly to decide its open state.
   const expandedPullRequestId = ref<number | null>(null);
 
+  // Session-local collapsed groups, keyed by the bucket key produced in the
+  // `groups` computed. Survives navigation between views (the store lives for
+  // the app session) but not a full app restart. Durable persistence across
+  // restarts is a follow-up; unknown keys are dropped on rehydrate when that
+  // lands. Default is empty (all groups expanded).
+  const collapsedGroups = ref<Set<string>>(new Set());
+
+  function setGroupCollapsed(bucketKey: string, collapsed: boolean): void {
+    const next = new Set(collapsedGroups.value);
+    if (collapsed) next.add(bucketKey);
+    else next.delete(bucketKey);
+    collapsedGroups.value = next;
+  }
+
   let statusUnlisten: UnlistenFn | null = null;
   let refreshUnlisten: UnlistenFn | null = null;
   // Bumped while the store owns an archive / unarchive fan-out so the
@@ -731,6 +745,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
     loading,
     lastError,
     expandedPullRequestId,
+    collapsedGroups,
+    setGroupCollapsed,
     viewLabel,
     groups,
     counts,
