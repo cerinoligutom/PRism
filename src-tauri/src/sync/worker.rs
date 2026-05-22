@@ -1232,7 +1232,7 @@ pub fn list_repos_for_account(
     db: &DbHandle,
     account_id: AccountId,
 ) -> Result<Vec<RepoRow>, rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let mut stmt = conn
         .prepare("SELECT id, owner, name FROM repos WHERE account_id = ?1 ORDER BY owner, name")?;
     let rows = stmt
@@ -1248,7 +1248,7 @@ pub fn list_repos_for_account(
 }
 
 pub fn list_prs_for_repo(db: &DbHandle, repo_id: i64) -> Result<Vec<PrRow>, rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let mut stmt = conn.prepare("SELECT id, number FROM pull_requests WHERE repo_id = ?1")?;
     let rows = stmt
         .query_map(params![repo_id], |row| {
@@ -1282,7 +1282,7 @@ pub fn write_pr_updates(
     detail: Option<&crate::github::graphql::PullRequestDetail>,
     events: Option<&[crate::sync::status_timeline::TimelineEvent]>,
 ) -> Result<Vec<NotificationTrigger>, rusqlite::Error> {
-    let mut conn = db.lock().expect("db poisoned");
+    let mut conn = crate::db::lock_db(db)?;
     let tx = conn.transaction()?;
 
     if let Some(d) = detail {
@@ -2269,6 +2269,50 @@ mod tests {
     };
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
+
+    /// Poison the DB mutex by panicking inside a thread that holds the lock,
+    /// then assert the worker helpers surface a `rusqlite::Error` instead of
+    /// propagating the panic up the cycle. The cycle's caller already converts
+    /// these into `CycleOutcome::Failed` so the worker loop continues on the
+    /// next interval (issue #238).
+    #[test]
+    fn list_repos_returns_error_when_mutex_poisoned() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let db: DbHandle = Arc::new(Mutex::new(conn));
+
+        let db_clone = db.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = db_clone.lock().expect("acquire lock");
+            panic!("poison the mutex");
+        });
+        let _ = handle.join();
+        assert!(
+            db.lock().is_err(),
+            "background panic should have poisoned the mutex"
+        );
+
+        let result = list_repos_for_account(&db, 1);
+        assert!(
+            result.is_err(),
+            "list_repos_for_account should surface the poison as an error"
+        );
+    }
+
+    #[test]
+    fn list_prs_returns_error_when_mutex_poisoned() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let db: DbHandle = Arc::new(Mutex::new(conn));
+
+        let db_clone = db.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = db_clone.lock().expect("acquire lock");
+            panic!("poison the mutex");
+        })
+        .join();
+
+        let result = list_prs_for_repo(&db, 1);
+        assert!(result.is_err());
+    }
 
     fn empty_review_threads() -> ReviewThreadConnection {
         ReviewThreadConnection {

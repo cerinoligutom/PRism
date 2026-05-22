@@ -195,7 +195,7 @@ fn upsert_repo(
     account_id: AccountId,
     pr: &DiscoveryPullRequest,
 ) -> Result<i64, rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let owner = pr.repository.owner.login.as_str();
     let name = pr.repository.name.as_str();
     let visibility = pr.repository.visibility();
@@ -224,7 +224,7 @@ fn upsert_pull_request(
     repo_id: i64,
     pr: &DiscoveryPullRequest,
 ) -> Result<i64, rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let state = pr.state.to_lowercase();
     let author = pr.author.as_ref().map(|a| a.login.as_str()).unwrap_or("");
     let created = rfc3339_to_unix(&pr.created_at).unwrap_or(0);
@@ -290,7 +290,7 @@ fn upsert_viewer_relation(
     relation: DiscoveryRelation,
     cycle_start: i64,
 ) -> Result<(), rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let (is_authored, is_review_requested, is_involved) = match relation {
         DiscoveryRelation::Authored => (1i64, 0i64, 0i64),
         DiscoveryRelation::ReviewRequested => (0, 1, 0),
@@ -355,7 +355,7 @@ pub fn prune_stale_relations_for_account(
     account_id: AccountId,
     cycle_start: i64,
 ) -> Result<usize, rusqlite::Error> {
-    let conn = db.lock().expect("db poisoned");
+    let conn = crate::db::lock_db(db)?;
     let removed = conn.execute(
         "DELETE FROM pull_request_viewer_relations
             WHERE account_id = ?1 AND last_seen_at < ?2",
@@ -651,5 +651,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(survivors, 1);
+    }
+
+    #[test]
+    fn prune_returns_db_error_when_mutex_poisoned() {
+        // Issue #238: a poisoned connection mutex must fall through to the
+        // cycle's `DiscoveryError::Db` path instead of panicking. The worker
+        // converts that to `CycleOutcome::Failed` and recovers next interval.
+        let (_dir, db) = fresh_db();
+
+        let db_clone = db.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = db_clone.lock().expect("acquire lock");
+            panic!("poison the mutex");
+        })
+        .join();
+
+        let result = prune_stale_relations_for_account(&db, 1, 200);
+        assert!(
+            matches!(result, Err(rusqlite::Error::ToSqlConversionFailure(_))),
+            "expected ToSqlConversionFailure for poisoned lock, got {result:?}"
+        );
     }
 }
