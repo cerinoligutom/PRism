@@ -67,7 +67,7 @@ export const router = createRouter({
       children: [
         {
           path: "",
-          redirect: { name: "settings.accounts" },
+          redirect: { name: "settings.appearance" },
         },
         {
           path: "accounts",
@@ -88,6 +88,11 @@ export const router = createRouter({
           path: "notifications",
           name: "settings.notifications",
           component: () => import("@/views/settings/NotificationsSettings.vue"),
+        },
+        {
+          path: "sync",
+          name: "settings.sync",
+          component: () => import("@/views/settings/SyncSettings.vue"),
         },
       ],
     },
