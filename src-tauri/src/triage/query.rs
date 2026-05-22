@@ -282,21 +282,40 @@ pub fn chip_predicate(chip: ChipKey) -> &'static str {
 /// no parameters. The caller binds the matching length-0 or length-1 vector
 /// when running the prepared statement.
 fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'static str {
+    // ADR 0018, decision 5: chip counts exclude archived rows so the chip
+    // numbers match the dashboard list shapes. Single-account paths add
+    // `AND rel.archived_at IS NULL` to the WHERE for the relation-backed
+    // views and to the LEFT JOIN's ON clause for the Team view. Unified
+    // paths mirror the dashboard query's `archived_at IS NULL` predicate on
+    // both the EXISTS sub-query and the LEFT JOIN.
+    //
+    // The Archive view (ADR 0018) is intentionally not part of this match.
+    // The chip set doesn't apply to the archive surface in this PR (see
+    // `archive_view_query` in `dashboard::query` for the rationale); the
+    // frontend hides the chip rail on the archive route in W2. Reaching here
+    // with `DashboardView::Archive` would mean a caller bypassed that guard;
+    // the explicit panic surfaces the misuse during development.
     match (view, account_id) {
         (DashboardView::Authored, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
-             WHERE rel.is_authored = 1 AND rel.account_id = ?1"
+             WHERE rel.is_authored = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL"
         }
         (DashboardView::Assigned, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
-             WHERE rel.is_review_requested = 1 AND rel.account_id = ?1"
+             WHERE rel.is_review_requested = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL"
         }
         (DashboardView::Watching, Some(_)) => {
             "FROM pull_request_viewer_relations rel
              JOIN pull_requests pr ON pr.id = rel.pull_request_id
-             WHERE rel.is_involved = 1 AND rel.account_id = ?1"
+             WHERE rel.is_involved = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL"
         }
         (DashboardView::Team, Some(_)) => {
             "FROM pull_requests pr
@@ -304,36 +323,43 @@ fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'sta
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
                AND rel.account_id = ?1
+               AND rel.archived_at IS NULL
              WHERE r.is_team_tracked = 1 AND r.account_id = ?1"
         }
         (DashboardView::Authored, None) => {
             "FROM pull_requests pr
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
              WHERE EXISTS (
                 SELECT 1 FROM pull_request_viewer_relations rel_filter
                  WHERE rel_filter.pull_request_id = pr.id
                    AND rel_filter.is_authored = 1
+                   AND rel_filter.archived_at IS NULL
              )"
         }
         (DashboardView::Assigned, None) => {
             "FROM pull_requests pr
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
              WHERE EXISTS (
                 SELECT 1 FROM pull_request_viewer_relations rel_filter
                  WHERE rel_filter.pull_request_id = pr.id
                    AND rel_filter.is_review_requested = 1
+                   AND rel_filter.archived_at IS NULL
              )"
         }
         (DashboardView::Watching, None) => {
             "FROM pull_requests pr
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
              WHERE EXISTS (
                 SELECT 1 FROM pull_request_viewer_relations rel_filter
                  WHERE rel_filter.pull_request_id = pr.id
                    AND rel_filter.is_involved = 1
+                   AND rel_filter.archived_at IS NULL
              )"
         }
         (DashboardView::Team, None) => {
@@ -341,7 +367,22 @@ fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'sta
              JOIN repos r ON r.id = pr.repo_id
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
-             WHERE r.is_team_tracked = 1"
+               AND rel.archived_at IS NULL
+             WHERE r.is_team_tracked = 1
+               AND (NOT EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_any
+                        WHERE rel_any.pull_request_id = pr.id
+                    )
+                    OR EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_un
+                        WHERE rel_un.pull_request_id = pr.id
+                          AND rel_un.archived_at IS NULL
+                    ))"
+        }
+        (DashboardView::Archive, _) => {
+            // Archive view has no chip rail in this PR; reaching here is a
+            // programmer error.
+            panic!("chip counts are not supported for the Archive view")
         }
     }
 }
@@ -383,11 +424,25 @@ fn count_chip(
 /// to before #171. `account_id = None` (ADR 0016 unified default) fans the
 /// count across every tracked account and dedupes by `pr.id` so a PR matched
 /// via two accounts still contributes one to each chip it triggers.
+///
+/// `DashboardView::Archive` (ADR 0018) short-circuits to zeros. The archive
+/// view doesn't expose the chip rail in this PR; the W2 frontend hides the
+/// chip controls on the archive route. Returning zeros keeps the command
+/// shape uniform if a caller plumbs through the view without checking.
 pub fn list_filter_chip_counts(
     conn: &Connection,
     view: DashboardView,
     account_id: Option<i64>,
 ) -> Result<FilterChipCounts, rusqlite::Error> {
+    if matches!(view, DashboardView::Archive) {
+        return Ok(FilterChipCounts {
+            needs_attention: 0,
+            unresolved_threads: 0,
+            ci_failing: 0,
+            stale: 0,
+            drafts: 0,
+        });
+    }
     Ok(FilterChipCounts {
         needs_attention: count_chip(conn, view, account_id, ChipKey::NeedsAttention)?,
         unresolved_threads: count_chip(conn, view, account_id, ChipKey::UnresolvedThreads)?,
@@ -410,6 +465,11 @@ pub fn list_filter_chip_counts(
 /// is only meaningful for the active account. The repo-owner predicate
 /// matches the Team view's `r.account_id = ?` filter so the badge can't
 /// over-count cross-account relation rows.
+///
+/// ADR 0018, decision 5: archived rows do not contribute to attention totals.
+/// `rel.archived_at IS NULL` gates the per-account scan so an archived PR
+/// keeps `needs_attention = 1` on disk (the recompute path stays archive-
+/// agnostic) but stops boosting the sidebar count chip.
 pub fn count_sidebar_attention(
     conn: &Connection,
     account_id: i64,
@@ -429,7 +489,8 @@ pub fn count_sidebar_attention(
                     ) THEN 1 ELSE 0 END) AS team
            FROM pull_request_viewer_relations rel
           WHERE rel.account_id = ?1
-            AND rel.needs_attention = 1",
+            AND rel.needs_attention = 1
+            AND rel.archived_at IS NULL",
     )?;
     let counts = stmt.query_row(params![account_id], |row| {
         Ok(SidebarAttentionCounts {
@@ -1432,5 +1493,138 @@ mod tests {
         assert_eq!(archived, 2);
         assert!(read_archived_at(&conn, 1, 100).is_some());
         assert!(read_archived_at(&conn, 2, 100).is_some());
+    }
+
+    // ===== ADR 0018 archive exclusion tests (issue #194) =====
+
+    /// Sidebar attention counts exclude archived rows. A relation with
+    /// `needs_attention = 1` AND `archived_at IS NOT NULL` does not boost the
+    /// count chip - archived rows live in the Archive view, not the active
+    /// queue.
+    #[test]
+    fn count_sidebar_attention_excludes_archived_rows() {
+        let conn = fresh_db();
+        seed_sidebar_fixture(&conn);
+        // Flag every relation and archive PR 100 (alice's authored). The
+        // sidebar count for Authored should drop to zero; Assigned and
+        // Watching keep their non-archived rows.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET needs_attention = 1
+              WHERE account_id = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+
+        let counts = count_sidebar_attention(&conn, 1).unwrap();
+        assert_eq!(
+            counts.authored, 0,
+            "PR 100 carried the only Authored attention row; archive drops it"
+        );
+        assert_eq!(counts.assigned, 1, "Assigned bucket (PR 200) unaffected");
+        assert_eq!(counts.watching, 1, "Watching bucket (PR 300) unaffected");
+    }
+
+    /// Chip counts exclude archived rows: a PR matching a chip predicate but
+    /// archived on the active account does not contribute to the count.
+    #[test]
+    fn count_chip_excludes_archived_rows_single_account_scope() {
+        let conn = fresh_db();
+        seed_chip_count_fixture(&conn);
+        // The fixture has PR 604 as the sole needs_attention row. Archive
+        // alice's relation on it - the chip count should drop to zero.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE account_id = 1 AND pull_request_id = 604",
+            [],
+        )
+        .unwrap();
+
+        let counts = list_filter_chip_counts(&conn, DashboardView::Watching, Some(1)).unwrap();
+        assert_eq!(
+            counts.needs_attention, 0,
+            "archived row must not contribute to the chip count"
+        );
+        // Sanity: other chips reading non-relation columns are also gated by
+        // the relation row - archiving alice's relation removes PR 604 from
+        // the Watching FROM clause entirely.
+        assert!(
+            counts.drafts == 1 && counts.ci_failing == 1 && counts.stale == 1,
+            "unrelated chip predicates still count their respective PRs"
+        );
+    }
+
+    /// Chip counts under unified scope: same predicate applies to both the
+    /// EXISTS view-filter and the LEFT JOIN. A PR with every relation
+    /// archived drops out of the count entirely; a PR with a mix keeps
+    /// counting through the unarchived relation.
+    #[test]
+    fn count_chip_excludes_archived_rows_unified_scope() {
+        let conn = fresh_db();
+        seed_two_account_shared_pr_attention_fixture(&conn);
+        // Both relations carry `needs_attention = 1`. Archive both - the
+        // PR should drop from every union view's chip count.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+
+        for view in [DashboardView::Authored, DashboardView::Assigned] {
+            let counts = list_filter_chip_counts(&conn, view, None).unwrap();
+            assert_eq!(
+                counts.needs_attention, 0,
+                "{view:?} unified count excludes a fully-archived PR"
+            );
+        }
+    }
+
+    /// Chip counts under unified scope: a partial archive (one account
+    /// archived, one not) keeps the PR in the count via the unarchived
+    /// relation. Mirrors the dashboard query's union-mode shape.
+    #[test]
+    fn count_chip_keeps_partial_archive_in_unified_scope() {
+        let conn = fresh_db();
+        seed_two_account_shared_pr_attention_fixture(&conn);
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+
+        // Account 2's review-requested relation is unarchived and carries
+        // needs_attention = 1; Assigned union should count the PR.
+        let counts = list_filter_chip_counts(&conn, DashboardView::Assigned, None).unwrap();
+        assert_eq!(
+            counts.needs_attention, 1,
+            "unarchived relation keeps the PR in the unified chip count"
+        );
+    }
+
+    /// `list_filter_chip_counts` short-circuits to zeros for the Archive
+    /// view. The W2 frontend hides the chip rail on archive, but the command
+    /// shape stays uniform.
+    #[test]
+    fn list_filter_chip_counts_returns_zeros_for_archive_view() {
+        let conn = fresh_db();
+        seed_chip_count_fixture(&conn);
+        let counts = list_filter_chip_counts(&conn, DashboardView::Archive, Some(1)).unwrap();
+        assert_eq!(counts.needs_attention, 0);
+        assert_eq!(counts.unresolved_threads, 0);
+        assert_eq!(counts.ci_failing, 0);
+        assert_eq!(counts.stale, 0);
+        assert_eq!(counts.drafts, 0);
     }
 }

@@ -14,6 +14,13 @@ pub enum DashboardView {
     Assigned,
     Watching,
     Team,
+    /// Archive bucket (ADR 0018). Returns only rows where the
+    /// `pull_request_viewer_relations.archived_at` column is non-NULL. Ignores
+    /// the four-view-split predicates (`is_authored`, `is_review_requested`,
+    /// `is_involved`, `repos.is_team_tracked`) - archive is global across every
+    /// relation a viewer holds. Wave 2 wires the route, sidebar entry, and the
+    /// PR row archive action; this variant lands the read path only.
+    Archive,
 }
 
 /// Sort order for the dashboard list.

@@ -185,11 +185,17 @@ enum QueryShape {
 /// run before the GROUP BY so the merge only sees rows the chips already
 /// admitted, matching the single-account behaviour where the chip filters
 /// rows directly.
+///
+/// `order_override` lets a caller substitute a view-specific ORDER BY. The
+/// Archive view (ADR 0018) uses this to default to `archived_at DESC` when
+/// the caller didn't pick a non-default sort; passing `None` keeps the
+/// sort-derived ORDER BY (the behaviour every default view relies on).
 fn build_sql(
     from_and_where: &str,
     chip_clause: &str,
     sort: DashboardSort,
     shape: QueryShape,
+    order_override: Option<&str>,
 ) -> String {
     let order_by = match sort {
         DashboardSort::Updated => {
@@ -223,20 +229,24 @@ fn build_sql(
                 }
                 _ => order_by,
             };
+            let effective_order = order_override.unwrap_or(order_by_single);
             format!(
                 "SELECT {PR_PROJECTION_COLUMNS}
                  {from_and_where}
                  {chip_clause}
-                 {order_by_single}"
+                 {effective_order}"
             )
         }
-        QueryShape::Union => format!(
-            "SELECT {PR_PROJECTION_COLUMNS_UNION}
-             {from_and_where}
-             {chip_clause}
-             GROUP BY pr.id
-             {order_by}"
-        ),
+        QueryShape::Union => {
+            let effective_order = order_override.unwrap_or(order_by);
+            format!(
+                "SELECT {PR_PROJECTION_COLUMNS_UNION}
+                 {from_and_where}
+                 {chip_clause}
+                 GROUP BY pr.id
+                 {effective_order}"
+            )
+        }
     }
 }
 
@@ -337,6 +347,7 @@ fn view_query(
             relation_view_query("is_involved", sort, account_id, active_chips)
         }
         DashboardView::Team => team_view_query(sort, account_id, active_chips),
+        DashboardView::Archive => archive_view_query(sort, account_id, active_chips),
     }
 }
 
@@ -383,6 +394,10 @@ fn relation_view_query(
     let chip_clause = chip_where_clause(active_chips);
     match account_id {
         Some(id) => {
+            // ADR 0018, decision 5: default views hide rows the active account
+            // has archived. The INNER JOIN keys on the (account, PR) relation
+            // row, so a `rel.archived_at IS NOT NULL` row drops directly from
+            // the WHERE.
             let from_and_where = format!(
                 "FROM pull_request_viewer_relations rel
                  JOIN pull_requests pr ON pr.id = rel.pull_request_id
@@ -391,7 +406,8 @@ fn relation_view_query(
                  LEFT JOIN users author_u ON author_u.login = pr.author_login
                  {thread_buckets}
                  WHERE rel.{flag_column} = 1
-                   AND rel.account_id = ?1"
+                   AND rel.account_id = ?1
+                   AND rel.archived_at IS NULL"
             );
             (
                 build_sql(
@@ -399,11 +415,32 @@ fn relation_view_query(
                     &chip_clause,
                     sort,
                     QueryShape::SingleAccount,
+                    None,
                 ),
                 vec![id],
             )
         }
         None => {
+            // ADR 0018 unified-scope semantics: a PR is archived in the union
+            // iff every relation owner has archived it. Equivalently the PR is
+            // visible iff at least one relation has `archived_at IS NULL`
+            // (the MAX aggregation idiom from ADR 0016:
+            // `MAX(rel.archived_at IS NULL) = 1` over surviving rows).
+            //
+            // Two predicates encode this:
+            // 1. The view-filter EXISTS gains `archived_at IS NULL` so the PR
+            //    only enters the union when at least one tracked account has
+            //    an unarchived relation with the right flag.
+            // 2. The LEFT JOIN's ON clause filters relations to the unarchived
+            //    subset so the GROUP BY merges only over unarchived rows. The
+            //    `account_ids` projection then carries every surviving
+            //    relation owner; archived relations don't appear in the merged
+            //    row's identity. Mirrors ADR 0016's failure-isolation shape.
+            //
+            // Together: a PR with two relations (one archived, one not)
+            // surfaces once with `account_ids` containing only the unarchived
+            // owner. A PR with every relation archived fails the EXISTS and
+            // drops from the union.
             let from_and_where = format!(
                 "FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
@@ -411,15 +448,17 @@ fn relation_view_query(
                  LEFT JOIN users author_u ON author_u.login = pr.author_login
                  LEFT JOIN pull_request_viewer_relations rel
                    ON rel.pull_request_id = pr.id
+                   AND rel.archived_at IS NULL
                  {thread_buckets}
                  WHERE EXISTS (
                     SELECT 1 FROM pull_request_viewer_relations rel_filter
                      WHERE rel_filter.pull_request_id = pr.id
                        AND rel_filter.{flag_column} = 1
+                       AND rel_filter.archived_at IS NULL
                  )"
             );
             (
-                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union),
+                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union, None),
                 Vec::new(),
             )
         }
@@ -443,6 +482,14 @@ fn team_view_query(
     let chip_clause = chip_where_clause(active_chips);
     match account_id {
         Some(id) => {
+            // ADR 0018, decision 5: Team view also hides archived rows. The
+            // relation join is a LEFT JOIN (PRs in team-tracked repos surface
+            // even without a relation row), so the archive predicate sits on
+            // the ON clause - an archived relation row drops to NULL during
+            // the join and the PR keeps surfacing with the default triage
+            // values (same shape as a Team-view PR the viewer has no relation
+            // to). The repo-flag filter remains the row-set predicate; archive
+            // is a per-account viewer signal layered on top.
             let from_and_where = format!(
                 "FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
@@ -450,7 +497,9 @@ fn team_view_query(
                  LEFT JOIN users author_u ON author_u.login = pr.author_login
                  {thread_buckets}
                  LEFT JOIN pull_request_viewer_relations rel
-                     ON rel.pull_request_id = pr.id AND rel.account_id = ?1
+                     ON rel.pull_request_id = pr.id
+                    AND rel.account_id = ?1
+                    AND rel.archived_at IS NULL
                   WHERE r.is_team_tracked = 1
                     AND r.account_id = ?1"
             );
@@ -460,11 +509,22 @@ fn team_view_query(
                     &chip_clause,
                     sort,
                     QueryShape::SingleAccount,
+                    None,
                 ),
                 vec![id],
             )
         }
         None => {
+            // ADR 0018 unified-scope Team view: hide a PR iff it has at least
+            // one relation AND every relation is archived. A team-tracked PR
+            // with no relations stays visible (the team filter is repo-based;
+            // there is nothing to archive). A PR with mixed archive states
+            // stays visible via the unarchived relation.
+            //
+            // The LEFT JOIN filters relations to the unarchived subset so the
+            // GROUP BY's `account_ids` only carries surviving relation owners.
+            // The WHERE adds a "no relations OR at least one unarchived" guard
+            // so the all-archived case drops from the union.
             let from_and_where = format!(
                 "FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
@@ -472,11 +532,121 @@ fn team_view_query(
                  LEFT JOIN users author_u ON author_u.login = pr.author_login
                  LEFT JOIN pull_request_viewer_relations rel
                      ON rel.pull_request_id = pr.id
+                    AND rel.archived_at IS NULL
                  {thread_buckets}
-                  WHERE r.is_team_tracked = 1"
+                  WHERE r.is_team_tracked = 1
+                    AND (NOT EXISTS (
+                            SELECT 1 FROM pull_request_viewer_relations rel_any
+                             WHERE rel_any.pull_request_id = pr.id
+                         )
+                         OR EXISTS (
+                            SELECT 1 FROM pull_request_viewer_relations rel_un
+                             WHERE rel_un.pull_request_id = pr.id
+                               AND rel_un.archived_at IS NULL
+                         ))"
             );
             (
-                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union),
+                build_sql(&from_and_where, &chip_clause, sort, QueryShape::Union, None),
+                Vec::new(),
+            )
+        }
+    }
+}
+
+/// Archive view: PRs the viewer has archived (ADR 0018). Inverts the
+/// archive predicate from the four default views - the FROM/WHERE keys on
+/// `rel.archived_at IS NOT NULL`. Ignores `is_authored` / `is_review_requested`
+/// / `is_involved` / `repos.is_team_tracked`; archive is global across every
+/// relation a viewer holds.
+///
+/// Default sort: `archived_at DESC`, most-recently-archived first. The Archive
+/// view substitutes this for `DashboardSort::Updated` (the contract's default
+/// passed in by the dashboard store); the explicit `Stale` and `NeedsMe`
+/// selections still apply when the user picks them.
+///
+/// Filter chips intentionally do not apply in this PR. Most chips
+/// (`needs-attention`, `stale`) are oriented around the active queue; their
+/// interaction with the archive view is a UX decision deferred to the W2
+/// frontend issue. Active chips passed in are still composed into the WHERE
+/// so the SQL composition stays uniform with the other views, but the W2 UI
+/// is expected to hide the chip rail on this view.
+fn archive_view_query(
+    sort: DashboardSort,
+    account_id: Option<i64>,
+    active_chips: &[ChipKey],
+) -> (String, Vec<i64>) {
+    let thread_buckets = thread_buckets_subquery(thread_buckets_in_scope_predicate(account_id));
+    let chip_clause = chip_where_clause(active_chips);
+    // `archived_at DESC` is the Archive view's most-recently-archived-first
+    // default; `pr.id DESC` keeps the order stable when two relations share
+    // an archive timestamp.
+    let single_order = "ORDER BY rel.archived_at DESC, pr.id DESC";
+    let union_order = "ORDER BY MAX(rel.archived_at) DESC, pr.id DESC";
+    let order_override_single = match sort {
+        DashboardSort::Updated => Some(single_order),
+        _ => None,
+    };
+    let order_override_union = match sort {
+        DashboardSort::Updated => Some(union_order),
+        _ => None,
+    };
+    match account_id {
+        Some(id) => {
+            // Single-account scope: INNER JOIN keys on the (account, PR)
+            // relation row, predicate inverts the default-view archive guard.
+            let from_and_where = format!(
+                "FROM pull_request_viewer_relations rel
+                 JOIN pull_requests pr ON pr.id = rel.pull_request_id
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts a ON a.id = rel.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 {thread_buckets}
+                 WHERE rel.account_id = ?1
+                   AND rel.archived_at IS NOT NULL"
+            );
+            (
+                build_sql(
+                    &from_and_where,
+                    &chip_clause,
+                    sort,
+                    QueryShape::SingleAccount,
+                    order_override_single,
+                ),
+                vec![id],
+            )
+        }
+        None => {
+            // Unified scope: the view surfaces a PR iff at least one tracked
+            // account has archived it. The LEFT JOIN admits only archived
+            // relations so `account_ids` reflects the archiving owners. The
+            // view-filter EXISTS bounds the row set to PRs with at least one
+            // archived relation; an unarchived relation on a co-owner doesn't
+            // pull the row out of the archive (that's the symmetric inverse
+            // of the default-view rule - the row appears in both the active
+            // queue and the archive when only some accounts archived).
+            let from_and_where = format!(
+                "FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 JOIN accounts acc_repo ON acc_repo.id = r.account_id
+                 LEFT JOIN users author_u ON author_u.login = pr.author_login
+                 LEFT JOIN pull_request_viewer_relations rel
+                   ON rel.pull_request_id = pr.id
+                   AND rel.archived_at IS NOT NULL
+                 {thread_buckets}
+                 WHERE EXISTS (
+                    SELECT 1 FROM pull_request_viewer_relations rel_filter
+                     WHERE rel_filter.pull_request_id = pr.id
+                       AND rel_filter.archived_at IS NOT NULL
+                 )"
+            );
+            (
+                build_sql(
+                    &from_and_where,
+                    &chip_clause,
+                    sort,
+                    QueryShape::Union,
+                    order_override_union,
+                ),
                 Vec::new(),
             )
         }
