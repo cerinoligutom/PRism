@@ -1286,7 +1286,18 @@ pub fn write_pr_updates(
     let tx = conn.transaction()?;
 
     if let Some(d) = detail {
-        let state = if d.merged { "merged" } else { d.state.as_str() };
+        // GitHub's GraphQL returns `state` as upper-cased enum ("OPEN" /
+        // "CLOSED"); the dashboard query and the auto-archive sweep both
+        // filter on lowercase values (matching how `discovery.rs` writes the
+        // initial row). Normalising here keeps every persisted row in the
+        // canonical lowercase shape - without this, the enrichment overwrite
+        // would flip every freshly-fetched PR out of the open-only default
+        // views as the cycle progressed.
+        let state = if d.merged {
+            "merged".to_string()
+        } else {
+            d.state.to_lowercase()
+        };
         let author = d.author.as_ref().map(|a| a.login.as_str()).unwrap_or("");
         let ci = compute_ci_rollup(d);
         tx.execute(

@@ -16,18 +16,6 @@ import { RouterLink, RouterView } from "vue-router";
 
       <h6 class="section-title settings__heading">Settings</h6>
       <nav class="settings__nav">
-        <RouterLink to="/settings/accounts" class="nav-item" :class="{ active: $route.name === 'settings.accounts' }">
-          <span class="nav-icon">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="2.5" /><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4" /></svg>
-          </span>
-          Accounts
-        </RouterLink>
-        <RouterLink to="/settings/repositories" class="nav-item" :class="{ active: $route.name === 'settings.repositories' }">
-          <span class="nav-icon">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h7l3 3v8H3z" /><path d="M3 11h10" /><path d="M6 2.5v3h4v-3" /></svg>
-          </span>
-          Repositories
-        </RouterLink>
         <RouterLink to="/settings/appearance" class="nav-item" :class="{ active: $route.name === 'settings.appearance' }">
           <span class="nav-icon">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 010 10" fill="currentColor" /></svg>
@@ -39,6 +27,18 @@ import { RouterLink, RouterView } from "vue-router";
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6a4 4 0 018 0v3l1 2H3l1-2V6z" /><path d="M6.5 13a1.5 1.5 0 003 0" /></svg>
           </span>
           Notifications
+        </RouterLink>
+        <RouterLink to="/settings/accounts" class="nav-item" :class="{ active: $route.name === 'settings.accounts' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="6" r="2.5" /><path d="M3 14c.5-2.5 2.5-4 5-4s4.5 1.5 5 4" /></svg>
+          </span>
+          Accounts
+        </RouterLink>
+        <RouterLink to="/settings/repositories" class="nav-item" :class="{ active: $route.name === 'settings.repositories' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h7l3 3v8H3z" /><path d="M3 11h10" /><path d="M6 2.5v3h4v-3" /></svg>
+          </span>
+          Repositories
         </RouterLink>
       </nav>
     </aside>
