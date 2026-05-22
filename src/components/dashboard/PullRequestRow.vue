@@ -14,6 +14,7 @@ import type {
   RowDensity,
 } from "@/types/dashboard";
 import { secondsSince } from "@/lib/format";
+import { useToastStore } from "@/stores/toast";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
@@ -76,6 +77,8 @@ const emit = defineEmits<{
    * from the Archive view's overflow. */
   unarchive: [pullRequest: DashboardPullRequest];
 }>();
+
+const toastStore = useToastStore();
 
 type RowStrip =
   | "row-strip-needs"
@@ -226,6 +229,22 @@ function openOnGitHub(event: MouseEvent): void {
 
 function onMarkUnread(): void {
   emit("mark-unread", props.pullRequest);
+}
+
+/**
+ * Copy the PR's GitHub URL via the standard Web Clipboard API. The Tauri
+ * WebView supports `navigator.clipboard.writeText` out of the box for a
+ * focused window, so a dedicated Tauri clipboard plugin would be extra
+ * surface area for no benefit. Toast on success or failure either way -
+ * silent failure here is worse than the click feeling unresponsive.
+ */
+async function onCopyLink(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(props.pullRequest.url);
+    toastStore.show("Link copied", { variant: "success", duration: 2000 });
+  } catch {
+    toastStore.show("Couldn't copy link", { variant: "danger", duration: 2000 });
+  }
 }
 
 /**
@@ -538,13 +557,64 @@ function onUnarchive(): void {
             :disabled="unread"
             @select="onMarkUnread"
           >
-            Mark unread
+            <svg
+              class="pr-row__menu-item-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="3.25" />
+            </svg>
+            <span class="pr-row__menu-item-label">Mark unread</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            class="pr-row__menu-item"
+            @select="onCopyLink"
+          >
+            <svg
+              class="pr-row__menu-item-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6.75 9.25a2.5 2.5 0 003.54 0l2.25-2.25a2.5 2.5 0 10-3.54-3.54l-.75.75" />
+              <path d="M9.25 6.75a2.5 2.5 0 00-3.54 0L3.46 9a2.5 2.5 0 103.54 3.54l.75-.75" />
+            </svg>
+            <span class="pr-row__menu-item-label">Copy link</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             v-if="canArchive && !isArchiveView"
             class="pr-row__menu-item pr-row__menu-item--stacked"
             @select="onArchive"
           >
+            <svg
+              class="pr-row__menu-item-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="3" width="12" height="3" rx="0.75" />
+              <path d="M3 6v6.5a1 1 0 001 1h8a1 1 0 001-1V6" />
+              <path d="M6.5 9h3" />
+            </svg>
             <span class="pr-row__menu-item-label">Archive</span>
             <span class="pr-row__menu-item-hint">
               Hides from PRism only - the PR on GitHub is unchanged.
@@ -555,6 +625,22 @@ function onUnarchive(): void {
             class="pr-row__menu-item pr-row__menu-item--stacked"
             @select="onUnarchive"
           >
+            <svg
+              class="pr-row__menu-item-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="3" width="12" height="3" rx="0.75" />
+              <path d="M3 6v6.5a1 1 0 001 1h8a1 1 0 001-1V6" />
+              <path d="M8 12V7.75M6 9.5L8 7.5l2 2" />
+            </svg>
             <span class="pr-row__menu-item-label">Unarchive</span>
             <span class="pr-row__menu-item-hint">
               Restores to PRism's default views. No GitHub action.
@@ -970,9 +1056,15 @@ function onUnarchive(): void {
   z-index: 50;
 }
 
+/* Flat items: icon and label in a single row. Stacked items: icon sits in
+ * column 1 aligned to the label row, hint spans column 2 so the secondary
+ * copy reads under the label rather than the icon. Same column gutter in
+ * both layouts so the icon column lines up vertically across entries. */
 .pr-row__menu-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px 1fr;
   align-items: center;
+  column-gap: 8px;
   height: 28px;
   padding: 0 10px;
   font-size: var(--fs-12);
@@ -994,18 +1086,36 @@ function onUnarchive(): void {
   pointer-events: none;
 }
 
+.pr-row__menu-item-icon {
+  color: var(--text-faint);
+}
+
+.pr-row__menu-item[data-highlighted] .pr-row__menu-item-icon {
+  color: inherit;
+}
+
 .pr-row__menu-item--stacked {
-  flex-direction: column;
-  align-items: flex-start;
+  grid-template-rows: auto auto;
+  align-items: start;
+  row-gap: 2px;
   height: auto;
   padding: 6px 10px;
-  gap: 2px;
+}
+
+.pr-row__menu-item--stacked .pr-row__menu-item-icon {
+  /* Optical nudge so the 14px svg's stroke centre lines up with the label
+   * cap-height instead of sitting flush against the row's top edge. */
+  margin-top: 1px;
 }
 
 .pr-row__menu-item-label {
   font-size: var(--fs-12);
   color: inherit;
   line-height: 1.2;
+}
+
+.pr-row__menu-item--stacked .pr-row__menu-item-hint {
+  grid-column: 2;
 }
 
 .pr-row__menu-item-hint {
