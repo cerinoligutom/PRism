@@ -85,14 +85,13 @@ function onHueInput(event: Event): void {
   <div class="appearance-panel">
     <header class="appearance-panel__header">
       <h1 class="appearance-panel__title">Appearance</h1>
-      <span class="appearance-panel__sub">THEME, ACCENT, DENSITY</span>
     </header>
 
     <section class="appearance-panel__section">
       <div class="appearance-panel__section-head">
         <h3 class="appearance-panel__section-title">Theme &amp; layout</h3>
         <span class="appearance-panel__section-desc">
-          Settings persist locally and reapply on next launch.
+          Your choices stick around the next time you open PRism.
         </span>
       </div>
 

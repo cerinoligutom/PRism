@@ -70,6 +70,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
     <h6 class="stat-card__title">Conversation stats</h6>
     <div class="stat-card__stack">
       <PRismTooltip
+        side="left"
         text="Time since the earliest unresolved review thread on this PR was opened. Empty when all threads are resolved."
         :as-child="true"
       >
@@ -85,6 +86,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
       </PRismTooltip>
 
       <PRismTooltip
+        side="left"
         text="Median time between consecutive comments inside review threads, across the PR's lifetime."
         :as-child="true"
       >
@@ -100,7 +102,8 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
       </PRismTooltip>
 
       <PRismTooltip
-        text="Percentage of review threads marked resolved, including outdated threads (ADR 0012)."
+        side="left"
+        text="Share of review threads marked resolved. Outdated threads count as part of the total."
         :as-child="true"
       >
         <div class="stat-tile">
@@ -114,7 +117,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
         </div>
       </PRismTooltip>
 
-      <PRismTooltip :as-child="true">
+      <PRismTooltip side="left" :as-child="true">
         <div class="stat-tile">
           <div class="stat-tile__value">
             {{ totalComments.value }}
@@ -136,6 +139,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
       </PRismTooltip>
 
       <PRismTooltip
+        side="left"
         text="Distinct authors who've commented or submitted a review on this PR. Each person counts once even if they appear on multiple surfaces."
         :as-child="true"
       >
@@ -147,7 +151,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
         </div>
       </PRismTooltip>
 
-      <PRismTooltip :as-child="true">
+      <PRismTooltip side="left" :as-child="true">
         <div class="stat-tile">
           <div class="stat-tile__value">
             {{ reviewsSubmitted.value }}
@@ -170,6 +174,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
       </PRismTooltip>
 
       <PRismTooltip
+        side="left"
         text="Time since the most recent comment, reply, or submitted review on this PR."
         :as-child="true"
       >

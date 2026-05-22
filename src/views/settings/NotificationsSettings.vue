@@ -162,7 +162,6 @@ onMounted(() => {
   <div class="notifications-panel">
     <header class="notifications-panel__header">
       <h1 class="notifications-panel__title">Notifications</h1>
-      <span class="notifications-panel__sub">DESKTOP TOASTS, TRIGGERS</span>
     </header>
 
     <PRismCallout
@@ -182,11 +181,10 @@ onMounted(() => {
 
     <section class="notifications-panel__section">
       <div class="notifications-panel__section-head">
-        <h3 class="notifications-panel__section-title">Desktop toasts</h3>
+        <h3 class="notifications-panel__section-title">Desktop notifications</h3>
         <span class="notifications-panel__section-desc">
-          PRism sends OS notifications when a PR newly wants your attention.
-          Toggle the triggers you care about; the in-app sidebar dots stay on
-          regardless.
+          Get a notification when a pull request needs you. Pick which moments
+          warrant the interruption - the in-app sidebar dots stay on either way.
         </span>
       </div>
 
@@ -195,8 +193,8 @@ onMounted(() => {
           <div>
             <div class="set-row__name">Enable desktop notifications</div>
             <div class="set-row__desc">
-              Master switch. Turning this on asks your OS for permission the
-              first time.
+              When on, PRism can pop a system notification. Your OS will ask
+              for permission the first time.
             </div>
           </div>
           <PRismSwitch
@@ -208,10 +206,9 @@ onMounted(() => {
 
         <div class="set-row" :class="{ 'set-row--muted': !masterChecked }">
           <div>
-            <div class="set-row__name">When a PR newly needs your attention</div>
+            <div class="set-row__name">A PR starts needing you</div>
             <div class="set-row__desc">
-              Fires when the &ldquo;needs your attention&rdquo; signal flips
-              from 0 to 1 on a PR.
+              The moment a pull request first lands in your needs-attention list.
             </div>
           </div>
           <PRismSwitch
@@ -223,10 +220,9 @@ onMounted(() => {
 
         <div class="set-row" :class="{ 'set-row--muted': !masterChecked }">
           <div>
-            <div class="set-row__name">When you&rsquo;re mentioned in a thread</div>
+            <div class="set-row__name">Someone @-mentions you</div>
             <div class="set-row__desc">
-              Fires on each new unresolved &commat;-mention across the PRs you
-              follow.
+              Each new mention in a pull request you're following.
             </div>
           </div>
           <PRismSwitch
@@ -238,7 +234,7 @@ onMounted(() => {
       </div>
 
       <p v-if="!isMacPlatform" class="notifications-panel__platform-note">
-        Dock / taskbar badge is macOS-only in this release.
+        The unread count badge on the app icon is macOS-only for now.
       </p>
 
       <p v-if="settingsStore.lastError" class="notifications-panel__error">

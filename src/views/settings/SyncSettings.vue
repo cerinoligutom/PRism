@@ -10,14 +10,11 @@ interface IntervalOption {
   readonly hint: string;
 }
 
-// The set spans the backend's clamp range (30s-600s, ADR 0004). The smallest
-// value pushes the rate-budget guard the hardest; the largest is the
-// background-friendly ceiling the worker will honour.
 const INTERVAL_OPTIONS: readonly IntervalOption[] = [
-  { value: 30, label: "30 seconds", hint: "High frequency. Watch your rate budget." },
-  { value: 60, label: "1 minute", hint: "Default. Balances freshness and API cost." },
-  { value: 300, label: "5 minutes", hint: "Quieter polling for steady-state dashboards." },
-  { value: 600, label: "10 minutes", hint: "Background pace. Maximum allowed interval." },
+  { value: 30, label: "Every 30 seconds", hint: "Fastest updates. Best when you're actively reviewing." },
+  { value: 60, label: "Every minute", hint: "Recommended. Quick to notice changes without being chatty." },
+  { value: 300, label: "Every 5 minutes", hint: "Easy on your network and battery." },
+  { value: 600, label: "Every 10 minutes", hint: "Quietest setting. Great for background." },
 ];
 
 const sync = useSyncStore();
@@ -69,21 +66,20 @@ onMounted(async () => {
   <div class="sync-panel">
     <header class="sync-panel__header">
       <h1 class="sync-panel__title">Sync</h1>
-      <span class="sync-panel__sub">POLL INTERVAL</span>
     </header>
 
     <p class="sync-panel__explainer">
-      PRism polls GitHub on this interval to refresh PR state. Conditional
-      requests (ETag / If-None-Match, per <strong>ADR 0004</strong>) skip the
-      bulk of the payload when nothing has changed, so a tighter interval
-      doesn't burn rate budget unless real updates are flowing.
+      Choose how often PRism checks GitHub for new activity. Faster intervals
+      surface changes sooner; slower intervals are kinder to your network.
+      PRism is smart about it - if nothing has changed upstream, the check
+      is nearly free.
     </p>
 
     <section class="sync-panel__section">
       <div class="sync-panel__section-head">
-        <h3 class="sync-panel__section-title">Poll interval</h3>
+        <h3 class="sync-panel__section-title">How often to check</h3>
         <span class="sync-panel__section-desc">
-          Applies to all connected accounts. Changes take effect on the next sync cycle.
+          Applies to every connected account. New setting takes effect on the next check.
         </span>
       </div>
 
