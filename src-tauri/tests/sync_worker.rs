@@ -1192,6 +1192,26 @@ fn pr_detail_body_with_threads_and_issue_comments(
     reviews: &[ReviewFixture<'_>],
     issue_comments_total: i64,
 ) -> String {
+    pr_detail_body_with_threads_at(
+        threads,
+        reviews,
+        issue_comments_total,
+        "2026-05-19T11:00:00Z",
+    )
+}
+
+/// Variant that lets tests advance the PR's `updatedAt` between cycles -
+/// matches the real-world contract that GitHub bumps `updated_at` when
+/// review threads / reviews change. The default helper above pins it to a
+/// fixed value for single-cycle tests; this one is for two-cycle scenarios
+/// that need the marker to move so the issue #232 skip path doesn't elide
+/// the second fetch.
+fn pr_detail_body_with_threads_at(
+    threads: &[ThreadFixture<'_>],
+    reviews: &[ReviewFixture<'_>],
+    issue_comments_total: i64,
+    updated_at: &str,
+) -> String {
     let thread_nodes: Vec<String> = threads
         .iter()
         .map(|t| {
@@ -1261,7 +1281,7 @@ fn pr_detail_body_with_threads_and_issue_comments(
                         "mergeable": "MERGEABLE",
                         "url": "https://github.com/owner/repo/pull/42",
                         "createdAt": "2026-05-18T10:00:00Z",
-                        "updatedAt": "2026-05-19T11:00:00Z",
+                        "updatedAt": "{updated_at}",
                         "author": {{ "login": "alice" }},
                         "baseRefName": "main",
                         "headRefName": "feat/threads",
@@ -1282,7 +1302,8 @@ fn pr_detail_body_with_threads_and_issue_comments(
             }}
         }}"#,
         thread_nodes.join(","),
-        review_nodes.join(",")
+        review_nodes.join(","),
+        updated_at = updated_at,
     )
 }
 
@@ -1398,8 +1419,10 @@ async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycl
 
     // Cycle 2: drop PRRT_drop + PRR_drop; resolve the previously-unresolved
     // thread; flip the previously-resolved thread back to unresolved; bump
-    // issue_comments_count to 8.
-    let cycle2_body = pr_detail_body_with_threads_and_issue_comments(
+    // issue_comments_count to 8. Bump `updatedAt` so the issue #232 skip
+    // path doesn't elide the second fetch - the real GitHub contract is
+    // that thread / review changes bump `updated_at`.
+    let cycle2_body = pr_detail_body_with_threads_at(
         &[
             ThreadFixture {
                 node_id: "PRRT_unresolved",
@@ -1425,6 +1448,7 @@ async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycl
             author: "bob",
         }],
         8,
+        "2026-05-19T12:00:00Z",
     );
     Mock::given(method("POST"))
         .and(path("/graphql"))
@@ -1434,6 +1458,19 @@ async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycl
         )
         .mount(&server)
         .await;
+
+    // Simulate discovery seeing a newer `updated_at` for this PR (the M7 skip
+    // path keys off the discovery-just-written value; with mounted empty
+    // discovery we set it directly so the second cycle still fetches detail).
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests SET updated_at = ?1 WHERE id = 999",
+            params![1_780_000_000_i64],
+        )
+        .unwrap();
 
     let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
     assert_eq!(report.outcome, CycleOutcome::Completed);
@@ -2041,7 +2078,10 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
     // Force the PR row's `updated_at` to a recognisable sentinel so cycle 2's
     // potential overwrite is observable. If the discovery upsert runs again,
     // it lifts `updated_at` back to the fixture value; if it skips, the
-    // sentinel survives.
+    // sentinel survives. The sentinel also doubles as a guard against the
+    // issue #232 pre-flight skip: its hash won't match the marker stamped
+    // from cycle 1's fixture, so the PR-detail call still fires and the
+    // post-flight body-hash check is the path under test here.
     let sentinel: i64 = -424_242;
     harness
         .db
@@ -2151,4 +2191,68 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
         "expected at least one phase_completed event with a non-zero cache_skips payload, got {:?}",
         phase_completed_events,
     );
+}
+
+/// Issue #232: a second cycle on a PR whose `pull_requests.updated_at`
+/// hasn't moved must skip the GraphQL PR-detail round trip. The timeline
+/// call still runs (REST conditional, ADR 0004) so we mount it twice; the
+/// PrDetail mock is bounded to exactly one hit via `.expect(1)` and the
+/// scoped guard fails the test on drop if cycle 2 calls it again.
+#[tokio::test]
+async fn second_cycle_skips_pr_detail_when_updated_at_unchanged() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+
+    // PrDetail must be hit exactly once across both cycles. `.expect(1)` is
+    // checked when the scoped mock drops at the end of the test, so a second
+    // call would fail the assertion.
+    let pr_detail_guard = Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    // Timeline runs every cycle (it's REST-conditional, not skipped by the
+    // marker check). Two cycles → two hits.
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+
+    let report1 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report1.outcome, CycleOutcome::Completed);
+
+    let report2 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report2.outcome, CycleOutcome::Completed);
+
+    // Activity feed: cycle 1 emits `pr_fetched`, cycle 2 emits
+    // `pr_skipped_no_change`. The win is user-visible.
+    let kinds = activity_event_kinds(&harness.emit);
+    let fetched_count = kinds.iter().filter(|k| k.as_str() == "pr_fetched").count();
+    let skipped_count = kinds
+        .iter()
+        .filter(|k| k.as_str() == "pr_skipped_no_change")
+        .count();
+    assert_eq!(fetched_count, 1, "cycle 1 fetched once: {kinds:?}");
+    assert_eq!(skipped_count, 1, "cycle 2 skipped once: {kinds:?}");
+
+    // Drop the scoped mock explicitly so the .expect(1) assertion fires
+    // before the test function returns.
+    drop(pr_detail_guard);
 }

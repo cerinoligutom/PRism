@@ -197,6 +197,7 @@ function levelLabel(level: ActivityLevel): string {
 
 function prUrlFor(event: ActivityEvent): string | null {
   if (event.kind === "pr_fetched") return event.url;
+  if (event.kind === "pr_skipped_no_change") return event.url;
   return null;
 }
 
