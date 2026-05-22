@@ -13,14 +13,22 @@
 //! * [`runtime::TauriNotificationSink`] - production sink wired to the
 //!   plugin, persisting permission state to `app_settings`.
 //!
-//! No trigger emitter, formatter, click-to-open routing, or dock badge
-//! ships here - those are tracked by issues #192, #195, #199, #201.
+//! The macOS dock badge lives alongside the toast plumbing in [`badge`]:
+//! same OS-signal surface area, same `AppHandle` dependency, so colocating
+//! keeps the M6 notification module cohesive.
+//!
+//! No trigger emitter, formatter, or click-to-open routing ships here -
+//! those are tracked by issues #192, #195, #201.
 
+pub mod badge;
 pub mod formatter;
 pub mod runtime;
 pub mod sink;
 pub mod types;
 
+pub use badge::{
+    count_global_needs_attention, refresh_from_db, update_badge, AppHandleBadge, BadgeSink,
+};
 pub use formatter::format_trigger;
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};
 pub use sink::{NotificationSink, NotificationSinkHandle, PermissionAsker};

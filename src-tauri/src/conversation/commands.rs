@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
 use crate::auth::store::{Account, AccountStore};
 use crate::conversation::query;
@@ -20,6 +20,7 @@ use crate::github::graphql::{
     PR_COMMENTS_QUERY,
 };
 use crate::github::GitHubClient;
+use crate::notify::refresh_from_db as refresh_badge_from_db;
 use crate::sync::ClientFactory;
 
 /// Shared handle to the production [`ClientFactory`]. Mounted via
@@ -82,11 +83,12 @@ pub fn list_pr_timeline_events(
 /// idempotent. The frontend conversation store caches the hydrated DTO
 /// in-memory across re-mounts; the backend itself stays stateless.
 #[tauri::command]
-pub async fn fetch_pr_conversation(
+pub async fn fetch_pr_conversation<R: Runtime>(
     pull_request_id: i64,
     db: State<'_, DbHandle>,
     clients: State<'_, ClientFactoryHandle>,
     accounts: State<'_, AccountStoreHandle>,
+    app_handle: AppHandle<R>,
 ) -> Result<HydratedConversation, String> {
     let (account, repo_coord) = resolve_pr_context(&db, &accounts, pull_request_id)?;
     let client = clients
@@ -96,6 +98,11 @@ pub async fn fetch_pr_conversation(
     let payload = fetch_comments_payload(&client, &repo_coord).await?;
     persist_payload(&db, pull_request_id, &payload)?;
     auto_mark_read(&db, pull_request_id, account.id as i64);
+    // ADR 0017 decision 3: the auto-mark-on-open flips `read_at` and zeroes
+    // `mentioned_count_unread`, both of which can drop `needs_attention` to
+    // 0 for this row. Push the new global count to the dock so opening a
+    // drawer immediately deflates the badge.
+    refresh_badge_from_db(&app_handle, &db);
     hydrated_response(&db, pull_request_id, account.id as i64)
 }
 
