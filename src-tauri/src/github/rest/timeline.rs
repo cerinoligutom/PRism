@@ -101,11 +101,32 @@ fn relative_path(absolute: &str) -> Option<String> {
 }
 
 fn parse_timeline_page(bytes: &Bytes) -> Result<Vec<TimelineEvent>, GitHubError> {
-    let raw: Vec<RawTimelineEvent> = serde_json::from_slice(bytes)?;
-    Ok(raw
-        .into_iter()
-        .filter_map(RawTimelineEvent::into_event)
-        .collect())
+    // Parse the page as a JSON array of opaque values first, then attempt
+    // strongly-typed deserialisation per element. A single malformed entry
+    // (GitHub shape drift, an undocumented event variant, a `reviewed` event
+    // missing `submitted_at` because the review is in some pending limbo)
+    // would otherwise abort the whole page and stall sync for the PR. The
+    // skip path logs the event type so the failure is diagnosable from the
+    // sync activity buffer rather than silently swallowed.
+    let raw: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for value in raw {
+        match serde_json::from_value::<RawTimelineEvent>(value.clone()) {
+            Ok(evt) => {
+                if let Some(timeline_event) = evt.into_event() {
+                    out.push(timeline_event);
+                }
+            }
+            Err(err) => {
+                let kind = value
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<no event field>");
+                eprintln!("timeline: skipping element with event={kind}: {err}");
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Actor entry on a timeline event payload.
@@ -157,9 +178,15 @@ enum RawTimelineEvent {
     /// surfaced lowercase by GitHub; we normalise to upper-case when
     /// persisting so the wire shape matches the GraphQL
     /// `PullRequestReviewState` enum the frontend already consumes.
+    ///
+    /// `submitted_at` is treated as optional: in practice every `reviewed`
+    /// event ships with one, but GitHub has been observed to omit it on
+    /// rare edge cases (in-progress reviews surfaced through the timeline,
+    /// shape drift on legacy PRs). A missing timestamp drops the event in
+    /// `into_event` rather than failing the whole page.
     Reviewed {
-        #[serde(with = "time::serde::rfc3339")]
-        submitted_at: OffsetDateTime,
+        #[serde(default, with = "time::serde::rfc3339::option")]
+        submitted_at: Option<OffsetDateTime>,
         #[serde(default)]
         user: Option<RawReviewedUser>,
         #[serde(default)]
@@ -218,6 +245,7 @@ impl RawTimelineEvent {
                 user,
                 state,
             } => {
+                let submitted_at = submitted_at?;
                 let (actor_login, actor_avatar_url) = match user {
                     Some(u) => (Some(u.login), u.avatar_url),
                     None => (None, None),
@@ -379,5 +407,35 @@ mod tests {
         let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].actor_login.is_none());
+    }
+
+    #[test]
+    fn reviewed_event_without_submitted_at_is_skipped() {
+        // GitHub has been observed (rarely) to surface a `reviewed` event with
+        // no `submitted_at` - probably a pending review threaded into the
+        // timeline. The page parser must drop the malformed entry rather than
+        // abort, so the rest of the timeline still feeds the latest-status
+        // derivation.
+        let json = br#"[
+            { "event": "reviewed", "state": "pending" },
+            { "event": "closed", "created_at": "2026-05-06T11:00:00Z" }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "closed");
+    }
+
+    #[test]
+    fn page_tolerates_individual_malformed_elements() {
+        // Defensive guard: a single shape-drift element shouldn't kill the
+        // whole page. The parser logs the bad element and keeps the rest.
+        let json = br#"[
+            { "event": "ready_for_review", "created_at": "2026-05-01T01:00:00Z" },
+            { "event": "reviewed", "submitted_at": "not-a-timestamp", "state": "approved" },
+            { "event": "merged", "created_at": "2026-05-01T05:00:00Z" }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        let names: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+        assert_eq!(names, vec!["ready_for_review", "merged"]);
     }
 }

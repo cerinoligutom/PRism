@@ -177,7 +177,7 @@ function handleAddAnother(): void {
 }
 
 function handleFinish(): void {
-  void router.push({ name: "dashboard" });
+  void router.push({ name: "dashboard.authored" });
 }
 
 const tokenCreateUrl = computed(() => {
@@ -267,6 +267,12 @@ function rowStateForScope(scopeName: string): RowState {
 
 onMounted(() => {
   void syncStore.bind();
+  // Skip the welcome step when there's already at least one account -
+  // re-entering onboarding from Settings -> Accounts is purely an
+  // "add another account" flow; the welcome copy is for first-run only.
+  if (accountsStore.accounts.length > 0) {
+    currentStep.value = 2;
+  }
 });
 
 onUnmounted(() => {
@@ -277,23 +283,6 @@ onUnmounted(() => {
 <template>
   <section class="onboarding">
     <header class="onboarding__header">
-      <div class="onboarding-brand">
-        <span class="onboarding-brand__mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
-            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
-            <path d="M16 4 L28 26 L4 26 Z" />
-            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)" />
-            <line x1="21" y1="19" x2="30" y2="16" stroke="oklch(0.78 0.15 80)" />
-            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)" />
-            <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
-          </svg>
-        </span>
-        <span class="onboarding-brand__name">
-          <span>PR</span><span class="onboarding-brand__suffix">ism</span>
-        </span>
-        <span class="onboarding-brand__version">v0.1</span>
-      </div>
-
       <ol class="onboarding-progress" aria-label="Onboarding progress">
         <li
           v-for="step in [1, 2, 3] as StepIndex[]"
@@ -653,42 +642,11 @@ onUnmounted(() => {
 .onboarding__header {
   display: flex;
   align-items: center;
-  gap: var(--s-6);
+  justify-content: center;
   padding: var(--s-5) var(--s-8);
   border-bottom: 1px solid var(--border-1);
   background: var(--bg-1);
   flex: 0 0 auto;
-}
-
-.onboarding-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-}
-
-.onboarding-brand__mark {
-  width: 24px;
-  height: 24px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__name {
-  font-size: var(--fs-14);
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__suffix {
-  font-weight: 400;
-  color: var(--text-mute);
-}
-
-.onboarding-brand__version {
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-faint);
-  letter-spacing: 1px;
 }
 
 .onboarding-progress {
