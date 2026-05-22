@@ -47,6 +47,11 @@ export type ActivityKind =
       readonly kind: "phase_completed";
       readonly phase: SyncPhaseLabel;
       readonly summary: string;
+      /**
+       * Number of GraphQL responses skipped via the body-hash cache during
+       * the phase (ADR 0004, issue #234). Omitted by the backend when zero.
+       */
+      readonly cache_skips?: number;
     }
   | {
       readonly kind: "cycle_completed";

@@ -557,13 +557,31 @@ pub async fn run_one_cycle(
     // Phase 1: Discovery. Search-API fan-out, ADR 0009. Failure here is
     // treated like any other phase failure: don't run enrichment, don't prune.
     emit_activity_phase_started(ctx, account, SyncPhaseLabel::Discovery);
-    match crate::sync::discovery::discover_account(&ctx.db, client, account.id, cycle_start).await {
-        Ok((discovered, _discovery_report)) => {
-            emit_activity_phase_completed(
+    match crate::sync::discovery::discover_account(
+        &ctx.db,
+        client,
+        account.id,
+        &account.login,
+        cycle_start,
+    )
+    .await
+    {
+        Ok((discovered, discovery_report)) => {
+            let summary = if discovery_report.pages_skipped_via_cache > 0 {
+                format!(
+                    "discovered {} pull request(s) ({} page(s) cached)",
+                    discovered.len(),
+                    discovery_report.pages_skipped_via_cache,
+                )
+            } else {
+                format!("discovered {} pull request(s)", discovered.len())
+            };
+            emit_activity_phase_completed_with_skips(
                 ctx,
                 account,
                 SyncPhaseLabel::Discovery,
-                format!("discovered {} pull request(s)", discovered.len()),
+                summary,
+                discovery_report.pages_skipped_via_cache as u32,
             );
         }
         Err(DiscoveryError::GitHub(GitHubError::Unauthorized))
@@ -648,9 +666,20 @@ pub async fn run_one_cycle(
     let total_prs = count_prs_across_repos(&ctx.db, &repos);
     emit_activity_phase_started(ctx, account, SyncPhaseLabel::Enrichment);
     let mut enriched: u32 = 0;
+    let mut detail_cache_skips: u32 = 0;
     for repo in &repos {
         report.repos_visited += 1;
-        match sync_repo(ctx, client, account, repo, total_prs, &mut enriched).await {
+        match sync_repo(
+            ctx,
+            client,
+            account,
+            repo,
+            total_prs,
+            &mut enriched,
+            &mut detail_cache_skips,
+        )
+        .await
+        {
             Ok(prs_visited) => {
                 report.prs_visited += prs_visited;
             }
@@ -693,11 +722,17 @@ pub async fn run_one_cycle(
             }
         }
     }
-    emit_activity_phase_completed(
+    let enrichment_summary = if detail_cache_skips > 0 {
+        format!("fetched detail for {enriched} pull request(s) ({detail_cache_skips} cached)",)
+    } else {
+        format!("fetched detail for {enriched} pull request(s)")
+    };
+    emit_activity_phase_completed_with_skips(
         ctx,
         account,
         SyncPhaseLabel::Enrichment,
-        format!("fetched detail for {enriched} pull request(s)"),
+        enrichment_summary,
+        detail_cache_skips,
     );
 
     // Phase final: Pruning. Runs only when enrichment completes so a transient
@@ -944,6 +979,16 @@ fn emit_activity_phase_completed(
     phase: SyncPhaseLabel,
     summary: impl Into<String>,
 ) {
+    emit_activity_phase_completed_with_skips(ctx, account, phase, summary, 0);
+}
+
+fn emit_activity_phase_completed_with_skips(
+    ctx: &WorkerContext,
+    account: &Account,
+    phase: SyncPhaseLabel,
+    summary: impl Into<String>,
+    cache_skips: u32,
+) {
     let summary = summary.into();
     let message = format!("{} complete - {}", phase.as_str(), summary);
     record_activity(
@@ -952,7 +997,11 @@ fn emit_activity_phase_completed(
         ActivityEventBuilder::new(
             ActivityLevel::Info,
             Some(account.id),
-            ActivityKind::PhaseCompleted { phase, summary },
+            ActivityKind::PhaseCompleted {
+                phase,
+                summary,
+                cache_skips,
+            },
             message,
         )
         .build(),
@@ -1138,6 +1187,7 @@ async fn sync_repo(
     repo: &RepoRow,
     total_prs: u32,
     enriched_so_far: &mut u32,
+    detail_cache_skips: &mut u32,
 ) -> Result<usize, SyncRepoError> {
     let prs = list_prs_for_repo(&ctx.db, repo.id)
         .map_err(|e| SyncRepoError::Other(format!("read prs: {e}")))?;
@@ -1147,9 +1197,9 @@ async fn sync_repo(
         visited += 1;
         // PR detail (GraphQL) — primary surface per ADR 0006.
         // Wrapped in `timeout` so a hung upstream call doesn't stall the loop.
-        let detail = timeout(
+        let (detail, detail_body) = timeout(
             Duration::from_secs(30),
-            client.pr_detail(crate::github::graphql::PrCoord {
+            client.pr_detail_with_raw(crate::github::graphql::PrCoord {
                 owner: &repo.owner,
                 name: &repo.name,
                 number: pr.number,
@@ -1158,6 +1208,21 @@ async fn sync_repo(
         .await
         .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
         .map_err(SyncRepoError::from)?;
+
+        // Body-hash cache (ADR 0004, issue #234): when the detail response is
+        // byte-identical to last cycle, the detail-driven DB writes can be
+        // elided (the prior cycle's values are still authoritative). Timeline
+        // sits on its own REST ETag and still runs - the latest-status-change
+        // derivation must pick up new timeline events even when the GraphQL
+        // detail is unchanged.
+        let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
+        let detail_cache_hit = client.graphql_body_unchanged(&detail_cache_key, &detail_body);
+        let detail_for_write = if detail_cache_hit {
+            *detail_cache_skips = detail_cache_skips.saturating_add(1);
+            None
+        } else {
+            detail.as_ref()
+        };
 
         // Timeline (REST) — feeds the latest-status-change derivation (ADR 0007).
         let timeline = timeout(
@@ -1187,7 +1252,7 @@ async fn sync_repo(
             account.id,
             repo.id,
             pr.id,
-            detail.as_ref(),
+            detail_for_write,
             events.as_deref(),
         )
         .map_err(|e| SyncRepoError::Other(format!("persist PR #{}: {e}", pr.number)))?;

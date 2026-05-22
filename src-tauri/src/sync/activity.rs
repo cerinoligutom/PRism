@@ -65,9 +65,15 @@ pub enum ActivityKind {
         url: String,
     },
     /// A phase ended cleanly.
+    ///
+    /// `cache_skips` reports how many GraphQL responses the phase short-circuited
+    /// via the body-hash cache (ADR 0004, issue #234). Defaults to zero for
+    /// phases that don't run the cache check (pruning).
     PhaseCompleted {
         phase: SyncPhaseLabel,
         summary: String,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        cache_skips: u32,
     },
     /// Cycle finished successfully.
     CycleCompleted { prs_visited: u32, summary: String },
@@ -80,6 +86,10 @@ pub enum ActivityKind {
     },
     /// Rate limit guard paused the cycle.
     RateLimitPause { reset_in_seconds: u64 },
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Phase label used by the activity feed.

@@ -160,6 +160,22 @@ impl GitHubClient {
     where
         T: DeserializeOwned,
     {
+        let (data, _body) = self.post_graphql_with_raw(query, vars).await?;
+        Ok(data)
+    }
+
+    /// Variant of [`post_graphql`] that returns the raw response bytes alongside
+    /// the parsed payload. The body-hash cache (issue #234) uses these bytes as
+    /// the canonical "did the upstream answer change since last poll" signal
+    /// before deciding whether to run the per-node DB writes.
+    pub async fn post_graphql_with_raw<T>(
+        &self,
+        query: &str,
+        vars: serde_json::Value,
+    ) -> Result<(T, Bytes), GitHubError>
+    where
+        T: DeserializeOwned,
+    {
         let payload = serde_json::json!({
             "query": query,
             "variables": vars,
@@ -187,13 +203,14 @@ impl GitHubClient {
                 return Err(GitHubError::Graphql(errors));
             }
         }
-        envelope.data.ok_or_else(|| {
+        let data = envelope.data.ok_or_else(|| {
             GitHubError::Graphql(vec![GraphqlError {
                 message: "graphql response had neither data nor errors".to_string(),
                 path: None,
                 kind: None,
             }])
-        })
+        })?;
+        Ok((data, body))
     }
 
     /// Cache the body of a GraphQL response keyed by `query_hash`.
@@ -210,6 +227,21 @@ impl GitHubClient {
     /// Look up the previously-cached GraphQL response metadata.
     pub fn graphql_cache_entry(&self, query_hash: &str) -> Option<EtagEntry> {
         self.etags.get(&graphql_key(self.account.id, query_hash))
+    }
+
+    /// Compare `body` against the cached SHA for `query_hash`. Writes the new
+    /// hash back on miss. Returns `true` when the body is byte-identical to
+    /// the previous cycle's response (a 304-equivalent skip per ADR 0004).
+    pub fn graphql_body_unchanged(&self, query_hash: &str, body: &[u8]) -> bool {
+        let new_sha = sha256(body);
+        let matched = self
+            .graphql_cache_entry(query_hash)
+            .and_then(|e| e.body_sha256)
+            .is_some_and(|prev| prev == new_sha);
+        if !matched {
+            self.cache_graphql_body(query_hash, body);
+        }
+        matched
     }
 
     fn attach_auth(
