@@ -84,7 +84,15 @@ const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
   assigned: "assigned",
   watching: "watching",
   team: "team",
+  archive: "archived",
 };
+
+// ADR 0018: the Archive view's chip rail is hidden because the backend's
+// chip-count fan-out returns zeros for it (the chip predicates don't apply
+// to an archive bucket; closed/merged + 30 days inactive isn't a triage
+// queue). Hiding the rail also keeps the empty-state filtering logic from
+// claiming the view is "filtered" when it's not.
+const isArchive = computed<boolean>(() => dashboard.view === "archive");
 
 const viewInlineLabel = computed<string>(
   () => VIEW_INLINE_LABEL[dashboard.view as DashboardViewName] ?? dashboard.view,
@@ -277,12 +285,13 @@ watch(() => route.meta?.dashboardView, () => {
           <span class="dashboard__chips-sep" aria-hidden="true" />
         </template>
         <FilterChipsBar
+          v-if="!isArchive"
           :counts="dashboard.chipCounts"
           :active="(dashboard.activeChips as ReadonlySet<ChipKey>)"
           @toggle="onToggleChip"
           @clear="onClearChips"
         />
-        <span class="dashboard__chips-sep" aria-hidden="true" />
+        <span v-if="!isArchive" class="dashboard__chips-sep" aria-hidden="true" />
         <span class="dashboard__chips-label">GROUP</span>
         <GroupSelector
           :model-value="dashboard.group"
@@ -356,7 +365,14 @@ watch(() => route.meta?.dashboardView, () => {
       v-else-if="dashboard.pullRequests.length === 0"
       class="dashboard__empty"
     >
-      <div class="dashboard-empty">
+      <div v-if="isArchive" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">No archived pull requests</h2>
+        <p class="dashboard-empty__copy">
+          Archived PRs land here when they auto-archive (closed/merged + 30
+          days inactive) or when you archive them from the row overflow menu.
+        </p>
+      </div>
+      <div v-else class="dashboard-empty">
         <h2 class="dashboard-empty__title">No pull requests in this view yet</h2>
         <p class="dashboard-empty__copy">
           The next sync cycle will populate this list. You can also refresh

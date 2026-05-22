@@ -24,6 +24,7 @@ const links: readonly NavLink[] = [
   { view: "assigned", to: "/dashboard/assigned", label: "Assigned to me" },
   { view: "watching", to: "/dashboard/watching", label: "Watching" },
   { view: "team", to: "/dashboard/team", label: "Team" },
+  { view: "archive", to: "/dashboard/archive", label: "Archive" },
 ];
 
 interface SidebarAttentionCounts {
@@ -53,7 +54,11 @@ const attention = ref<SidebarAttentionCounts>({
 
 let statusUnlisten: UnlistenFn | null = null;
 
-const hasAttention = computed<Record<DashboardView, boolean>>(() => ({
+// ADR 0018: archived rows are excluded from `count_sidebar_attention` server-
+// side, so the Archive entry never carries an attention dot. Keeping it out
+// of the map and reading via `hasAttention[view] ?? false` in the template
+// avoids manufacturing a state the backend doesn't compute.
+const hasAttention = computed<Partial<Record<DashboardView, boolean>>>(() => ({
   authored: attention.value.authored > 0,
   assigned: attention.value.assigned > 0,
   watching: attention.value.watching > 0,
@@ -157,14 +162,17 @@ onBeforeUnmount(() => {
           <template v-else-if="link.view === 'watching'">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8C3 4.5 5.5 3 8 3s5 1.5 6.5 5C13 11.5 10.5 13 8 13s-5-1.5-6.5-5z" /></svg>
           </template>
-          <template v-else>
+          <template v-else-if="link.view === 'team'">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="6" r="2" /><circle cx="11" cy="6" r="2" /><path d="M1 14c.5-2 2-3 4-3s3.5 1 4 3M7 14c.5-2 2-3 4-3s3.5 1 4 3" /></svg>
+          </template>
+          <template v-else>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12v3H2z" /><path d="M3 7v6h10V7" /><path d="M6.5 9.5h3" /></svg>
           </template>
         </span>
         {{ link.label }}
         <span
           class="count"
-          :class="{ 'has-attention': hasAttention[link.view] }"
+          :class="{ 'has-attention': hasAttention[link.view] ?? false }"
         >{{ dashboard.counts[link.view] }}</span>
       </RouterLink>
     </nav>

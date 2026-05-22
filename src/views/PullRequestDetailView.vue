@@ -23,6 +23,7 @@ const VIEW_LABELS: Record<DashboardViewName, string> = {
   assigned: "Assigned",
   watching: "Watching",
   team: "Team",
+  archive: "Archive",
 };
 
 function isView(value: unknown): value is DashboardViewName {
@@ -30,7 +31,8 @@ function isView(value: unknown): value is DashboardViewName {
     value === "authored" ||
     value === "assigned" ||
     value === "watching" ||
-    value === "team"
+    value === "team" ||
+    value === "archive"
   );
 }
 

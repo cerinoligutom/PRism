@@ -38,6 +38,15 @@ export const router = createRouter({
       meta: { dashboardView: "team" satisfies DashboardViewName },
     },
     {
+      // ADR 0018: archive bucket. Inverts the default-view archive predicate
+      // server-side; the frontend reuses `DashboardView.vue` with the
+      // view-specific copy + chip-rail suppression keyed on the same meta.
+      path: "/dashboard/archive",
+      name: "dashboard.archive",
+      component: DashboardView,
+      meta: { dashboardView: "archive" satisfies DashboardViewName },
+    },
+    {
       // Detail-surface route host for `prDetailSurface = 'route'`. The view
       // param keeps the back-button breadcrumb honest about which list the
       // user came from; the id resolves the PR.
