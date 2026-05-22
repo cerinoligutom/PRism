@@ -13,7 +13,7 @@ pub mod etag_store;
 pub mod migrate;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager, Runtime};
@@ -22,6 +22,17 @@ pub use etag_store::SqliteEtagStore;
 
 /// Filename of the cache database within the app data directory.
 pub const DB_FILE_NAME: &str = "prism.sqlite";
+
+/// Acquire the connection lock, mapping a poisoned mutex to a
+/// `rusqlite::Error` so helpers that already thread `rusqlite::Error` upwards
+/// can `?` the lock failure into their normal error path. A poisoned mutex
+/// means a previous holder panicked; the sync cycle treats this as a
+/// recoverable failure rather than crashing the worker loop (see issue #238).
+pub fn lock_db(db: &DbHandle) -> Result<MutexGuard<'_, Connection>, rusqlite::Error> {
+    db.lock().map_err(|_| {
+        rusqlite::Error::ToSqlConversionFailure("db connection mutex poisoned".to_string().into())
+    })
+}
 
 /// Initialisation errors surfaced to `lib.rs` for fail-fast on startup.
 #[derive(Debug, thiserror::Error)]
