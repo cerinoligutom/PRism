@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
+import PRismInput from "@/components/ui/PRismInput.vue";
+import PRismSwitch from "@/components/ui/PRismSwitch.vue";
 import { useAccountsStore, type Account } from "@/stores/accounts";
 import { useReposStore, type RepoSummary } from "@/stores/repos";
+import { useToastStore } from "@/stores/toast";
 
 const accountsStore = useAccountsStore();
 const reposStore = useReposStore();
+const toastStore = useToastStore();
+
+const search = ref("");
+
+// Per-org collapsed state, keyed by `${accountId}:${owner}`. A Set in a ref so
+// toggling triggers reactivity via reassignment.
+const collapsedOrgs = ref<Set<string>>(new Set());
 
 const totalTeamTracked = computed(() => {
   let count = 0;
@@ -24,8 +34,6 @@ const sublabel = computed(() => {
 });
 
 function avatarClass(accountId: number): string {
-  // Mirror AccountsPanel's avatar palette so the same account reads the same
-  // colour across settings panels.
   const slot = ((accountId - 1) % 9) + 1;
   return `avatar repo-account__avatar av-${slot}`;
 }
@@ -42,11 +50,100 @@ function initials(account: Account): string {
   );
 }
 
+interface OrgGroup {
+  readonly owner: string;
+  readonly repos: readonly RepoSummary[];
+  readonly trackedCount: number;
+}
+
+type OrgTrackState = "all" | "none" | "mixed";
+
+function groupForAccount(accountId: number): OrgGroup[] {
+  const all = reposStore.getRepos(accountId);
+  const q = search.value.trim().toLowerCase();
+  const filtered = q.length === 0
+    ? all
+    : all.filter(
+        (r) =>
+          r.owner.toLowerCase().includes(q) ||
+          r.name.toLowerCase().includes(q),
+      );
+  const byOwner = new Map<string, RepoSummary[]>();
+  for (const repo of filtered) {
+    const list = byOwner.get(repo.owner);
+    if (list === undefined) byOwner.set(repo.owner, [repo]);
+    else list.push(repo);
+  }
+  return Array.from(byOwner.entries())
+    .map<OrgGroup>(([owner, repos]) => {
+      const sorted = repos.slice().sort((a, b) => a.name.localeCompare(b.name));
+      const trackedCount = sorted.reduce(
+        (n, r) => n + (r.is_team_tracked ? 1 : 0),
+        0,
+      );
+      return { owner, repos: sorted, trackedCount };
+    })
+    .sort((a, b) => a.owner.localeCompare(b.owner));
+}
+
+function orgTrackState(group: OrgGroup): OrgTrackState {
+  if (group.trackedCount === 0) return "none";
+  if (group.trackedCount === group.repos.length) return "all";
+  return "mixed";
+}
+
+function isCollapsed(accountId: number, owner: string): boolean {
+  return collapsedOrgs.value.has(`${accountId}:${owner}`);
+}
+
+function toggleCollapsed(accountId: number, owner: string): void {
+  const key = `${accountId}:${owner}`;
+  const next = new Set(collapsedOrgs.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  collapsedOrgs.value = next;
+}
+
+// Auto-expand all orgs while a search is active so matches aren't hidden
+// behind a collapsed header.
+watch(search, (q) => {
+  if (q.trim().length > 0 && collapsedOrgs.value.size > 0) {
+    collapsedOrgs.value = new Set();
+  }
+});
+
 async function toggleTeamTracked(repo: RepoSummary): Promise<void> {
+  const next = !repo.is_team_tracked;
   try {
-    await reposStore.setTeamTracked(repo.id, !repo.is_team_tracked);
+    await reposStore.setTeamTracked(repo.id, next);
+    toastStore.show(
+      next
+        ? `Tracking ${repo.owner}/${repo.name}`
+        : `Untracked ${repo.owner}/${repo.name}`,
+      { variant: "success" },
+    );
   } catch {
-    // Error already routed to lastError by the store.
+    // Store routed the error into `lastError`; the panel surfaces that
+    // below. Skip the toast so the failure isn't masked as success.
+  }
+}
+
+async function toggleOrgTracked(group: OrgGroup): Promise<void> {
+  // Mixed and none both go ON (positive default for the org gesture);
+  // all goes OFF.
+  const target = orgTrackState(group) !== "all";
+  const work = group.repos.filter((r) => r.is_team_tracked !== target);
+  if (work.length === 0) return;
+  try {
+    await Promise.all(work.map((r) => reposStore.setTeamTracked(r.id, target)));
+    toastStore.show(
+      target
+        ? `Tracking ${work.length} repo${work.length === 1 ? "" : "s"} under ${group.owner}`
+        : `Untracked ${work.length} repo${work.length === 1 ? "" : "s"} under ${group.owner}`,
+      { variant: "success" },
+    );
+  } catch {
+    // Partial failure - lastError already populated by the store.
   }
 }
 
@@ -61,8 +158,6 @@ async function loadAccounts(): Promise<void> {
 
 onMounted(loadAccounts);
 
-// If the user adds or removes accounts elsewhere, refresh the panel so the
-// per-account sections stay in sync.
 watch(
   () => accountsStore.accounts.map((a) => a.id).join(","),
   async (next, prev) => {
@@ -123,6 +218,18 @@ watch(
       </header>
 
       <div
+        v-if="reposStore.getRepos(account.id).length > 0"
+        class="repo-account__search"
+      >
+        <PRismInput
+          v-model="search"
+          placeholder="Search repos by name or owner..."
+          :spellcheck="false"
+          autocomplete="off"
+        />
+      </div>
+
+      <div
         v-if="reposStore.isLoading(account.id) && reposStore.getRepos(account.id).length === 0"
         class="repo-account__loading"
       >
@@ -144,37 +251,106 @@ watch(
         </PRismButton>
       </div>
 
-      <ul v-else class="repo-account__list">
-        <li
-          v-for="repo in reposStore.getRepos(account.id)"
-          :key="repo.id"
-          class="repo-row"
-          :class="{ 'repo-row--tracked': repo.is_team_tracked }"
+      <div
+        v-else-if="groupForAccount(account.id).length === 0"
+        class="repo-account__empty"
+      >
+        <p class="repo-account__empty-copy">
+          No repositories match "<strong>{{ search }}</strong>".
+        </p>
+      </div>
+
+      <div v-else class="repo-account__orgs">
+        <div
+          v-for="group in groupForAccount(account.id)"
+          :key="`${account.id}:${group.owner}`"
+          class="org-group"
         >
-          <div class="repo-row__info">
-            <span class="repo-chip">
-              <span class="org">{{ repo.owner }}</span>
-              <span class="slash">/</span>
-              <span class="repo">{{ repo.name }}</span>
-            </span>
-            <span class="repo-row__visibility badge">{{ repo.visibility }}</span>
-          </div>
-          <button
-            type="button"
-            class="toggle"
-            :class="{ 'toggle--on': repo.is_team_tracked }"
-            role="switch"
-            :aria-checked="repo.is_team_tracked"
-            :aria-label="`Toggle Team-tracked for ${repo.owner}/${repo.name}`"
-            @click="toggleTeamTracked(repo)"
+          <header
+            class="org-group__head"
+            :class="{ 'org-group__head--all': orgTrackState(group) === 'all' }"
           >
-            <span class="toggle__thumb" aria-hidden="true" />
-            <span class="toggle__label">
-              {{ repo.is_team_tracked ? "Team-tracked" : "Not tracked" }}
-            </span>
-          </button>
-        </li>
-      </ul>
+            <button
+              type="button"
+              class="org-group__toggle-btn"
+              :aria-expanded="!isCollapsed(account.id, group.owner)"
+              @click="toggleCollapsed(account.id, group.owner)"
+            >
+              <svg
+                class="org-group__chevron"
+                :class="{ 'org-group__chevron--open': !isCollapsed(account.id, group.owner) }"
+                width="10"
+                height="10"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M5 4l5 4-5 4" />
+              </svg>
+              <span class="org-group__name">{{ group.owner }}</span>
+              <span class="org-group__count">
+                {{ group.trackedCount }} / {{ group.repos.length }}
+              </span>
+            </button>
+            <div class="org-group__action">
+              <span class="org-group__action-label">
+                <template v-if="orgTrackState(group) === 'all'">All tracked</template>
+                <template v-else-if="orgTrackState(group) === 'mixed'">
+                  Track all
+                </template>
+                <template v-else>Track all</template>
+              </span>
+              <PRismSwitch
+                :model-value="orgTrackState(group) === 'all'"
+                :aria-label="`Toggle Team-tracked for every ${group.owner} repo`"
+                @update:model-value="toggleOrgTracked(group)"
+              />
+            </div>
+          </header>
+
+          <ul
+            v-if="!isCollapsed(account.id, group.owner)"
+            class="org-group__list"
+          >
+            <li
+              v-for="repo in group.repos"
+              :key="repo.id"
+              class="repo-row"
+              :class="{ 'repo-row--tracked': repo.is_team_tracked }"
+            >
+              <div class="repo-row__info">
+                <svg
+                  v-if="repo.visibility === 'private'"
+                  class="repo-row__lock"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-label="Private repository"
+                >
+                  <rect x="3.5" y="7" width="9" height="6" rx="1" />
+                  <path d="M5.5 7V5a2.5 2.5 0 015 0v2" />
+                </svg>
+                <span v-else class="repo-row__lock-placeholder" aria-hidden="true" />
+                <span class="repo-row__name">{{ repo.name }}</span>
+              </div>
+              <PRismSwitch
+                :model-value="repo.is_team_tracked"
+                :aria-label="`Toggle Team-tracked for ${repo.owner}/${repo.name}`"
+                @update:model-value="toggleTeamTracked(repo)"
+              />
+            </li>
+          </ul>
+        </div>
+      </div>
     </section>
 
     <div v-if="reposStore.lastError" class="repositories-panel__error">
@@ -333,7 +509,103 @@ watch(
   color: var(--text-mute);
 }
 
-.repo-account__list {
+.repo-account__search {
+  margin-bottom: var(--s-4);
+}
+
+.repo-account__orgs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+/* ────── org-group BEM block ────── */
+.org-group {
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-3);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.org-group__head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.org-group__head--all {
+  background: var(--bg-3);
+}
+
+.org-group__toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.org-group__toggle-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  border-radius: var(--r-1);
+}
+
+.org-group__chevron {
+  color: var(--text-mute);
+  transition: transform 0.12s;
+  flex: 0 0 10px;
+}
+
+.org-group__chevron--open {
+  transform: rotate(90deg);
+}
+
+.org-group__name {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.org-group__count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-faint);
+  letter-spacing: 0.3px;
+  padding: 1px 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+}
+
+.org-group__head--all .org-group__count {
+  color: var(--accent-strong);
+  background: var(--accent-bg);
+  border-color: transparent;
+}
+
+.org-group__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.org-group__action-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  letter-spacing: 0.3px;
+}
+
+.org-group__list {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -341,14 +613,12 @@ watch(
   flex-direction: column;
   gap: 1px;
   background: var(--border-1);
-  border-radius: var(--r-3);
-  overflow: hidden;
 }
 
 /* ────── repo-row BEM block ────── */
 .repo-row {
   background: var(--bg-2);
-  padding: 12px 16px;
+  padding: 10px 14px 10px 18px;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: var(--s-4);
@@ -366,57 +636,23 @@ watch(
   min-width: 0;
 }
 
-.repo-row__visibility {
-  text-transform: lowercase;
-}
-
-/* ────── toggle BEM block ────── */
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px 4px 4px;
-  background: transparent;
-  border: 1px solid var(--border-2);
-  border-radius: var(--r-pill);
+.repo-row__lock {
   color: var(--text-mute);
-  font-size: var(--fs-11);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  flex: 0 0 12px;
 }
 
-.toggle:hover {
-  border-color: var(--border-3);
-  color: var(--text);
+.repo-row__lock-placeholder {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
 }
 
-.toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.toggle--on {
-  background: var(--accent-bg);
-  border-color: transparent;
-  color: var(--accent-strong);
-}
-
-.toggle__thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--bg-4);
-  display: inline-block;
-  transition: background 0.12s;
-}
-
-.toggle--on .toggle__thumb {
-  background: var(--accent);
-}
-
-.toggle__label {
+.repo-row__name {
   font-family: var(--font-mono);
-  letter-spacing: 0.3px;
+  font-size: var(--fs-12);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

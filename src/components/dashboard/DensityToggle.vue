@@ -19,8 +19,8 @@ interface Option {
 }
 
 const options: readonly Option[] = [
-  { value: "comfortable", label: "Comfortable", title: "Comfortable" },
   { value: "tight", label: "Tight", title: "Tight" },
+  { value: "comfortable", label: "Comfortable", title: "Comfortable" },
   { value: "roomy", label: "Roomy", title: "Roomy" },
 ];
 

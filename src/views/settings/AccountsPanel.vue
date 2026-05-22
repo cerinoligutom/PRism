@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { RouterLink } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
@@ -182,10 +181,20 @@ onUnmounted(() => {
 
     <section class="accounts-panel__section">
       <div class="accounts-panel__section-head">
-        <h3 class="accounts-panel__section-title">GitHub accounts</h3>
-        <span class="accounts-panel__section-desc">
-          PATs are stored exclusively in the OS keychain. PRism never writes them to disk or logs.
-        </span>
+        <div class="accounts-panel__section-head-text">
+          <h3 class="accounts-panel__section-title">GitHub accounts</h3>
+          <span class="accounts-panel__section-desc">
+            PATs are stored exclusively in the OS keychain. PRism never writes them to disk or logs.
+          </span>
+        </div>
+        <PRismButton
+          v-if="!accountsStore.isEmpty"
+          to="/onboarding"
+          variant="primary"
+          size="sm"
+        >
+          + Add account
+        </PRismButton>
       </div>
 
       <div v-if="accountsStore.loading && accountsStore.isEmpty" class="accounts-panel__loading">
@@ -267,12 +276,6 @@ onUnmounted(() => {
           </div>
         </article>
 
-        <RouterLink to="/onboarding" class="accounts-panel__add">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          Add another account
-        </RouterLink>
       </div>
 
       <div v-if="accountsStore.lastError" class="accounts-panel__error">
@@ -347,11 +350,19 @@ onUnmounted(() => {
 
 .accounts-panel__section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s-3);
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-1);
   margin-bottom: var(--s-4);
+}
+
+.accounts-panel__section-head-text {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  min-width: 0;
 }
 
 .accounts-panel__section-title {
@@ -398,26 +409,6 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.accounts-panel__add {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s-2);
-  padding: 14px 18px;
-  background: transparent;
-  border: 1px dashed var(--border-2);
-  border-radius: var(--r-3);
-  color: var(--text-mute);
-  font-size: var(--fs-12);
-  text-decoration: none;
-  transition: border-color 0.12s, color 0.12s;
-}
-
-.accounts-panel__add:hover {
-  border-color: var(--border-3);
-  color: var(--text);
-}
 
 .accounts-panel__error {
   margin-top: var(--s-4);

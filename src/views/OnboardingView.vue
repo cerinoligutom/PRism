@@ -42,9 +42,34 @@ const connectError = ref<string | null>(null);
 // changes, only the latest id is allowed to commit a result.
 let validationToken = 0;
 
+/// Read the leading characters of a pasted PAT to identify which kind it is.
+/// `github_pat_` is fine-grained, `ghp_` is the classic prefix. Returns null
+/// for unknown / legacy (pre-prefix) tokens, the empty string, or non-PAT
+/// token types (`gho_` / `ghu_` / `ghs_`); detection failure leaves the tab
+/// as the source of truth.
+function detectPatFlavour(token: string): TokenFlavour | null {
+  const trimmed = token.trim();
+  if (trimmed.startsWith("github_pat_")) return "fine-grained";
+  if (trimmed.startsWith("ghp_")) return "classic";
+  return null;
+}
+
+const detectedFlavour = computed<TokenFlavour | null>(() =>
+  detectPatFlavour(form.token),
+);
+
+/// Effective flavour drives gating and the "Create a new PAT" link. The tab
+/// only controls which help text is rendered; the actual pasted PAT is what
+/// gets connected, so the gate has to follow the detected type when it's
+/// known. Falls back to the tab when detection fails (legacy 40-hex
+/// classics, empty field).
+const effectiveFlavour = computed<TokenFlavour>(
+  () => detectedFlavour.value ?? form.flavour,
+);
+
 const permissionsSatisfied = computed(() => {
   if (validation.value.kind !== "valid") return false;
-  if (form.flavour === "fine-grained") {
+  if (effectiveFlavour.value === "fine-grained") {
     // GitHub doesn't expose granted permissions for fine-grained PATs
     // through any documented endpoint, so we don't gate Connect on
     // per-permission verification. Token validity is the only gate.
@@ -146,6 +171,18 @@ watch(
   },
 );
 
+// Auto-switch the tab to match the pasted PAT's prefix. The tab is just a
+// help selector; the pasted token's actual type is canonical, so most
+// users should land on the matching help by default. Manual tab clicks
+// after this fire still work - the `Detected:` pill stays visible to
+// keep the truth in front of the user even if they're reading the other
+// type's docs.
+watch(detectedFlavour, (detected) => {
+  if (detected !== null && detected !== form.flavour) {
+    form.flavour = detected;
+  }
+});
+
 async function handleConnect(): Promise<void> {
   submitting.value = true;
   connectError.value = null;
@@ -177,11 +214,11 @@ function handleAddAnother(): void {
 }
 
 function handleFinish(): void {
-  void router.push({ name: "dashboard" });
+  void router.push({ name: "dashboard.authored" });
 }
 
 const tokenCreateUrl = computed(() => {
-  if (form.flavour === "fine-grained") {
+  if (effectiveFlavour.value === "fine-grained") {
     return "https://github.com/settings/personal-access-tokens/new";
   }
   return "https://github.com/settings/tokens/new?scopes=repo,read:org,read:user&description=PRism";
@@ -267,6 +304,12 @@ function rowStateForScope(scopeName: string): RowState {
 
 onMounted(() => {
   void syncStore.bind();
+  // Skip the welcome step when there's already at least one account -
+  // re-entering onboarding from Settings -> Accounts is purely an
+  // "add another account" flow; the welcome copy is for first-run only.
+  if (accountsStore.accounts.length > 0) {
+    currentStep.value = 2;
+  }
 });
 
 onUnmounted(() => {
@@ -277,23 +320,6 @@ onUnmounted(() => {
 <template>
   <section class="onboarding">
     <header class="onboarding__header">
-      <div class="onboarding-brand">
-        <span class="onboarding-brand__mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
-            <line x1="2" y1="16" x2="9.5" y2="16" opacity="0.55" />
-            <path d="M16 4 L28 26 L4 26 Z" />
-            <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="oklch(0.72 0.18 25)" />
-            <line x1="21" y1="19" x2="30" y2="16" stroke="oklch(0.78 0.15 80)" />
-            <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="oklch(0.74 0.16 145)" />
-            <line x1="22" y1="22" x2="29" y2="26" stroke="oklch(0.72 0.14 320)" />
-          </svg>
-        </span>
-        <span class="onboarding-brand__name">
-          <span>PR</span><span class="onboarding-brand__suffix">ism</span>
-        </span>
-        <span class="onboarding-brand__version">v0.1</span>
-      </div>
-
       <ol class="onboarding-progress" aria-label="Onboarding progress">
         <li
           v-for="step in [1, 2, 3] as StepIndex[]"
@@ -487,9 +513,33 @@ onUnmounted(() => {
               autocomplete="off"
               @blur="handleTokenBlur"
             />
+            <p
+              v-if="detectedFlavour !== null"
+              class="onboarding-field__detected"
+              :class="{
+                'onboarding-field__detected--mismatch':
+                  detectedFlavour !== form.flavour,
+              }"
+            >
+              <span class="onboarding-field__detected-dot" aria-hidden="true"></span>
+              Detected:
+              <strong>
+                {{
+                  detectedFlavour === "fine-grained"
+                    ? "fine-grained PAT"
+                    : "classic PAT"
+                }}
+              </strong>
+              <span
+                v-if="detectedFlavour !== form.flavour"
+                class="onboarding-field__detected-note"
+              >
+                — Connect uses these requirements, regardless of the tab above.
+              </span>
+            </p>
             <p class="onboarding-field__hint">
               <a :href="tokenCreateUrl" target="_blank" rel="noreferrer">
-                Create a new {{ form.flavour }} PAT
+                Create a new {{ effectiveFlavour }} PAT
               </a>
               · scopes pre-filled
             </p>
@@ -653,42 +703,11 @@ onUnmounted(() => {
 .onboarding__header {
   display: flex;
   align-items: center;
-  gap: var(--s-6);
+  justify-content: center;
   padding: var(--s-5) var(--s-8);
   border-bottom: 1px solid var(--border-1);
   background: var(--bg-1);
   flex: 0 0 auto;
-}
-
-.onboarding-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-}
-
-.onboarding-brand__mark {
-  width: 24px;
-  height: 24px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__name {
-  font-size: var(--fs-14);
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  color: var(--text-strong);
-}
-
-.onboarding-brand__suffix {
-  font-weight: 400;
-  color: var(--text-mute);
-}
-
-.onboarding-brand__version {
-  font-family: var(--font-mono);
-  font-size: var(--fs-10);
-  color: var(--text-faint);
-  letter-spacing: 1px;
 }
 
 .onboarding-progress {
@@ -971,6 +990,37 @@ onUnmounted(() => {
   margin: 2px 0 0;
   color: var(--text-mute);
   font-size: var(--fs-12);
+}
+
+.onboarding-field__detected {
+  margin: 4px 0 0;
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.onboarding-field__detected strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.onboarding-field__detected-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--info);
+  flex: 0 0 6px;
+}
+
+.onboarding-field__detected--mismatch .onboarding-field__detected-dot {
+  background: var(--warning);
+}
+
+.onboarding-field__detected-note {
+  color: var(--warning);
 }
 
 .onboarding-field__hint a {

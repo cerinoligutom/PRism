@@ -17,6 +17,7 @@ import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
+import { useSyncStore } from "@/stores/sync";
 import {
   useDashboardStore,
   type DashboardGroup,
@@ -32,8 +33,20 @@ const router = useRouter();
 const dashboard = useDashboardStore();
 const accounts = useAccountsStore();
 const appearance = useAppearanceStore();
+const sync = useSyncStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
+
+/**
+ * Single "is something fetching right now" flag for the dashboard's
+ * interactive controls. Includes both the per-route dashboard list
+ * hydration (`dashboard.loading`) and the global sync worker cycle
+ * (`sync.aggregate === 'syncing'`) so manual Refresh, filter chips, and
+ * the status-bar keyboard hint all reflect the same state.
+ */
+const isFetching = computed(
+  () => dashboard.loading || sync.aggregate === "syncing",
+);
 
 /**
  * Shared lookup from account id to a render-ready marker. Computed once at
@@ -94,6 +107,7 @@ const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
 // queue). Hiding the rail also keeps the empty-state filtering logic from
 // claiming the view is "filtered" when it's not.
 const isArchive = computed<boolean>(() => dashboard.view === "archive");
+const isTeam = computed<boolean>(() => dashboard.view === "team");
 
 const viewInlineLabel = computed<string>(
   () => VIEW_INLINE_LABEL[dashboard.view as DashboardViewName] ?? dashboard.view,
@@ -292,7 +306,7 @@ watch(() => route.meta?.dashboardView, () => {
           <button
             type="button"
             class="btn btn-icon"
-            :disabled="dashboard.loading"
+            :disabled="isFetching"
             @click="refresh"
           >
             <svg
@@ -324,6 +338,7 @@ watch(() => route.meta?.dashboardView, () => {
           v-if="!isArchive"
           :counts="dashboard.chipCounts"
           :active="(dashboard.activeChips as ReadonlySet<ChipKey>)"
+          :disabled="isFetching"
           @toggle="onToggleChip"
           @clear="onClearChips"
         />
@@ -404,9 +419,20 @@ watch(() => route.meta?.dashboardView, () => {
       <div v-if="isArchive" class="dashboard-empty">
         <h2 class="dashboard-empty__title">No archived pull requests</h2>
         <p class="dashboard-empty__copy">
-          Archived PRs land here when they auto-archive (closed/merged + 30
-          days inactive) or when you archive them from the row overflow menu.
+          PRs land here when they close or merge, or when you archive them
+          from the row overflow menu.
         </p>
+      </div>
+      <div v-else-if="isTeam" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">No team-tracked repositories yet</h2>
+        <p class="dashboard-empty__copy">
+          The Team view shows PRs from repositories you've opted in.
+          PRism doesn't read your GitHub teams - you pick the repos
+          yourself so API budget stays under control.
+        </p>
+        <PRismButton to="/settings/repositories" variant="primary">
+          Open Repositories settings
+        </PRismButton>
       </div>
       <div v-else class="dashboard-empty">
         <h2 class="dashboard-empty__title">No pull requests in this view yet</h2>

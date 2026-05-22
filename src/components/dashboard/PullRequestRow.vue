@@ -542,17 +542,23 @@ function onUnarchive(): void {
           </DropdownMenuItem>
           <DropdownMenuItem
             v-if="canArchive && !isArchiveView"
-            class="pr-row__menu-item"
+            class="pr-row__menu-item pr-row__menu-item--stacked"
             @select="onArchive"
           >
-            Archive
+            <span class="pr-row__menu-item-label">Archive</span>
+            <span class="pr-row__menu-item-hint">
+              Hides from PRism only - the PR on GitHub is unchanged.
+            </span>
           </DropdownMenuItem>
           <DropdownMenuItem
             v-if="canArchive && isArchiveView"
-            class="pr-row__menu-item"
+            class="pr-row__menu-item pr-row__menu-item--stacked"
             @select="onUnarchive"
           >
-            Unarchive
+            <span class="pr-row__menu-item-label">Unarchive</span>
+            <span class="pr-row__menu-item-hint">
+              Restores to PRism's default views. No GitHub action.
+            </span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenuPortal>
@@ -986,5 +992,29 @@ function onUnarchive(): void {
   color: var(--text-disabled);
   cursor: not-allowed;
   pointer-events: none;
+}
+
+.pr-row__menu-item--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  height: auto;
+  padding: 6px 10px;
+  gap: 2px;
+}
+
+.pr-row__menu-item-label {
+  font-size: var(--fs-12);
+  color: inherit;
+  line-height: 1.2;
+}
+
+.pr-row__menu-item-hint {
+  font-size: var(--fs-10);
+  color: var(--text-mute);
+  line-height: 1.35;
+}
+
+.pr-row__menu-item--stacked[data-highlighted] .pr-row__menu-item-hint {
+  color: var(--text);
 }
 </style>
