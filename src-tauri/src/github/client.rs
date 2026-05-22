@@ -283,12 +283,44 @@ async fn map_error_status(status: StatusCode, response: Response) -> GitHubError
     }
 }
 
+/// Parse the `Retry-After` header (RFC 9110 §10.2.3, formerly RFC 7231
+/// §7.1.3). The value is either:
+///
+///   - `delta-seconds`: a non-negative integer count of seconds, or
+///   - `HTTP-date`: an IMF-fixdate timestamp (`Sun, 06 Nov 1994 08:49:37 GMT`),
+///     plus the two obsolete RFC 850 + asctime formats accepted by the spec.
+///
+/// Returns `None` when the header is absent or unparseable. Secondary
+/// rate-limit (abuse detection) responses use this same header for their
+/// pause hint, so the GraphQL / REST surfaces don't need to peek at the body.
 fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
-    headers
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
+    let raw = headers.get("retry-after").and_then(|v| v.to_str().ok())?;
+    let trimmed = raw.trim();
+    if let Ok(secs) = trimmed.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    parse_retry_after_date(trimmed)
+}
+
+/// Parse an `HTTP-date` value and return the duration from now until then.
+/// Returns `None` for unparseable input or a date already in the past.
+fn parse_retry_after_date(raw: &str) -> Option<Duration> {
+    use time::format_description::well_known::Rfc2822;
+    use time::OffsetDateTime;
+
+    // RFC 9110 mandates IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), which
+    // is RFC 5322 / 2822 with `GMT` as the only legal timezone. `time`'s
+    // RFC 2822 parser accepts this form. The two obsolete forms (RFC 850 +
+    // asctime) are absent in practice from modern HTTP intermediaries and
+    // GitHub itself; surfacing them would require hand-rolling parsers for
+    // each. We bail rather than ship dead branches.
+    let parsed = OffsetDateTime::parse(raw, &Rfc2822).ok()?;
+    let now = OffsetDateTime::now_utc();
+    let delta = parsed - now;
+    if delta.is_negative() {
+        return None;
+    }
+    delta.try_into().ok()
 }
 
 fn extract_etag(headers: &HeaderMap) -> Option<String> {
@@ -547,5 +579,58 @@ mod tests {
         ]);
         assert!(h.starts_with("deadbeef"));
         assert_eq!(h.len(), 64);
+    }
+
+    fn retry_after(value: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("retry-after", HeaderValue::from_static(value));
+        h
+    }
+
+    #[test]
+    fn parse_retry_after_handles_numeric_seconds() {
+        let d = parse_retry_after(&retry_after("60")).expect("parsed");
+        assert_eq!(d, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parse_retry_after_handles_zero() {
+        let d = parse_retry_after(&retry_after("0")).expect("parsed");
+        assert_eq!(d, Duration::from_secs(0));
+    }
+
+    #[test]
+    fn parse_retry_after_handles_http_date_in_future() {
+        // A date well past wall-clock now should yield a positive duration.
+        // Use 2099 so this test stays stable through any plausible CI clock.
+        let d = parse_retry_after(&retry_after("Wed, 21 Oct 2099 07:28:00 GMT"))
+            .expect("future date parses");
+        // Without a faked clock we can't assert an exact value, only that the
+        // result is plausibly far away (well over a year).
+        assert!(d > Duration::from_secs(60 * 60 * 24 * 365));
+    }
+
+    #[test]
+    fn parse_retry_after_returns_none_for_past_http_date() {
+        let d = parse_retry_after(&retry_after("Wed, 21 Oct 1970 07:28:00 GMT"));
+        assert!(d.is_none(), "past date must not produce a Duration");
+    }
+
+    #[test]
+    fn parse_retry_after_returns_none_for_garbage() {
+        assert!(parse_retry_after(&retry_after("not-a-date")).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_returns_none_when_header_absent() {
+        assert!(parse_retry_after(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_trims_whitespace_around_numeric_value() {
+        // wiremock and various proxies normalise whitespace differently; we
+        // accept either side trimmed.
+        let d = parse_retry_after(&retry_after("  90  ")).expect("trimmed numeric parses");
+        assert_eq!(d, Duration::from_secs(90));
     }
 }

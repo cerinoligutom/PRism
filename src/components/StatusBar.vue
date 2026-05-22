@@ -86,7 +86,12 @@ const summary = computed<SummaryLine>(() => {
     case "unauthorized":
       return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Reauth required" };
     case "rate_limited":
-      return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Rate limited" };
+      return {
+        phase,
+        dotClass: "dot dot-warning",
+        labelClass: "text-warning",
+        label: rateLimitedLabel.value,
+      };
     case "syncing":
       return { phase, dotClass: "dot dot-info dot-pulse", labelClass: "text-info", label: "Syncing" };
     case "synced":
@@ -100,6 +105,19 @@ const summary = computed<SummaryLine>(() => {
         label: accounts.isEmpty ? "Idle · no accounts" : "Idle",
       };
   }
+});
+
+/**
+ * Phase chip label when an account is rate-limited. Surfaces the GitHub
+ * sub-bucket that bottomed out ("Search budget low" / "Graphql budget low" /
+ * "Core budget low") so a multi-account viewer can act on the specific
+ * resource instead of staring at a generic "rate limited" message.
+ */
+const rateLimitedLabel = computed<string>(() => {
+  const resource = sync.lastRateLimitResource;
+  if (resource === null) return "Rate limited";
+  const pretty = resource === "graphql" ? "GraphQL" : resource.charAt(0).toUpperCase() + resource.slice(1);
+  return `${pretty} budget low`;
 });
 
 /**

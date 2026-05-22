@@ -54,6 +54,16 @@ impl CapturingEmitter {
             .filter(|(n, _)| n == name)
             .count()
     }
+
+    fn payloads(&self, name: &str) -> Vec<serde_json::Value> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
 }
 
 impl EmitSink for CapturingEmitter {
@@ -262,6 +272,15 @@ fn rate_headers(remaining: u64, limit: u64) -> ResponseTemplate {
             (limit.saturating_sub(remaining)).to_string(),
         )
         .insert_header("x-ratelimit-reset", "9999999999")
+}
+
+/// Same as [`rate_headers`] but tags the response with an explicit
+/// `x-ratelimit-resource` so the worker routes the accounting into the named
+/// sub-bucket. Used by the budget-guard tests, which now gate on whichever
+/// resource the next call will hit (search for discovery, graphql for PR
+/// detail, core for timeline) - see issue #235.
+fn rate_headers_for(resource: &str, remaining: u64, limit: u64) -> ResponseTemplate {
+    rate_headers(remaining, limit).insert_header("x-ratelimit-resource", resource)
 }
 
 /// Mount an empty `DiscoverPrs` mock that catches every discovery search query.
@@ -551,24 +570,25 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
 
 #[tokio::test]
 async fn cycle_skips_below_rate_budget_guard() {
-    // Seed the budget below 20% before running the cycle. The guard must
-    // skip with `RateBudgetGuard` and emit a rate-limit warning.
+    // Seed the search bucket below 20% before running the cycle. The cycle's
+    // entry guard now gates on the bucket the next call hits - discovery
+    // hits Search first, so we seed `search` to reproduce the skip. See
+    // issue #235.
     let server = MockServer::start().await;
     let harness = setup_harness(&server);
     let account = seed_account(&harness, 7, "bob");
     seed_repo_with_pr(&harness, 200, 7, "owner", "repo", 7000, 42);
 
-    // Pre-populate the rate budget via a cheap REST call returning headers.
     Mock::given(method("GET"))
         .and(path("/seed"))
-        .respond_with(rate_headers(500, 5000))
+        .respond_with(rate_headers_for("search", 3, 30))
         .mount(&server)
         .await;
 
     let client = harness.factory.build(&account).unwrap();
     let _ = client.get_conditional("/seed").await;
     let snap = client.rate().snapshot();
-    assert_eq!(snap.remaining, 500);
+    assert_eq!(snap.for_resource("search").remaining, 3);
 
     let ctx = harness.ctx();
     let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
@@ -582,6 +602,16 @@ async fn cycle_skips_below_rate_budget_guard() {
         other => panic!("expected RateBudgetGuard, got {other:?}"),
     }
     assert!(harness.emit.count("sync://rate-limit-warning") >= 1);
+
+    // The emitted rate-limit payload tags the offending resource so the
+    // status bar can render "search budget low" instead of the generic
+    // "rate limited".
+    let payloads = harness.emit.payloads("sync://rate-limit-warning");
+    let last = payloads.last().expect("payload present");
+    assert_eq!(
+        last.get("resource").and_then(|v| v.as_str()),
+        Some("search")
+    );
 }
 
 #[tokio::test]
@@ -1767,9 +1797,9 @@ async fn cycle_failure_emits_cycle_failed_event_with_error_message() {
 
 #[tokio::test]
 async fn rate_budget_guard_emits_rate_limit_pause_activity() {
-    // Seed the budget below 20% before running the cycle. Activity feed must
-    // surface the pause as a `rate_limit_pause` warn event so the panel can
-    // explain the skip without leaving the user wondering.
+    // Seed the search bucket below 20% before running the cycle. Activity feed
+    // must surface the pause as a `rate_limit_pause` warn event so the panel
+    // can explain the skip without leaving the user wondering.
     let server = MockServer::start().await;
     let harness = setup_harness(&server);
     let account = seed_account(&harness, 7, "bob");
@@ -1777,7 +1807,7 @@ async fn rate_budget_guard_emits_rate_limit_pause_activity() {
 
     Mock::given(method("GET"))
         .and(path("/seed"))
-        .respond_with(rate_headers(500, 5000))
+        .respond_with(rate_headers_for("search", 3, 30))
         .mount(&server)
         .await;
     let client = harness.factory.build(&account).unwrap();

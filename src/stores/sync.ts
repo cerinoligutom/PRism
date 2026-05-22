@@ -39,11 +39,20 @@ interface SyncStatusEvent {
   readonly rate_limit: number | null;
 }
 
+/**
+ * GitHub sub-bucket name. The worker tags rate-limit events with which
+ * resource bottomed out so the status bar can read "search budget low"
+ * instead of the generic "rate limited". Absent for legacy events emitted
+ * before the bucket hint was added.
+ */
+export type RateLimitResource = "core" | "search" | "graphql";
+
 interface SyncRateLimitEvent {
   readonly account_id: number;
   readonly pct: number;
   readonly limit: number | null;
   readonly reset_in_seconds: number | null;
+  readonly resource?: RateLimitResource;
 }
 
 const SYNC_STATUS_EVENT = "sync://status";
@@ -72,6 +81,14 @@ export const useSyncStore = defineStore("sync", () => {
   const intervalSeconds = ref<number>(60);
   const minIntervalSeconds = ref<number>(30);
   const maxIntervalSeconds = ref<number>(600);
+
+  /**
+   * The GitHub sub-bucket whose budget tripped the most recent rate-limit
+   * warning. Lets the status bar disambiguate "search budget low" from
+   * "graphql budget low" - the issue's motivating case is a single
+   * bucket bottoming out while the others still have headroom.
+   */
+  const lastRateLimitResource = ref<RateLimitResource | null>(null);
 
   /**
    * Shared 1s ticker. Drives `secondsSinceLastSync` and `secondsUntilNextSync`
@@ -209,6 +226,7 @@ export const useSyncStore = defineStore("sync", () => {
       listen<SyncRateLimitEvent>(SYNC_RATE_LIMIT_EVENT, (e) => {
         // The follow-up status event will carry the full state; here we just
         // surface the warning message so the toast layer can react.
+        lastRateLimitResource.value = e.payload.resource ?? null;
         const existing = accounts.value.find((a) => a.account_id === e.payload.account_id);
         if (existing === undefined) return;
         upsertAccount({
@@ -253,6 +271,7 @@ export const useSyncStore = defineStore("sync", () => {
     secondsUntilNextSync,
     rateRemainingPct,
     rateLimit,
+    lastRateLimitResource,
     bind,
     unbind,
     refreshSnapshot,

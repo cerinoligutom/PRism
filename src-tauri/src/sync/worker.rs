@@ -28,7 +28,7 @@ use crate::db::DbHandle;
 use crate::github::auth::TokenSource;
 use crate::github::{
     list_pr_timeline, AccountHandle, AccountId, EtagStore, GitHubClient, GitHubError, ListTimeline,
-    RepoCoord,
+    RateResource, RepoCoord, ResourceSnapshot,
 };
 use crate::notify::{
     format_trigger, BadgeSink, NotificationKind, NotificationSinkHandle, NotificationTrigger,
@@ -490,12 +490,28 @@ fn rate_remaining_pct(remaining: i64, limit: i64) -> Option<u8> {
     Some(pct.clamp(0, 100) as u8)
 }
 
-/// Whether the current rate-budget snapshot is below the guard threshold.
-fn under_guard(remaining: i64, limit: i64, guard_pct: u8) -> bool {
-    match rate_remaining_pct(remaining, limit) {
+/// Per-resource budget snapshot percentage. Mirrors [`rate_remaining_pct`]
+/// against a [`ResourceSnapshot`] so call sites can pick the right sub-bucket
+/// (search for discovery, graphql for enrichment, core for timeline).
+fn resource_remaining_pct(snap: ResourceSnapshot) -> Option<u8> {
+    rate_remaining_pct(snap.remaining, snap.limit)
+}
+
+/// Whether the rate-budget snapshot is below the guard threshold. Treats
+/// "no observation yet" as "do not gate" (returns `false`) so a fresh
+/// account isn't blocked before its first response arrives.
+fn under_guard(snap: ResourceSnapshot, guard_pct: u8) -> bool {
+    match resource_remaining_pct(snap) {
         Some(pct) => pct < guard_pct,
         None => false,
     }
+}
+
+/// Short label used in the cycle's status / activity messages. Lets the UI
+/// distinguish "search budget low" from a generic "rate limited" while still
+/// matching the wire-form `x-ratelimit-resource` value.
+fn resource_label(resource: RateResource) -> &'static str {
+    resource.as_str()
 }
 
 /// Run a single sync cycle for one account. Public for integration tests.
@@ -505,21 +521,28 @@ pub async fn run_one_cycle(
     account: &Account,
 ) -> SyncCycleReport {
     let snapshot = client.rate().snapshot();
-    if under_guard(snapshot.remaining, snapshot.limit, RATE_BUDGET_GUARD_PCT) {
-        let pct = rate_remaining_pct(snapshot.remaining, snapshot.limit).unwrap_or(0);
+    // The cycle opens with discovery (Search API). Gate on the search
+    // sub-budget so a tight 30 req/min search bucket doesn't get masked by
+    // the much larger core / graphql buckets sitting at 100%.
+    let entry_bucket = RateResource::Search;
+    let entry_snap = snapshot.for_bucket(entry_bucket);
+    if under_guard(entry_snap, RATE_BUDGET_GUARD_PCT) {
+        let pct = resource_remaining_pct(entry_snap).unwrap_or(0);
         emit_rate_limit(
             ctx,
             account,
             pct,
-            snapshot.limit,
-            snapshot.time_until_reset(),
+            entry_snap.limit,
+            entry_snap.time_until_reset(),
+            Some(entry_bucket),
         );
-        emit_activity_rate_pause(ctx, account, snapshot.time_until_reset(), pct);
+        emit_activity_rate_pause(ctx, account, entry_snap.time_until_reset(), pct);
+        let label = resource_label(entry_bucket);
         let state = ctx.state.update(account.id, |s| {
             s.phase = SyncPhase::RateLimited;
-            s.message = Some(format!("budget {pct}%, skipping cycle"));
+            s.message = Some(format!("{label} budget {pct}%, skipping cycle"));
             s.rate_remaining_pct = Some(pct);
-            s.rate_limit = Some(snapshot.limit);
+            s.rate_limit = Some(entry_snap.limit);
             s.next_sync_in_seconds = Some(ctx.config.interval_secs());
         });
         emit_status(&ctx.emit, &state);
@@ -543,8 +566,11 @@ pub async fn run_one_cycle(
     emit_status(&ctx.emit, &state);
     emit_activity_cycle_started(ctx, account);
 
-    let pre_used = snapshot.used.max(0);
-    let pre_remaining = snapshot.remaining;
+    // Per-bucket pre-cycle snapshots so `finalise_with_budget` can compute
+    // a sane delta across the three independent sub-budgets. Using the
+    // top-level "most constrained" view would flip mid-cycle as different
+    // buckets bottom out, producing nonsense `requests_made` numbers.
+    let pre_budget = PreCycleBudget::from_snapshot(&snapshot);
     let cycle_start = unix_now();
     let mut report = SyncCycleReport {
         account_id: account.id,
@@ -596,29 +622,42 @@ pub async fn run_one_cycle(
             emit_status(&ctx.emit, &state);
             emit_activity_cycle_failed(ctx, account, "discovery", "token rejected; reauthenticate");
             report.outcome = CycleOutcome::Unauthorized;
-            return finalise_with_budget(report, client, pre_used, pre_remaining);
+            return finalise_with_budget(report, client, pre_budget);
         }
         Err(DiscoveryError::GitHub(GitHubError::RateLimited { retry_after })) => {
+            // Discovery hit the search bucket - surface that hint so the
+            // status bar shows "search budget low" instead of the generic
+            // "rate limited" message a multi-account viewer can't act on.
+            let bucket = RateResource::Search;
             let reset_in = retry_after.map(|d| d.as_secs());
+            let label = resource_label(bucket);
             let state = ctx.state.update(account.id, |s| {
                 s.phase = SyncPhase::RateLimited;
-                s.message = Some("upstream throttled".into());
+                s.message = Some(format!("{label} budget low; upstream throttled"));
                 s.next_sync_in_seconds = reset_in.or(Some(ctx.config.interval_secs()));
             });
             emit_status(&ctx.emit, &state);
-            emit_rate_limit(ctx, account, 0, client.rate().snapshot().limit, retry_after);
+            let bucket_snap = client.rate().snapshot().for_bucket(bucket);
+            emit_rate_limit(
+                ctx,
+                account,
+                0,
+                bucket_snap.limit,
+                retry_after,
+                Some(bucket),
+            );
             emit_activity_rate_pause(ctx, account, retry_after, 0);
             report.outcome = CycleOutcome::RateLimited {
                 reset_in_seconds: reset_in,
             };
-            return finalise_with_budget(report, client, pre_used, pre_remaining);
+            return finalise_with_budget(report, client, pre_budget);
         }
         Err(err) => {
             let message = format!("discovery: {err}");
             record_failure(ctx, account, &message);
             emit_activity_cycle_failed(ctx, account, "discovery", &err.to_string());
             report.outcome = CycleOutcome::Failed { message };
-            return finalise_with_budget(report, client, pre_used, pre_remaining);
+            return finalise_with_budget(report, client, pre_budget);
         }
     }
 
@@ -660,7 +699,7 @@ pub async fn run_one_cycle(
         report.outcome = CycleOutcome::Skipped {
             reason: SkipReason::NoReposConfigured,
         };
-        return finalise_with_budget(report, client, pre_used, pre_remaining);
+        return finalise_with_budget(report, client, pre_budget);
     }
 
     let total_prs = count_prs_across_repos(&ctx.db, &repos);
@@ -697,28 +736,40 @@ pub async fn run_one_cycle(
                     "token rejected; reauthenticate",
                 );
                 report.outcome = CycleOutcome::Unauthorized;
-                return finalise_with_budget(report, client, pre_used, pre_remaining);
+                return finalise_with_budget(report, client, pre_budget);
             }
-            Err(SyncRepoError::RateLimited { retry_after }) => {
+            Err(SyncRepoError::RateLimited {
+                retry_after,
+                resource,
+            }) => {
                 let reset_in = retry_after.map(|d| d.as_secs());
+                let label = resource_label(resource);
                 let state = ctx.state.update(account.id, |s| {
                     s.phase = SyncPhase::RateLimited;
-                    s.message = Some("upstream throttled".into());
+                    s.message = Some(format!("{label} budget low; upstream throttled"));
                     s.next_sync_in_seconds = reset_in.or(Some(ctx.config.interval_secs()));
                 });
                 emit_status(&ctx.emit, &state);
-                emit_rate_limit(ctx, account, 0, client.rate().snapshot().limit, retry_after);
+                let bucket_snap = client.rate().snapshot().for_bucket(resource);
+                emit_rate_limit(
+                    ctx,
+                    account,
+                    0,
+                    bucket_snap.limit,
+                    retry_after,
+                    Some(resource),
+                );
                 emit_activity_rate_pause(ctx, account, retry_after, 0);
                 report.outcome = CycleOutcome::RateLimited {
                     reset_in_seconds: reset_in,
                 };
-                return finalise_with_budget(report, client, pre_used, pre_remaining);
+                return finalise_with_budget(report, client, pre_budget);
             }
             Err(SyncRepoError::Other(message)) => {
                 record_failure(ctx, account, &message);
                 emit_activity_cycle_failed(ctx, account, "enrichment", &message);
                 report.outcome = CycleOutcome::Failed { message };
-                return finalise_with_budget(report, client, pre_used, pre_remaining);
+                return finalise_with_budget(report, client, pre_budget);
             }
         }
     }
@@ -789,7 +840,7 @@ pub async fn run_one_cycle(
         enriched,
         format!("synced {enriched} pull request(s)"),
     );
-    finalise_with_budget(report, client, pre_used, pre_remaining)
+    finalise_with_budget(report, client, pre_budget)
 }
 
 /// Wrap [`crate::triage::query::auto_archive_sweep`] in a transaction and
@@ -1101,6 +1152,9 @@ fn finish_completed(
     finished_at: SystemTime,
 ) {
     let snap = client.rate().snapshot();
+    // Top-level snapshot mirrors the most-constrained sub-bucket so the
+    // status bar's single budget label surfaces the worst-case across
+    // core / search / graphql instead of whatever bucket was updated last.
     let pct = rate_remaining_pct(snap.remaining, snap.limit);
     let synced_at = format_rfc3339(finished_at);
     let state = ctx.state.update(account.id, |s| {
@@ -1118,18 +1172,64 @@ fn finish_completed(
     emit_status(&ctx.emit, &state);
 }
 
+/// Per-bucket "before the cycle" view used to compute `requests_made` after
+/// the cycle finishes. Captures each sub-budget independently because the
+/// top-level snapshot now mirrors the most-constrained bucket and would flip
+/// mid-cycle as different buckets bottom out, producing nonsense deltas.
+#[derive(Debug, Clone, Copy)]
+struct PreCycleBudget {
+    core_used: i64,
+    search_used: i64,
+    graphql_used: i64,
+    core_remaining: i64,
+    search_remaining: i64,
+    graphql_remaining: i64,
+}
+
+impl PreCycleBudget {
+    fn from_snapshot(snap: &crate::github::RateSnapshot) -> Self {
+        Self {
+            core_used: snap.core.used.max(0),
+            search_used: snap.search.used.max(0),
+            graphql_used: snap.graphql.used.max(0),
+            core_remaining: snap.core.remaining,
+            search_remaining: snap.search.remaining,
+            graphql_remaining: snap.graphql.remaining,
+        }
+    }
+}
+
 fn finalise_with_budget(
     mut report: SyncCycleReport,
     client: &GitHubClient,
-    pre_used: i64,
-    pre_remaining: i64,
+    pre: PreCycleBudget,
 ) -> SyncCycleReport {
     let snap = client.rate().snapshot();
-    // Prefer `used` delta; fall back to `remaining` delta if `used` isn't
-    // surfaced by Enterprise hosts.
-    let by_used = (snap.used.max(0) - pre_used).max(0);
-    let by_remaining = (pre_remaining - snap.remaining).max(0);
-    let delta = by_used.max(by_remaining);
+    // Sum the deltas across all three buckets so `requests_made` reflects
+    // the full cycle's HTTP footprint, not just the most-constrained bucket.
+    // Prefer `used` delta per-bucket; fall back to `remaining` delta if
+    // `used` isn't surfaced by an Enterprise host.
+    let bucket_delta = |post_used: i64, pre_used: i64, post_remaining: i64, pre_remaining: i64| {
+        let by_used = (post_used.max(0) - pre_used).max(0);
+        let by_remaining = (pre_remaining - post_remaining).max(0);
+        by_used.max(by_remaining)
+    };
+    let delta = bucket_delta(
+        snap.core.used,
+        pre.core_used,
+        snap.core.remaining,
+        pre.core_remaining,
+    ) + bucket_delta(
+        snap.search.used,
+        pre.search_used,
+        snap.search.remaining,
+        pre.search_remaining,
+    ) + bucket_delta(
+        snap.graphql.used,
+        pre.graphql_used,
+        snap.graphql.remaining,
+        pre.graphql_remaining,
+    );
     report.requests_made = delta as u64;
     report
 }
@@ -1140,12 +1240,14 @@ fn emit_rate_limit(
     pct: u8,
     limit: i64,
     reset_in: Option<Duration>,
+    resource: Option<RateResource>,
 ) {
     let payload = SyncRateLimitPayload {
         account_id: account.id,
         pct,
         limit: if limit > 0 { Some(limit) } else { None },
         reset_in_seconds: reset_in.map(|d| d.as_secs()),
+        resource: resource.map(|r| r.as_str().to_string()),
     };
     ctx.emit.emit(
         SYNC_RATE_LIMIT_EVENT,
@@ -1156,19 +1258,29 @@ fn emit_rate_limit(
 #[derive(Debug)]
 enum SyncRepoError {
     Unauthorized,
-    RateLimited { retry_after: Option<Duration> },
+    RateLimited {
+        retry_after: Option<Duration>,
+        resource: RateResource,
+    },
     Other(String),
 }
 
-impl From<GitHubError> for SyncRepoError {
-    fn from(err: GitHubError) -> Self {
+impl SyncRepoError {
+    /// Map a `GitHubError` produced by a specific phase into the worker's
+    /// internal error, tagging rate-limit failures with the bucket the
+    /// failing call hit. This lets the enrichment loop report "graphql
+    /// budget low" vs "core budget low" without a separate channel.
+    fn from_err_for(err: GitHubError, resource: RateResource) -> Self {
         match err {
             GitHubError::Unauthorized => SyncRepoError::Unauthorized,
             GitHubError::Auth(
                 crate::github::auth::AuthError::Missing(_)
                 | crate::github::auth::AuthError::Empty(_),
             ) => SyncRepoError::Unauthorized,
-            GitHubError::RateLimited { retry_after } => SyncRepoError::RateLimited { retry_after },
+            GitHubError::RateLimited { retry_after } => SyncRepoError::RateLimited {
+                retry_after,
+                resource,
+            },
             other => SyncRepoError::Other(other.to_string()),
         }
     }
@@ -1195,6 +1307,26 @@ async fn sync_repo(
     let mut visited = 0usize;
     for pr in &prs {
         visited += 1;
+        // Per-PR sub-budget gate: skip the PR if either of the buckets the
+        // next two calls will hit is already below the guard. Returning a
+        // tagged RateLimited carries the resource hint up to the cycle's
+        // error handler so the status bar's message names the right bucket.
+        let snapshot = client.rate().snapshot();
+        let graphql_snap = snapshot.for_bucket(RateResource::Graphql);
+        if under_guard(graphql_snap, RATE_BUDGET_GUARD_PCT) {
+            return Err(SyncRepoError::RateLimited {
+                retry_after: graphql_snap.time_until_reset(),
+                resource: RateResource::Graphql,
+            });
+        }
+        let core_snap = snapshot.for_bucket(RateResource::Core);
+        if under_guard(core_snap, RATE_BUDGET_GUARD_PCT) {
+            return Err(SyncRepoError::RateLimited {
+                retry_after: core_snap.time_until_reset(),
+                resource: RateResource::Core,
+            });
+        }
+
         // PR detail (GraphQL) — primary surface per ADR 0006.
         // Wrapped in `timeout` so a hung upstream call doesn't stall the loop.
         let (detail, detail_body) = timeout(
@@ -1207,7 +1339,7 @@ async fn sync_repo(
         )
         .await
         .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
-        .map_err(SyncRepoError::from)?;
+        .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
 
         // Body-hash cache (ADR 0004, issue #234): when the detail response is
         // byte-identical to last cycle, the detail-driven DB writes can be
@@ -1239,7 +1371,7 @@ async fn sync_repo(
         )
         .await
         .map_err(|_| SyncRepoError::Other(format!("timeline timeout for #{}", pr.number)))?
-        .map_err(SyncRepoError::from)?;
+        .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Core))?;
 
         let events = match timeline {
             ListTimeline::Events(e) => Some(e),
@@ -2297,14 +2429,96 @@ mod tests {
         assert_eq!(rate_remaining_pct(0, 5000), Some(0));
     }
 
+    fn snap(limit: i64, remaining: i64) -> ResourceSnapshot {
+        ResourceSnapshot {
+            limit,
+            remaining,
+            used: (limit - remaining).max(0),
+            reset_at: std::time::UNIX_EPOCH,
+        }
+    }
+
     #[test]
     fn under_guard_fires_below_threshold() {
-        // 19% < 20% guard → fires.
-        assert!(under_guard(999, 5000, 20));
-        // 20% == guard → does not fire (threshold is "below").
-        assert!(!under_guard(1000, 5000, 20));
-        // Unobserved → no skip.
-        assert!(!under_guard(-1, -1, 20));
+        // 19% < 20% guard - fires.
+        assert!(under_guard(snap(5000, 999), 20));
+        // 20% == guard - does not fire (threshold is "below").
+        assert!(!under_guard(snap(5000, 1000), 20));
+        // Unobserved - no skip.
+        assert!(!under_guard(snap(-1, -1), 20));
+    }
+
+    #[test]
+    fn under_guard_keys_against_active_resource_bucket() {
+        // The worker passes the snapshot for whichever resource the next
+        // call will hit. A tight search bucket must trip the guard even if
+        // core / graphql are still healthy - and vice versa.
+        use crate::github::rate_limit::RateBudget;
+        use http::{HeaderMap, HeaderName, HeaderValue};
+
+        let b = RateBudget::new();
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static("x-ratelimit-resource"),
+            HeaderValue::from_static("search"),
+        );
+        h.insert(
+            HeaderName::from_static("x-ratelimit-limit"),
+            HeaderValue::from_static("30"),
+        );
+        h.insert(
+            HeaderName::from_static("x-ratelimit-remaining"),
+            HeaderValue::from_static("5"),
+        );
+        h.insert(
+            HeaderName::from_static("x-ratelimit-used"),
+            HeaderValue::from_static("25"),
+        );
+        h.insert(
+            HeaderName::from_static("x-ratelimit-reset"),
+            HeaderValue::from_static("9999999999"),
+        );
+        b.update_from_headers(&h);
+
+        let mut h2 = HeaderMap::new();
+        h2.insert(
+            HeaderName::from_static("x-ratelimit-resource"),
+            HeaderValue::from_static("core"),
+        );
+        h2.insert(
+            HeaderName::from_static("x-ratelimit-limit"),
+            HeaderValue::from_static("5000"),
+        );
+        h2.insert(
+            HeaderName::from_static("x-ratelimit-remaining"),
+            HeaderValue::from_static("4900"),
+        );
+        h2.insert(
+            HeaderName::from_static("x-ratelimit-used"),
+            HeaderValue::from_static("100"),
+        );
+        h2.insert(
+            HeaderName::from_static("x-ratelimit-reset"),
+            HeaderValue::from_static("9999999999"),
+        );
+        b.update_from_headers(&h2);
+
+        let snapshot = b.snapshot();
+        // search is at ~17% remaining; trips.
+        assert!(under_guard(
+            snapshot.for_bucket(RateResource::Search),
+            RATE_BUDGET_GUARD_PCT,
+        ));
+        // core is at 98%; clean.
+        assert!(!under_guard(
+            snapshot.for_bucket(RateResource::Core),
+            RATE_BUDGET_GUARD_PCT,
+        ));
+        // graphql is unobserved; clean (no skip on unknown).
+        assert!(!under_guard(
+            snapshot.for_bucket(RateResource::Graphql),
+            RATE_BUDGET_GUARD_PCT,
+        ));
     }
 
     #[test]
@@ -4493,13 +4707,17 @@ mod tests {
         );
     }
 
-    // --- SyncRepoError::From<GitHubError> auth routing (issue #236) ---
+    // --- SyncRepoError auth routing (issue #236) ---
     //
     // A missing or empty keychain entry surfaces as `GitHubError::Auth(...)`
     // from `attach_auth`, which the worker must route through the same
     // `Unauthorized` path as a 401 so the reauth dialog opens. An OS-level
     // keychain failure (`AuthError::Keychain`) stays on the generic-failure
     // path so a transient libsecret blip doesn't trigger reauth.
+    //
+    // The mapping uses `SyncRepoError::from_err_for(err, resource)` (issue
+    // #235); auth routing is independent of the resource bucket, so the
+    // tests pass an arbitrary one.
 
     use crate::auth::keychain::MockKeychain;
     use crate::auth::token_source::KeychainTokenSource;
@@ -4508,21 +4726,21 @@ mod tests {
     #[test]
     fn sync_repo_error_routes_auth_missing_to_unauthorized() {
         let err = GitHubError::Auth(AuthError::Missing(1));
-        let mapped: SyncRepoError = err.into();
+        let mapped = SyncRepoError::from_err_for(err, RateResource::Core);
         assert!(matches!(mapped, SyncRepoError::Unauthorized));
     }
 
     #[test]
     fn sync_repo_error_routes_auth_empty_to_unauthorized() {
         let err = GitHubError::Auth(AuthError::Empty(1));
-        let mapped: SyncRepoError = err.into();
+        let mapped = SyncRepoError::from_err_for(err, RateResource::Core);
         assert!(matches!(mapped, SyncRepoError::Unauthorized));
     }
 
     #[test]
     fn sync_repo_error_keeps_auth_keychain_on_generic_failure_path() {
         let err = GitHubError::Auth(AuthError::Keychain("libsecret unavailable".into()));
-        let mapped: SyncRepoError = err.into();
+        let mapped = SyncRepoError::from_err_for(err, RateResource::Core);
         assert!(matches!(mapped, SyncRepoError::Other(_)));
     }
 
@@ -4540,7 +4758,7 @@ mod tests {
         assert!(matches!(auth_err, AuthError::Missing(1)));
 
         let github_err = GitHubError::Auth(auth_err);
-        let mapped: SyncRepoError = github_err.into();
+        let mapped = SyncRepoError::from_err_for(github_err, RateResource::Core);
         assert!(matches!(mapped, SyncRepoError::Unauthorized));
     }
 }
