@@ -22,7 +22,7 @@
 use tauri::State;
 
 use crate::db::DbHandle;
-use crate::settings::types::AppSettings;
+use crate::settings::types::{AppSettings, NotificationPermissionState};
 
 /// Read the singleton `app_settings` row. Called by the Settings panel and
 /// by the frontend's app-level notification preference store.
@@ -68,6 +68,40 @@ pub async fn update_app_settings(
         ],
     )
     .map_err(|e| format!("update app_settings: {e}"))?;
+    AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+}
+
+/// Persist the OS-reported `notification_permission_state` answered by an
+/// explicit panel-driven request.
+///
+/// The Settings panel calls the `tauri-plugin-notification` `requestPermission`
+/// API from the frontend on the user gesture (master switch flipping ON while
+/// the slot is `unprompted`), then echoes the result here so the DB is the
+/// single source of truth the notification sink reads on dispatch.
+///
+/// This is intentionally separate from `update_app_settings`, which never
+/// writes the permission column (ADR 0017 decision 5): the sink owns the
+/// deferred-ask flow, the panel owns the explicit-ask flow, and both feed
+/// the same column.
+#[tauri::command]
+pub async fn set_notification_permission_state(
+    db: State<'_, DbHandle>,
+    state: NotificationPermissionState,
+) -> Result<AppSettings, String> {
+    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    let stored = match state {
+        NotificationPermissionState::Unprompted => "unprompted",
+        NotificationPermissionState::Granted => "granted",
+        NotificationPermissionState::Denied => "denied",
+    };
+    conn.execute(
+        "UPDATE app_settings
+            SET notification_permission_state = ?1,
+                updated_at = strftime('%s', 'now')
+          WHERE id = 1",
+        rusqlite::params![stored],
+    )
+    .map_err(|e| format!("update notification_permission_state: {e}"))?;
     AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
 }
 
@@ -154,6 +188,57 @@ mod tests {
         assert!(
             after.updated_at > before.updated_at,
             "updated_at must advance on write"
+        );
+    }
+
+    /// Drive the permission-state write path without going through `State<...>`.
+    /// Mirrors [`set_notification_permission_state`].
+    fn invoke_set_perm(
+        db: &DbHandle,
+        state: NotificationPermissionState,
+    ) -> Result<AppSettings, String> {
+        let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let stored = match state {
+            NotificationPermissionState::Unprompted => "unprompted",
+            NotificationPermissionState::Granted => "granted",
+            NotificationPermissionState::Denied => "denied",
+        };
+        conn.execute(
+            "UPDATE app_settings
+                SET notification_permission_state = ?1,
+                    updated_at = strftime('%s', 'now')
+              WHERE id = 1",
+            rusqlite::params![stored],
+        )
+        .map_err(|e| format!("update notification_permission_state: {e}"))?;
+        AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+    }
+
+    #[test]
+    fn set_permission_state_persists_grant_and_round_trips() {
+        // Panel-driven explicit-ask path (ADR 0017 decision 5): when the user
+        // toggles master ON and the OS prompt returns Granted, the frontend
+        // echoes the result here so the sink reads the new state on dispatch.
+        let db = fresh_db();
+        let after = invoke_set_perm(&db, NotificationPermissionState::Granted)
+            .expect("set permission state");
+        assert_eq!(
+            after.notification_permission_state,
+            NotificationPermissionState::Granted
+        );
+    }
+
+    #[test]
+    fn set_permission_state_persists_denial() {
+        // Mirrors the case where the OS reports Denied (or the user dismisses
+        // the prompt). The panel then renders the "blocked" callout off the
+        // persisted state without re-prompting.
+        let db = fresh_db();
+        let after = invoke_set_perm(&db, NotificationPermissionState::Denied)
+            .expect("set permission state");
+        assert_eq!(
+            after.notification_permission_state,
+            NotificationPermissionState::Denied
         );
     }
 

@@ -159,6 +159,39 @@
   padding: var(--s-5);
 }
 
+/* ────── Toggle (switch) ────── */
+.toggle {
+  width: 32px;
+  height: 18px;
+  background: var(--bg-4);
+  border-radius: var(--r-pill);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex: 0 0 32px;
+  border: 0;
+  padding: 0;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  top: 2px;
+  left: 2px;
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle.on { background: var(--accent); }
+.toggle.on::after { transform: translateX(14px); background: var(--accent-fg); }
+.toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus-ring); }
+.toggle:disabled,
+.toggle[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 /* ────── Chips ────── */
 .chip {
   display: inline-flex;

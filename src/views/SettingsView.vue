@@ -39,9 +39,12 @@ import PRismTooltip from "@/components/ui/PRismTooltip.vue";
           </span>
           Appearance
         </RouterLink>
-        <PRismTooltip text="Lands in M6" :as-child="true">
-          <span class="nav-item nav-item--disabled" aria-disabled="true">Notifications</span>
-        </PRismTooltip>
+        <RouterLink to="/settings/notifications" class="nav-item" :class="{ active: $route.name === 'settings.notifications' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6a4 4 0 018 0v3l1 2H3l1-2V6z" /><path d="M6.5 13a1.5 1.5 0 003 0" /></svg>
+          </span>
+          Notifications
+        </RouterLink>
       </nav>
     </aside>
 
