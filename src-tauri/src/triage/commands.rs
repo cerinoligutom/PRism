@@ -16,7 +16,9 @@
 //! commands fire [`DASHBOARD_REFRESH_EVENT`] on success so the frontend can
 //! reload the affected views without waiting for the next sync tick.
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
+use thiserror::Error;
 
 use crate::dashboard::DashboardView;
 use crate::db::DbHandle;
@@ -34,6 +36,21 @@ use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 /// auto-archive sweep relies on the existing `sync://status` cycle reload
 /// instead.
 pub const DASHBOARD_REFRESH_EVENT: &str = "dashboard://refresh";
+
+/// User-facing error shape for `triage::*` commands. Internal failures (lock
+/// poison, rusqlite errors mid-transaction) fold into a single opaque variant
+/// so internals never leak to the renderer (CLAUDE.md security rule).
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TriageCommandError {
+    #[error("an unexpected error occurred")]
+    Internal,
+}
+
+fn internal(message: &str) -> TriageCommandError {
+    eprintln!("triage command internal error: {message}");
+    TriageCommandError::Internal
+}
 
 /// Mark a PR as read.
 ///
@@ -58,19 +75,22 @@ pub fn mark_pr_read<R: Runtime>(
     db: State<'_, DbHandle>,
     notify_sink: State<'_, NotificationSinkHandle>,
     app_handle: AppHandle<R>,
-) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), TriageCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
     let mut triggers: Vec<NotificationTrigger> = Vec::new();
     match account_id {
         Some(id) => {
-            query::mark_read(&tx, id, pull_request_id).map_err(|e| format!("mark read: {e}"))?;
+            query::mark_read(&tx, id, pull_request_id)
+                .map_err(|e| internal(&format!("mark read: {e}")))?;
             // mark_read zeroed the counter, so any Mention transition is a
             // clear (5 -> 0), not an increase. Pass `None` to disable Mention
             // detection - clearing reads doesn't surface as a notification
             // (ADR 0017 decision 1).
             let new = query::recompute_needs_attention(&tx, id, pull_request_id, None)
-                .map_err(|e| format!("recompute needs_attention: {e}"))?;
+                .map_err(|e| internal(&format!("recompute needs_attention: {e}")))?;
             triggers.extend(new);
         }
         None => {
@@ -80,10 +100,11 @@ pub fn mark_pr_read<R: Runtime>(
                 triggers.extend(new);
                 Ok(())
             })
-            .map_err(|e| format!("mark read multi: {e}"))?;
+            .map_err(|e| internal(&format!("mark read multi: {e}")))?;
         }
     }
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     dispatch_triggers(&conn, notify_sink.inner(), &triggers);
     drop(conn);
     refresh_badge_from_db(&app_handle, &db);
@@ -111,19 +132,21 @@ pub fn mark_pr_unread<R: Runtime>(
     db: State<'_, DbHandle>,
     notify_sink: State<'_, NotificationSinkHandle>,
     app_handle: AppHandle<R>,
-) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), TriageCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
     let mut triggers: Vec<NotificationTrigger> = Vec::new();
     match account_id {
         Some(id) => {
             query::mark_unread(&tx, id, pull_request_id)
-                .map_err(|e| format!("mark unread: {e}"))?;
+                .map_err(|e| internal(&format!("mark unread: {e}")))?;
             // mark_unread leaves `mentioned_count_unread` untouched, so the
             // pre-call counter equals the post-UPDATE value. No Mention
             // transition is possible from this path.
             let new = query::recompute_needs_attention(&tx, id, pull_request_id, None)
-                .map_err(|e| format!("recompute needs_attention: {e}"))?;
+                .map_err(|e| internal(&format!("recompute needs_attention: {e}")))?;
             triggers.extend(new);
         }
         None => {
@@ -133,10 +156,11 @@ pub fn mark_pr_unread<R: Runtime>(
                 triggers.extend(new);
                 Ok(())
             })
-            .map_err(|e| format!("mark unread multi: {e}"))?;
+            .map_err(|e| internal(&format!("mark unread multi: {e}")))?;
         }
     }
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     dispatch_triggers(&conn, notify_sink.inner(), &triggers);
     drop(conn);
     refresh_badge_from_db(&app_handle, &db);
@@ -162,12 +186,15 @@ pub fn mark_pr_archived<R: Runtime>(
     account_id: i64,
     db: State<'_, DbHandle>,
     app_handle: AppHandle<R>,
-) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), TriageCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
     query::mark_archived(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("mark archived: {e}"))?;
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+        .map_err(|e| internal(&format!("mark archived: {e}")))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     drop(conn);
     emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
@@ -186,12 +213,15 @@ pub fn mark_pr_unarchived<R: Runtime>(
     account_id: i64,
     db: State<'_, DbHandle>,
     app_handle: AppHandle<R>,
-) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), TriageCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
     query::mark_unarchived(&tx, account_id, pull_request_id)
-        .map_err(|e| format!("mark unarchived: {e}"))?;
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+        .map_err(|e| internal(&format!("mark unarchived: {e}")))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     drop(conn);
     emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
@@ -284,10 +314,10 @@ pub fn list_filter_chip_counts(
     view: DashboardView,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
-) -> Result<FilterChipCounts, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<FilterChipCounts, TriageCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     query::list_filter_chip_counts(&conn, view, account_id)
-        .map_err(|e| format!("list_filter_chip_counts: {e}"))
+        .map_err(|e| internal(&format!("list_filter_chip_counts: {e}")))
 }
 
 /// Count PRs flagged `needs_attention = 1` for the active account, bucketed
@@ -301,10 +331,10 @@ pub fn list_filter_chip_counts(
 pub fn list_sidebar_attention_counts(
     account_id: i64,
     db: State<'_, DbHandle>,
-) -> Result<SidebarAttentionCounts, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<SidebarAttentionCounts, TriageCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     query::count_sidebar_attention(&conn, account_id)
-        .map_err(|e| format!("list_sidebar_attention_counts: {e}"))
+        .map_err(|e| internal(&format!("list_sidebar_attention_counts: {e}")))
 }
 
 #[cfg(test)]
@@ -677,5 +707,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn internal_variant_serialises_without_leaking_inner_message() {
+        // CLAUDE.md security rule: internal failure detail must never reach
+        // the renderer. The `Internal` variant carries no payload so the
+        // serialised JSON only ever exposes its kind tag.
+        let err = internal("rusqlite: table 'pull_requests' has no column named secret");
+        let serialised = serde_json::to_string(&err).expect("serialise");
+        assert_eq!(serialised, r#"{"kind":"internal"}"#);
+        assert!(!serialised.contains("rusqlite"));
+        assert!(!serialised.contains("secret"));
     }
 }

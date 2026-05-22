@@ -57,7 +57,19 @@ async function load(prId: number): Promise<void> {
   }
 }
 
+/**
+ * Translates the structured `ConversationCommandError` shape (see
+ * `src-tauri/src/conversation/commands.rs`) into a single user-facing message.
+ * `list_pr_timeline_events` is a read of the local cache, so `not_found`
+ * never fires today; the kind switch is still here for parity with the other
+ * conversation-surface error handlers.
+ */
 function formatError(err: unknown): string {
+  if (typeof err === "object" && err !== null && "kind" in err) {
+    const kind = (err as { kind: string }).kind;
+    if (kind === "not_found") return "Timeline isn't available for this PR.";
+    if (kind === "internal") return "Couldn't load timeline. Check the application logs.";
+  }
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   return "Couldn't load timeline.";

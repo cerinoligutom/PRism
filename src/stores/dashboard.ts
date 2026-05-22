@@ -757,7 +757,35 @@ export const useDashboardStore = defineStore("dashboard", () => {
   };
 });
 
+/**
+ * Discriminated union mirroring the Rust error enums that back the dashboard
+ * and triage Tauri commands. The shape comes from
+ * `#[serde(tag = "kind", rename_all = "snake_case")]` on
+ * `DashboardCommandError` (`src-tauri/src/dashboard/commands.rs`) and
+ * `TriageCommandError` (`src-tauri/src/triage/commands.rs`). Both error
+ * surfaces share `Internal`; the dashboard surface adds `NotFound` for the
+ * route-metadata lookup.
+ */
+type DashboardLikeCommandError =
+  | { kind: "internal" }
+  | { kind: "not_found" };
+
+/**
+ * Translates the structured Rust error into a single user-facing message.
+ * Mirrors `formatAuthError` in `src/stores/accounts.ts`. Falls back to the
+ * generic dashboard message when the payload isn't one of the kinds we know
+ * about, so a future variant doesn't render the raw object.
+ */
 function formatError(err: unknown): string {
+  if (typeof err === "object" && err !== null && "kind" in err) {
+    const tagged = err as DashboardLikeCommandError;
+    switch (tagged.kind) {
+      case "not_found":
+        return "We couldn't find that pull request.";
+      case "internal":
+        return "Couldn't load pull requests. Check the application logs.";
+    }
+  }
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   return "Couldn't load pull requests.";

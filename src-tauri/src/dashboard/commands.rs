@@ -3,11 +3,29 @@
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use tauri::State;
+use thiserror::Error;
 
 use crate::dashboard::query;
 use crate::dashboard::types::{DashboardPullRequest, DashboardSort, DashboardView};
 use crate::db::DbHandle;
 use crate::triage::types::ChipKey;
+
+/// User-facing error shape for `dashboard::*` commands. Mirrors the
+/// `AuthCommandError` pattern: internal failures (lock poison, rusqlite errors)
+/// fold into a single opaque variant so internals never leak to the renderer
+/// (CLAUDE.md security rule).
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DashboardCommandError {
+    /// The (account, PR) pair carried by a route-metadata lookup doesn't
+    /// resolve to a row. Distinct from `Internal` so the caller (currently
+    /// `useNotificationRouter`) can drop the route push without surfacing a
+    /// generic error - the in-app badge stays the source of truth.
+    #[error("pull request not found")]
+    NotFound,
+    #[error("an unexpected error occurred")]
+    Internal,
+}
 
 /// Read the dashboard PR list for the active view.
 ///
@@ -24,10 +42,11 @@ pub fn list_dashboard_pull_requests(
     account_id: Option<i64>,
     active_chips: Option<Vec<ChipKey>>,
     db: State<'_, DbHandle>,
-) -> Result<Vec<DashboardPullRequest>, String> {
-    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+) -> Result<Vec<DashboardPullRequest>, DashboardCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     let chips = active_chips.unwrap_or_default();
-    query::list_pull_requests(&conn, view, sort, account_id, &chips).map_err(|err| err.to_string())
+    query::list_pull_requests(&conn, view, sort, account_id, &chips)
+        .map_err(|e| internal(&format!("list_dashboard_pull_requests: {e}")))
 }
 
 /// Row metadata the frontend needs to push onto the `pr-detail` route after a
@@ -66,9 +85,12 @@ pub fn get_pr_route_metadata(
     account_id: i64,
     pull_request_id: i64,
     db: State<'_, DbHandle>,
-) -> Result<PrRouteMetadata, String> {
-    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
-    resolve_pr_route_metadata(&conn, account_id, pull_request_id).map_err(|err| err.to_string())
+) -> Result<PrRouteMetadata, DashboardCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    resolve_pr_route_metadata(&conn, account_id, pull_request_id).map_err(|err| match err {
+        rusqlite::Error::QueryReturnedNoRows => DashboardCommandError::NotFound,
+        other => internal(&format!("resolve_pr_route_metadata: {other}")),
+    })
 }
 
 /// SQL row buffer for the route-metadata lookup. Lifting the columns into a
@@ -142,6 +164,11 @@ fn resolve_pr_route_metadata(
         name: row.name,
         view,
     })
+}
+
+fn internal(message: &str) -> DashboardCommandError {
+    eprintln!("dashboard command internal error: {message}");
+    DashboardCommandError::Internal
 }
 
 #[cfg(test)]
@@ -268,5 +295,24 @@ mod tests {
             matches!(err, rusqlite::Error::QueryReturnedNoRows),
             "expected QueryReturnedNoRows, got {err:?}"
         );
+    }
+
+    #[test]
+    fn internal_variant_serialises_without_leaking_inner_message() {
+        // CLAUDE.md security rule: internal failure detail must never reach
+        // the renderer. The `Internal` variant carries no payload, so the
+        // serialised JSON only ever exposes its kind tag.
+        let err = internal("rusqlite: table 'pull_requests' has no column named secret");
+        let serialised = serde_json::to_string(&err).expect("serialise");
+        assert_eq!(serialised, r#"{"kind":"internal"}"#);
+        assert!(!serialised.contains("rusqlite"));
+        assert!(!serialised.contains("secret"));
+    }
+
+    #[test]
+    fn not_found_variant_serialises_to_kind_only() {
+        let err = DashboardCommandError::NotFound;
+        let serialised = serde_json::to_string(&err).expect("serialise");
+        assert_eq!(serialised, r#"{"kind":"not_found"}"#);
     }
 }

@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use tauri::{AppHandle, Runtime, State};
+use thiserror::Error;
 
 use crate::auth::store::{Account, AccountStore};
 use crate::conversation::query;
@@ -22,6 +24,27 @@ use crate::github::graphql::{
 use crate::github::GitHubClient;
 use crate::notify::refresh_from_db as refresh_badge_from_db;
 use crate::sync::ClientFactory;
+
+/// User-facing error shape for `conversation::*` commands. Internal failures
+/// (lock poison, rusqlite errors, GraphQL transport faults) fold into a single
+/// opaque variant so internals never leak to the renderer (CLAUDE.md security
+/// rule). `NotFound` surfaces when the (PR, account) pair the renderer asked
+/// for has no resolvable row - the conversation drawer needs a distinct
+/// signal to decide whether to retry the fetch or fall through to an empty
+/// state.
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConversationCommandError {
+    #[error("pull request or account not found")]
+    NotFound,
+    #[error("an unexpected error occurred")]
+    Internal,
+}
+
+fn internal(message: &str) -> ConversationCommandError {
+    eprintln!("conversation command internal error: {message}");
+    ConversationCommandError::Internal
+}
 
 /// Shared handle to the production [`ClientFactory`]. Mounted via
 /// `tauri::Builder::manage` so the conversation hydrator can build a
@@ -43,10 +66,10 @@ pub fn list_pr_threads(
     pull_request_id: i64,
     account_id: Option<i64>,
     db: State<'_, DbHandle>,
-) -> Result<Vec<PullRequestThread>, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<Vec<PullRequestThread>, ConversationCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     query::list_pr_threads(&conn, pull_request_id, account_id)
-        .map_err(|e| format!("list_pr_threads: {e}"))
+        .map_err(|e| internal(&format!("list_pr_threads: {e}")))
 }
 
 /// Compute conversation stats for a PR from the local cache.
@@ -54,10 +77,10 @@ pub fn list_pr_threads(
 pub fn get_pr_conversation_stats(
     pull_request_id: i64,
     db: State<'_, DbHandle>,
-) -> Result<ConversationStats, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<ConversationStats, ConversationCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     query::get_conversation_stats(&conn, pull_request_id)
-        .map_err(|e| format!("get_pr_conversation_stats: {e}"))
+        .map_err(|e| internal(&format!("get_pr_conversation_stats: {e}")))
 }
 
 /// List the persisted timeline events for a PR. Reads from the local cache
@@ -69,10 +92,10 @@ pub fn get_pr_conversation_stats(
 pub fn list_pr_timeline_events(
     pull_request_id: i64,
     db: State<'_, DbHandle>,
-) -> Result<Vec<TimelineEventRecord>, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<Vec<TimelineEventRecord>, ConversationCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     query::list_pr_timeline_events(&conn, pull_request_id)
-        .map_err(|e| format!("list_pr_timeline_events: {e}"))
+        .map_err(|e| internal(&format!("list_pr_timeline_events: {e}")))
 }
 
 /// Lazy hydration: fetch full thread replies + issue-comment bodies from
@@ -89,11 +112,11 @@ pub async fn fetch_pr_conversation<R: Runtime>(
     clients: State<'_, ClientFactoryHandle>,
     accounts: State<'_, AccountStoreHandle>,
     app_handle: AppHandle<R>,
-) -> Result<HydratedConversation, String> {
+) -> Result<HydratedConversation, ConversationCommandError> {
     let (account, repo_coord) = resolve_pr_context(&db, &accounts, pull_request_id)?;
     let client = clients
         .build(&account)
-        .map_err(|e| format!("build client: {e}"))?;
+        .map_err(|e| internal(&format!("build client: {e}")))?;
 
     let payload = fetch_comments_payload(&client, &repo_coord).await?;
     persist_payload(&db, pull_request_id, &payload)?;
@@ -119,14 +142,25 @@ pub async fn fetch_pr_conversation<R: Runtime>(
 /// host / client (the repo's owning account); the mark-read fan-out reads
 /// the relation table directly.
 fn auto_mark_read(db: &DbHandle, pull_request_id: i64, account_id: i64) {
-    if let Err(e) = mark_read_in_tx(db, pull_request_id, account_id) {
-        eprintln!("auto-mark-on-open failed (pr={pull_request_id}, account={account_id}): {e}");
+    if mark_read_in_tx(db, pull_request_id, account_id).is_err() {
+        // The `mark_read_in_tx` `internal()` helper already eprintln'd the
+        // underlying failure; the outer site only needs to mark the run as
+        // best-effort so the hydrated response still surfaces.
+        eprintln!(
+            "auto-mark-on-open: best-effort failure (pr={pull_request_id}, account={account_id})"
+        );
     }
 }
 
-fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+fn mark_read_in_tx(
+    db: &DbHandle,
+    pull_request_id: i64,
+    account_id: i64,
+) -> Result<(), ConversationCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
 
     // The repo's owning account always gets a mark_read (UPSERTs the relation
     // row if missing - matches the existing "Team-view PR the viewer opens
@@ -140,12 +174,12 @@ fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Resu
                 "SELECT account_id FROM pull_request_viewer_relations
                   WHERE pull_request_id = ?1",
             )
-            .map_err(|e| format!("prepare relation owners: {e}"))?;
+            .map_err(|e| internal(&format!("prepare relation owners: {e}")))?;
         let rows = stmt
             .query_map([pull_request_id], |row| row.get::<_, i64>(0))
-            .map_err(|e| format!("query relation owners: {e}"))?;
+            .map_err(|e| internal(&format!("query relation owners: {e}")))?;
         for row in rows {
-            let id = row.map_err(|e| format!("read relation owner: {e}"))?;
+            let id = row.map_err(|e| internal(&format!("read relation owner: {e}")))?;
             owners.insert(id);
         }
     }
@@ -176,7 +210,8 @@ fn mark_read_in_tx(db: &DbHandle, pull_request_id: i64, account_id: i64) -> Resu
             ),
         }
     }
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     Ok(())
 }
 
@@ -186,8 +221,8 @@ fn resolve_pr_context(
     db: &DbHandle,
     accounts: &AccountStoreHandle,
     pull_request_id: i64,
-) -> Result<(Account, RepoCoord), String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<(Account, RepoCoord), ConversationCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     let coord: Option<(i64, String, String, i64)> = conn
         .query_row(
             "SELECT r.account_id, r.owner, r.name, pr.number
@@ -205,17 +240,18 @@ fn resolve_pr_context(
             },
         )
         .optional()
-        .map_err(|e| format!("resolve pr: {e}"))?;
+        .map_err(|e| internal(&format!("resolve pr: {e}")))?;
     drop(conn);
 
-    let (account_id, owner, name, number) =
-        coord.ok_or_else(|| "pull request not found".to_string())?;
+    let (account_id, owner, name, number) = coord.ok_or(ConversationCommandError::NotFound)?;
 
-    let accounts_list = accounts.list().map_err(|e| format!("list accounts: {e}"))?;
+    let accounts_list = accounts
+        .list()
+        .map_err(|e| internal(&format!("list accounts: {e}")))?;
     let account = accounts_list
         .into_iter()
         .find(|a| a.id as i64 == account_id)
-        .ok_or_else(|| "account not found".to_string())?;
+        .ok_or(ConversationCommandError::NotFound)?;
 
     Ok((
         account,
@@ -245,7 +281,7 @@ struct CommentsPayload {
 async fn fetch_comments_payload(
     client: &GitHubClient,
     coord: &RepoCoord,
-) -> Result<CommentsPayload, String> {
+) -> Result<CommentsPayload, ConversationCommandError> {
     let mut payload = CommentsPayload::default();
     let mut threads_after: Option<String> = None;
     let mut issue_after: Option<String> = None;
@@ -267,9 +303,9 @@ async fn fetch_comments_payload(
         let data: PrCommentsData = client
             .post_graphql(PR_COMMENTS_QUERY, vars)
             .await
-            .map_err(|e| format!("pr comments fetch: {e}"))?;
+            .map_err(|e| internal(&format!("pr comments fetch: {e}")))?;
         let Some(pr) = data.repository.and_then(|r| r.pull_request) else {
-            return Err("pull request not found upstream".into());
+            return Err(ConversationCommandError::NotFound);
         };
 
         let PullRequestComments {
@@ -342,13 +378,15 @@ fn persist_payload(
     db: &DbHandle,
     pull_request_id: i64,
     payload: &CommentsPayload,
-) -> Result<(), String> {
-    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+) -> Result<(), ConversationCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
 
     for thread in &payload.threads {
-        let Some(thread_id) =
-            resolve_thread_id(&tx, &thread.id).map_err(|e| format!("resolve thread: {e}"))?
+        let Some(thread_id) = resolve_thread_id(&tx, &thread.id)
+            .map_err(|e| internal(&format!("resolve thread: {e}")))?
         else {
             // Thread row hasn't been written by the cycle yet (e.g. the user
             // opened the drawer before the first sync cycle landed thread
@@ -357,16 +395,17 @@ fn persist_payload(
         };
         for comment in &thread.comments.nodes {
             upsert_review_comment(&tx, thread_id, comment)
-                .map_err(|e| format!("upsert review comment: {e}"))?;
+                .map_err(|e| internal(&format!("upsert review comment: {e}")))?;
         }
     }
 
     for comment in &payload.issue_comments {
         upsert_issue_comment(&tx, pull_request_id, comment)
-            .map_err(|e| format!("upsert issue comment: {e}"))?;
+            .map_err(|e| internal(&format!("upsert issue comment: {e}")))?;
     }
 
-    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
     Ok(())
 }
 
@@ -516,10 +555,10 @@ fn hydrated_response(
     db: &DbHandle,
     pull_request_id: i64,
     account_id: i64,
-) -> Result<HydratedConversation, String> {
-    let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+) -> Result<HydratedConversation, ConversationCommandError> {
+    let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     build_hydrated(&conn, pull_request_id, Some(account_id))
-        .map_err(|e| format!("hydrate response: {e}"))
+        .map_err(|e| internal(&format!("hydrate response: {e}")))
 }
 
 /// Read the persisted state for a PR back into a `HydratedConversation`. Pulled
@@ -547,9 +586,17 @@ fn build_hydrated(
 /// Test-only helpers. Exposed to integration tests under `tests/` so they can
 /// drive the hydrator's internal machinery (persistence path, network fetch)
 /// without booting Tauri state. Not part of the supported public API.
+///
+/// Helpers expose `Result<_, String>` because the integration tests in
+/// `src-tauri/tests/conversation_*.rs` predate the typed error refactor; the
+/// string error is sufficient for their `.unwrap()` / `.expect()` assertions.
 #[doc(hidden)]
 pub mod testing {
     use super::*;
+
+    fn flatten(err: ConversationCommandError) -> String {
+        err.to_string()
+    }
 
     /// Replay a fully-resolved comments payload through the same persistence
     /// path the live hydrator uses.
@@ -567,6 +614,7 @@ pub mod testing {
                 issue_comments,
             },
         )
+        .map_err(flatten)
     }
 
     /// Rebuild a `HydratedConversation` from a connection, matching what the
@@ -595,10 +643,12 @@ pub mod testing {
             name: name.into(),
             number,
         };
-        let payload = fetch_comments_payload(client, &coord).await?;
-        persist_payload(db, pull_request_id, &payload)?;
+        let payload = fetch_comments_payload(client, &coord)
+            .await
+            .map_err(flatten)?;
+        persist_payload(db, pull_request_id, &payload).map_err(flatten)?;
         super::auto_mark_read(db, pull_request_id, account_id);
-        hydrated_response(db, pull_request_id, account_id)
+        hydrated_response(db, pull_request_id, account_id).map_err(flatten)
     }
 }
 
@@ -699,5 +749,24 @@ mod tests {
         // 2026-01-01T00:00:00Z = 1767225600
         assert_eq!(parse_rfc3339("2026-01-01T00:00:00Z"), Some(1_767_225_600));
         assert!(parse_rfc3339("nope").is_none());
+    }
+
+    #[test]
+    fn internal_variant_serialises_without_leaking_inner_message() {
+        // CLAUDE.md security rule: internal failure detail must never reach
+        // the renderer. The `Internal` variant carries no payload so the
+        // serialised JSON only ever exposes its kind tag.
+        let err = internal("graphql: { errors: [{ message: 'secret token revoked' }] }");
+        let serialised = serde_json::to_string(&err).expect("serialise");
+        assert_eq!(serialised, r#"{"kind":"internal"}"#);
+        assert!(!serialised.contains("graphql"));
+        assert!(!serialised.contains("secret"));
+    }
+
+    #[test]
+    fn not_found_variant_serialises_to_kind_only() {
+        let err = ConversationCommandError::NotFound;
+        let serialised = serde_json::to_string(&err).expect("serialise");
+        assert_eq!(serialised, r#"{"kind":"not_found"}"#);
     }
 }
