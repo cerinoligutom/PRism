@@ -23,8 +23,11 @@
 //!     `latest_status_change_at = NULL`. CI = SUCCESS 5/5.
 
 use prism_lib::dashboard::query::list_pull_requests as inner_list_pull_requests;
+use prism_lib::dashboard::query::list_view_counts;
 use prism_lib::dashboard::types::DashboardPullRequest;
-use prism_lib::dashboard::{DashboardSort, DashboardView, ReviewerEntry, ReviewerState};
+use prism_lib::dashboard::{
+    DashboardSort, DashboardView, DashboardViewCounts, ReviewerEntry, ReviewerState,
+};
 use prism_lib::db::migrate;
 use prism_lib::triage::types::ChipKey;
 use rusqlite::Connection;
@@ -2210,4 +2213,102 @@ fn archive_view_ignores_view_split_predicates() {
         vec![504, 503, 502, 501],
         "Archive admits rows from every view-split bucket sorted by archived_at DESC"
     );
+}
+
+// ===== M7 perf: dashboard view counts (issue #230) =====
+//
+// `list_view_counts` collapses the dashboard store's five-way list fan-out
+// into one SQL call. The parity tests below assert the new counts match the
+// length of the existing per-view queries across the shared fixture (single
+// account, second account, and the unified ADR-0016 path).
+
+fn expected_view_counts_from_list(
+    conn: &Connection,
+    account_id: Option<i64>,
+) -> DashboardViewCounts {
+    let views = [
+        DashboardView::Authored,
+        DashboardView::Assigned,
+        DashboardView::Watching,
+        DashboardView::Team,
+        DashboardView::Archive,
+    ];
+    let lens: Vec<i64> = views
+        .into_iter()
+        .map(|v| {
+            list_pull_requests(conn, v, DashboardSort::Updated, account_id)
+                .unwrap()
+                .len() as i64
+        })
+        .collect();
+    DashboardViewCounts {
+        authored: lens[0],
+        assigned: lens[1],
+        watching: lens[2],
+        team: lens[3],
+        archive: lens[4],
+    }
+}
+
+/// Issue #230 acceptance: the new counts command must equal five independent
+/// `list_pull_requests` calls' lengths on the same fixture so the dashboard
+/// store can swap the five-way `Promise.all` for a single invoke without the
+/// sidebar chips shifting.
+#[test]
+fn list_view_counts_matches_five_list_calls_for_alice() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    let expected = expected_view_counts_from_list(&conn, Some(1));
+    let actual = list_view_counts(&conn, Some(1)).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn list_view_counts_matches_five_list_calls_for_bob() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    let expected = expected_view_counts_from_list(&conn, Some(2));
+    let actual = list_view_counts(&conn, Some(2)).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn list_view_counts_matches_five_list_calls_for_unified_scope() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+
+    let expected = expected_view_counts_from_list(&conn, None);
+    let actual = list_view_counts(&conn, None).unwrap();
+    assert_eq!(actual, expected);
+}
+
+/// Add an archived relation and a closed PR to the shared fixture so the
+/// counts have to honour ADR 0018's archive exclusion + the post-M6
+/// `pr.state = 'open'` guard. The parity holds because both predicates flow
+/// through both code paths.
+#[test]
+fn list_view_counts_matches_with_archived_and_closed_rows() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Archive alice's authored relation on PR 100; close PR 200.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s','now')
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE pull_requests SET state = 'closed' WHERE id = 200",
+        [],
+    )
+    .unwrap();
+
+    for scope in [Some(1), Some(2), None] {
+        let expected = expected_view_counts_from_list(&conn, scope);
+        let actual = list_view_counts(&conn, scope).unwrap();
+        assert_eq!(actual, expected, "scope {scope:?}");
+    }
 }

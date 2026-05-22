@@ -167,3 +167,20 @@ pub struct RepoRef {
     pub owner: String,
     pub name: String,
 }
+
+/// Per-view row counts for the active `(account_id)` scope. Powers the sidebar
+/// count chips without round-tripping the full dashboard list for each view.
+///
+/// Each field equals the length of `list_pull_requests(view, ..., account_id,
+/// &[])` for the matching variant. The numbers therefore mirror the dashboard
+/// query's view predicates (including ADR 0018's archive filter on default
+/// views and the `pr.state = 'open'` post-M6 guard) so the chip and the list
+/// agree row-for-row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DashboardViewCounts {
+    pub authored: i64,
+    pub assigned: i64,
+    pub watching: i64,
+    pub team: i64,
+    pub archive: i64,
+}

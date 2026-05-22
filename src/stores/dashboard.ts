@@ -122,6 +122,19 @@ interface SyncStatusEvent {
 }
 
 /**
+ * Mirrors `DashboardViewCounts` in `src-tauri/src/dashboard/types.rs`. Powers
+ * the sidebar count chips via one Tauri invoke per load instead of a per-view
+ * list fan-out (M7 perf, issue #230).
+ */
+interface DashboardViewCountsPayload {
+  readonly authored: number;
+  readonly assigned: number;
+  readonly watching: number;
+  readonly team: number;
+  readonly archive: number;
+}
+
+/**
  * Per-account failure record from an archive / unarchive fan-out. The store
  * keeps the most recent batch's failures so the view can name the failed
  * accounts in an inline callout while the optimistic flip stays for the
@@ -304,9 +317,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const counts = computed(() => ({ ...viewCounts.value }));
 
   /**
-   * Pull the list for one view _without_ chip filtering. Used to keep
-   * `viewCounts` honest: the sidebar count chips reflect the raw view scope
-   * so they don't shrink when the user narrows the active view via chips.
+   * Pull the list for the active view _without_ chip filtering. The sidebar
+   * count chips come from [`fetchViewCounts`] instead of five list calls, so
+   * the only caller now is the no-chips path of [`load`].
    */
   async function fetchView(target: DashboardView): Promise<DashboardPullRequest[]> {
     return await invoke<DashboardPullRequest[]>("list_dashboard_pull_requests", {
@@ -356,11 +369,30 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   /**
-   * Fetches every view in parallel. The active view's rows feed
-   * `pullRequests`; the lengths feed the sidebar counts. Five SQL reads per
-   * load is the price of accurate sidebar counts (including the Archive
-   * entry from ADR 0018) without back-channelling the counts separately
-   * from the Rust side.
+   * Pull the five view counts in one Tauri invoke. The backend computes
+   * `SELECT COUNT(*)` per view sub-query against predicates that mirror
+   * `list_dashboard_pull_requests` so each field equals the length of the
+   * matching per-view list (M7 perf, issue #230).
+   */
+  async function fetchViewCounts(): Promise<DashboardViewCountsPayload> {
+    return await invoke<DashboardViewCountsPayload>(
+      "list_dashboard_view_counts",
+      { accountId: accountFilter.value },
+    );
+  }
+
+  /**
+   * Fetches the sidebar view counts and the active view's row list. M7 perf
+   * (issue #230) collapses the previous five-way `list_dashboard_pull_requests`
+   * fan-out into one `list_dashboard_view_counts` call so each cycle now
+   * blocks on two invokes (counts + active view) instead of five or six. The
+   * chip count fetch still fires as a fire-and-forget background invoke.
+   *
+   * ADR 0018: chips don't apply to the Archive view - the backend
+   * panics if a chip predicate reaches it via the chip-count path, and
+   * the W2 UI hides the chip rail there. Skipping the chip-filtered
+   * re-fetch keeps the Archive view at one list call per load even if a
+   * stale chip set leaked through.
    */
   async function load(): Promise<void> {
     loading.value = true;
@@ -372,49 +404,23 @@ export const useDashboardStore = defineStore("dashboard", () => {
       pendingArchiveIds.value = new Set();
     }
     const active = view.value;
+    const skipChipsForArchive = active === "archive";
+    const fetchActive = activeChips.value.size > 0 && !skipChipsForArchive
+      ? fetchActiveViewWithChips(active)
+      : fetchView(active);
     try {
-      const [authored, assigned, watching, team, archive] = await Promise.all([
-        fetchView("authored"),
-        fetchView("assigned"),
-        fetchView("watching"),
-        fetchView("team"),
-        fetchView("archive"),
+      const [counts, activeRows] = await Promise.all([
+        fetchViewCounts(),
+        fetchActive,
       ]);
       viewCounts.value = {
-        authored: authored.length,
-        assigned: assigned.length,
-        watching: watching.length,
-        team: team.length,
-        archive: archive.length,
+        authored: counts.authored,
+        assigned: counts.assigned,
+        watching: counts.watching,
+        team: counts.team,
+        archive: counts.archive,
       };
-      const rawActive = (() => {
-        switch (active) {
-          case "authored":
-            return authored;
-          case "assigned":
-            return assigned;
-          case "watching":
-            return watching;
-          case "team":
-            return team;
-          case "archive":
-            return archive;
-        }
-      })();
-      // The active view fans out to a second fetch only when chips are
-      // active. Reusing the unfiltered result keeps the common no-chip path
-      // at five calls per load, matching the existing budget.
-      //
-      // ADR 0018: chips don't apply to the Archive view - the backend
-      // panics if a chip predicate reaches it via the chip-count path, and
-      // the W2 UI hides the chip rail there. Skipping the chip-filtered
-      // re-fetch keeps the Archive view at one call per load even if a
-      // stale chip set leaked through.
-      const skipChipsForArchive = active === "archive";
-      pullRequests.value =
-        activeChips.value.size > 0 && !skipChipsForArchive
-          ? await fetchActiveViewWithChips(active)
-          : rawActive;
+      pullRequests.value = activeRows;
       // The Archive view's chip rail is hidden; counts would be zeros
       // regardless. Skip the round-trip.
       if (!skipChipsForArchive) {

@@ -46,8 +46,8 @@ use std::collections::HashMap;
 use rusqlite::{params_from_iter, Connection, Row};
 
 use crate::dashboard::types::{
-    CiSummary, DashboardPullRequest, DashboardSort, DashboardView, RepoRef, ReviewerEntry,
-    ReviewerState, ThreadsSummary,
+    CiSummary, DashboardPullRequest, DashboardSort, DashboardView, DashboardViewCounts, RepoRef,
+    ReviewerEntry, ReviewerState, ThreadsSummary,
 };
 use crate::triage::query as triage_query;
 use crate::triage::types::ChipKey;
@@ -692,6 +692,168 @@ pub fn list_pull_requests(
         hydrate_reviewers(conn, &mut prs)?;
     }
     Ok(prs)
+}
+
+/// Count-friendly FROM + WHERE for the named view + account scope. Mirrors the
+/// view predicates [`relation_view_query`], [`team_view_query`], and
+/// [`archive_view_query`] use, stripped of the projection-only joins
+/// (`repos`, `accounts`, `users`, `thread_buckets`) so the planner only walks
+/// what the COUNT(*) needs.
+///
+/// The single-account path always parameterises the account predicate to `?1`;
+/// the union path returns no parameters. Callers must alias `?1` consistently
+/// across the five scope fragments when composing them into a single combined
+/// SELECT (see [`list_view_counts`]).
+///
+/// Excludes the projection / hydration the row-returning path needs because
+/// none of it affects the row count: `repos.id`, `accounts.host`, the user
+/// avatar joins, and the `thread_buckets` subquery all live in the SELECT
+/// projection, not the WHERE.
+fn view_row_scope_sql(view: DashboardView, account_id: Option<i64>) -> (String, Vec<i64>) {
+    match view {
+        DashboardView::Authored => relation_view_row_scope("is_authored", account_id),
+        DashboardView::Assigned => relation_view_row_scope("is_review_requested", account_id),
+        DashboardView::Watching => relation_view_row_scope("is_involved", account_id),
+        DashboardView::Team => team_view_row_scope(account_id),
+        DashboardView::Archive => archive_view_row_scope(account_id),
+    }
+}
+
+/// Row-scope FROM + WHERE for the three relation-backed default views. Shapes:
+///
+/// - Single-account: `pull_request_viewer_relations rel` -> `pull_requests pr`
+///   with the matching flag, active account, unarchived, and open-state
+///   predicates. One row per qualifying (account, PR) pair, which is one row
+///   per PR in this view since the active account is fixed.
+/// - Union: `pull_requests pr` with an EXISTS over relations carrying the
+///   matching flag and unarchived state. One row per PR.
+///
+/// `flag_column` must be `is_authored`, `is_review_requested`, or `is_involved`
+/// (never user-supplied, safe to interpolate). Predicate text mirrors
+/// [`relation_view_query`] verbatim so a row admitted there is admitted here.
+fn relation_view_row_scope(flag_column: &str, account_id: Option<i64>) -> (String, Vec<i64>) {
+    match account_id {
+        Some(id) => (
+            format!(
+                "FROM pull_request_viewer_relations rel
+                 JOIN pull_requests pr ON pr.id = rel.pull_request_id
+                 WHERE rel.{flag_column} = 1
+                   AND rel.account_id = ?1
+                   AND rel.archived_at IS NULL
+                   AND pr.state = 'open'"
+            ),
+            vec![id],
+        ),
+        None => (
+            format!(
+                "FROM pull_requests pr
+                 WHERE pr.state = 'open'
+                   AND EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_filter
+                        WHERE rel_filter.pull_request_id = pr.id
+                          AND rel_filter.{flag_column} = 1
+                          AND rel_filter.archived_at IS NULL
+                   )"
+            ),
+            Vec::new(),
+        ),
+    }
+}
+
+/// Row-scope FROM + WHERE for the Team view. Single-account scopes by
+/// `repos.account_id`; the union path drops a PR iff every relation owner has
+/// archived it (mirroring [`team_view_query`]).
+fn team_view_row_scope(account_id: Option<i64>) -> (String, Vec<i64>) {
+    match account_id {
+        Some(id) => (
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             WHERE r.is_team_tracked = 1
+               AND r.account_id = ?1
+               AND pr.state = 'open'"
+                .to_string(),
+            vec![id],
+        ),
+        None => (
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             WHERE r.is_team_tracked = 1
+               AND pr.state = 'open'
+               AND (NOT EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_any
+                        WHERE rel_any.pull_request_id = pr.id
+                    )
+                    OR EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_un
+                        WHERE rel_un.pull_request_id = pr.id
+                          AND rel_un.archived_at IS NULL
+                    ))"
+            .to_string(),
+            Vec::new(),
+        ),
+    }
+}
+
+/// Row-scope FROM + WHERE for the Archive view. Single-account selects the
+/// active account's archived relations; the union path admits a PR iff at
+/// least one tracked account has archived it. Mirrors [`archive_view_query`].
+fn archive_view_row_scope(account_id: Option<i64>) -> (String, Vec<i64>) {
+    match account_id {
+        Some(id) => (
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.account_id = ?1
+               AND rel.archived_at IS NOT NULL"
+                .to_string(),
+            vec![id],
+        ),
+        None => (
+            "FROM pull_requests pr
+             WHERE EXISTS (
+                SELECT 1 FROM pull_request_viewer_relations rel_filter
+                 WHERE rel_filter.pull_request_id = pr.id
+                   AND rel_filter.archived_at IS NOT NULL
+             )"
+            .to_string(),
+            Vec::new(),
+        ),
+    }
+}
+
+/// Project the five view counts for the active account scope in one SQL
+/// round-trip. Each count equals the length of the matching
+/// [`list_pull_requests`] call - the row-scope helpers mirror the same view
+/// predicates so the chip and the list agree row-for-row.
+///
+/// The combined SELECT bundles five scalar sub-queries into one prepared
+/// statement; the single-account path binds `?1` once (every sub-query reuses
+/// the same parameter), the union path binds nothing.
+pub fn list_view_counts(
+    conn: &Connection,
+    account_id: Option<i64>,
+) -> Result<DashboardViewCounts, rusqlite::Error> {
+    let (authored, params) = view_row_scope_sql(DashboardView::Authored, account_id);
+    let (assigned, _) = view_row_scope_sql(DashboardView::Assigned, account_id);
+    let (watching, _) = view_row_scope_sql(DashboardView::Watching, account_id);
+    let (team, _) = view_row_scope_sql(DashboardView::Team, account_id);
+    let (archive, _) = view_row_scope_sql(DashboardView::Archive, account_id);
+    let sql = format!(
+        "SELECT
+            (SELECT COUNT(*) {authored}) AS authored,
+            (SELECT COUNT(*) {assigned}) AS assigned,
+            (SELECT COUNT(*) {watching}) AS watching,
+            (SELECT COUNT(*) {team})     AS team,
+            (SELECT COUNT(*) {archive})  AS archive"
+    );
+    conn.query_row(&sql, params_from_iter(params.iter()), |row| {
+        Ok(DashboardViewCounts {
+            authored: row.get(0)?,
+            assigned: row.get(1)?,
+            watching: row.get(2)?,
+            team: row.get(3)?,
+            archive: row.get(4)?,
+        })
+    })
 }
 
 /// Project one PR row using the column order in [`PR_PROJECTION_COLUMNS`].
