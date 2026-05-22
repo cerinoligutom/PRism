@@ -45,6 +45,14 @@ interface Props {
    * muted dot for a single relation, stack for multi).
    */
   singleAccountScope?: boolean;
+  /**
+   * True when the row is rendered inside the Archive view (ADR 0018). Flips
+   * the overflow menu's archive entry from "Archive" to "Unarchive" - the
+   * `account_ids` for an Archive-view row are the archived relation owners,
+   * which an unarchive write clears. Defaults to false so default-view rows
+   * keep the original Archive affordance.
+   */
+  isArchiveView?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -53,6 +61,7 @@ const props = withDefaults(defineProps<Props>(), {
   needsAttention: false,
   accountsById: () => new Map<number, AccountMarker>(),
   singleAccountScope: false,
+  isArchiveView: false,
 });
 
 const emit = defineEmits<{
@@ -60,6 +69,12 @@ const emit = defineEmits<{
   /** M4 row action — viewer asked to flip this PR back to unread. The parent
    * invokes `mark_pr_unread` and reloads; the dot returns on the next paint. */
   "mark-unread": [pullRequest: DashboardPullRequest];
+  /** ADR 0018 row action — viewer archived the PR. The parent fans the
+   * write out across the relation owners in `pullRequest.account_ids`. */
+  archive: [pullRequest: DashboardPullRequest];
+  /** ADR 0018 inverse - viewer asked to pull the PR back out of archive
+   * from the Archive view's overflow. */
+  unarchive: [pullRequest: DashboardPullRequest];
 }>();
 
 type RowStrip =
@@ -211,6 +226,25 @@ function openOnGitHub(event: MouseEvent): void {
 
 function onMarkUnread(): void {
   emit("mark-unread", props.pullRequest);
+}
+
+/**
+ * Whether the overflow menu can offer an archive action for this row. A
+ * Team-view row in unified scope can surface without any relation rows
+ * (`account_ids === []`) - there's no `(account, PR)` pair to write to, so
+ * the archive entry is suppressed. Both Archive and Unarchive paths share
+ * this guard; the `isArchiveView` prop picks the wording / command.
+ */
+const canArchive = computed<boolean>(
+  () => props.pullRequest.account_ids.length > 0,
+);
+
+function onArchive(): void {
+  emit("archive", props.pullRequest);
+}
+
+function onUnarchive(): void {
+  emit("unarchive", props.pullRequest);
 }
 </script>
 
@@ -505,6 +539,20 @@ function onMarkUnread(): void {
             @select="onMarkUnread"
           >
             Mark unread
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            v-if="canArchive && !isArchiveView"
+            class="pr-row__menu-item"
+            @select="onArchive"
+          >
+            Archive
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            v-if="canArchive && isArchiveView"
+            class="pr-row__menu-item"
+            @select="onUnarchive"
+          >
+            Unarchive
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenuPortal>

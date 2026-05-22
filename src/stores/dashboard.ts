@@ -121,7 +121,19 @@ interface SyncStatusEvent {
   readonly phase: string;
 }
 
+/**
+ * Per-account failure record from an archive / unarchive fan-out. The store
+ * keeps the most recent batch's failures so the view can name the failed
+ * accounts in an inline callout while the optimistic flip stays for the
+ * successful relations.
+ */
+export interface ArchiveFailure {
+  readonly accountId: number;
+  readonly message: string;
+}
+
 const SYNC_STATUS_EVENT = "sync://status";
+const DASHBOARD_REFRESH_EVENT = "dashboard://refresh";
 
 const VIEW_LABELS: Record<DashboardView, string> = {
   authored: "Authored by me",
@@ -183,6 +195,17 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const accountFilter = ref<number | null>(null);
 
   const pullRequests = ref<DashboardPullRequest[]>([]);
+  // IDs that have been optimistically flipped out of the current view by an
+  // archive / unarchive action. The list filter drops these so the row fades
+  // before the reload arrives; the next `load()` reconciles by reading the
+  // canonical state. Cleared on every `load()` so a stale optimistic flip
+  // can't survive a sync re-render.
+  const pendingArchiveIds = ref<Set<number>>(new Set());
+  // Most-recent batch of per-account failures from an archive / unarchive
+  // fan-out. `null` when there are no outstanding failures; the dashboard
+  // view renders an inline callout off this value and clears it on user
+  // dismissal or the next successful action.
+  const archiveError = ref<readonly ArchiveFailure[] | null>(null);
   // Per-view counts; refreshed alongside `pullRequests` so the sidebar stays
   // accurate even while a non-current view's list isn't loaded into memory.
   const viewCounts = ref<Record<DashboardView, number>>({
@@ -201,6 +224,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const expandedPullRequestId = ref<number | null>(null);
 
   let statusUnlisten: UnlistenFn | null = null;
+  let refreshUnlisten: UnlistenFn | null = null;
+  // Bumped while the store owns an archive / unarchive fan-out so the
+  // `dashboard://refresh` listener skips the backend's per-call emits during
+  // a fan-out the store will already settle with a single coalesced reload.
+  let inFlightArchiveBatches = 0;
 
   // Keep the in-store density mirror aligned with the persisted Appearance
   // setting. Mirroring (rather than reading through) keeps the store API
@@ -221,8 +249,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // match per the contract's "Search semantics".
   const filteredPullRequests = computed<DashboardPullRequest[]>(() => {
     const q = searchQuery.value.toLowerCase().trim();
-    if (q === "") return pullRequests.value;
-    return pullRequests.value.filter((pr) => {
+    const pending = pendingArchiveIds.value;
+    const dropArchive = (pr: DashboardPullRequest): boolean => !pending.has(pr.id);
+    const visible = pending.size === 0
+      ? pullRequests.value
+      : pullRequests.value.filter(dropArchive);
+    if (q === "") return visible;
+    return visible.filter((pr) => {
       const repoSlug = `${pr.repo.owner}/${pr.repo.name}`.toLowerCase();
       return (
         pr.title.toLowerCase().includes(q) ||
@@ -332,6 +365,12 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function load(): Promise<void> {
     loading.value = true;
     lastError.value = null;
+    // Clear pending optimistic flips before the fetch lands. The canonical
+    // state from SQL drives the next paint; any row that should still hide
+    // does so via its `archived_at` predicate in the dashboard query.
+    if (pendingArchiveIds.value.size > 0) {
+      pendingArchiveIds.value = new Set();
+    }
     const active = view.value;
     try {
       const [authored, assigned, watching, team, archive] = await Promise.all([
@@ -485,6 +524,106 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
+  /**
+   * Archive a PR across the relations the viewer holds for it. The Tauri
+   * command takes a single (account, PR) pair so the fan-out happens here:
+   * one parallel invoke per relation owner mirrors the Rust mark-read multi
+   * shape (ADR 0016) and keeps partial-failure isolation client-side.
+   *
+   * Optimistic UI: the row is added to `pendingArchiveIds` so it disappears
+   * from the active default view's list before the first write resolves. The
+   * `dashboard://refresh` event fired by each successful command kicks a
+   * reload; the set is cleared inside `load()` so the canonical state from
+   * SQL settles the view.
+   *
+   * Per-account failures collect into `archiveError` so the surface can name
+   * the failed accounts. The successful relations' archive state persists -
+   * the next reload reflects the partial progress and the failed ids reappear
+   * because their `archived_at IS NULL` predicate still holds.
+   */
+  async function archive(
+    pullRequestId: number,
+    accountIds: readonly number[],
+  ): Promise<void> {
+    await runArchiveFanOut("mark_pr_archived", pullRequestId, accountIds);
+  }
+
+  /**
+   * Unarchive a PR across the archived relation owners. Mirrors [`archive`]
+   * with the inverse command. From the Archive view the optimistic flip
+   * removes the row from the visible list; the post-write reload then reads
+   * the canonical state (the relations that didn't archive cleanly stay in
+   * the Archive view).
+   */
+  async function unarchive(
+    pullRequestId: number,
+    accountIds: readonly number[],
+  ): Promise<void> {
+    await runArchiveFanOut("mark_pr_unarchived", pullRequestId, accountIds);
+  }
+
+  function dismissArchiveError(): void {
+    archiveError.value = null;
+  }
+
+  async function runArchiveFanOut(
+    command: "mark_pr_archived" | "mark_pr_unarchived",
+    pullRequestId: number,
+    accountIds: readonly number[],
+  ): Promise<void> {
+    if (accountIds.length === 0) return;
+    archiveError.value = null;
+    inFlightArchiveBatches += 1;
+    markRowArchivedOptimistically(pullRequestId);
+    try {
+      const results = await Promise.allSettled(
+        accountIds.map((accountId) =>
+          invoke(command, { pullRequestId, accountId }).then(() => accountId),
+        ),
+      );
+      const failures: ArchiveFailure[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          const accountId = accountIds[i] ?? -1;
+          failures.push({
+            accountId,
+            message: formatError(r.reason),
+          });
+        }
+      });
+      if (failures.length > 0) {
+        archiveError.value = failures;
+        if (failures.length === accountIds.length) {
+          // Full failure - revert the optimistic flip so the row stays
+          // visible; the next reload reads canonical state anyway, but
+          // the explicit revert keeps the row stable across the brief
+          // window before `load()` finishes.
+          revertOptimisticArchive(pullRequestId);
+        }
+      }
+    } finally {
+      // Backend emits `dashboard://refresh` per successful command; the
+      // listener skips while `inFlightArchiveBatches > 0` so this single
+      // reload coalesces the fan-out.
+      await load();
+      inFlightArchiveBatches -= 1;
+    }
+  }
+
+  function markRowArchivedOptimistically(pullRequestId: number): void {
+    if (pendingArchiveIds.value.has(pullRequestId)) return;
+    const next = new Set(pendingArchiveIds.value);
+    next.add(pullRequestId);
+    pendingArchiveIds.value = next;
+  }
+
+  function revertOptimisticArchive(pullRequestId: number): void {
+    if (!pendingArchiveIds.value.has(pullRequestId)) return;
+    const next = new Set(pendingArchiveIds.value);
+    next.delete(pullRequestId);
+    pendingArchiveIds.value = next;
+  }
+
   function markRowUnreadOptimistically(pullRequestId: number): void {
     let touched = false;
     const next = pullRequests.value.map((row) => {
@@ -540,21 +679,37 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   async function bind(): Promise<void> {
-    if (statusUnlisten !== null) return;
-    // Refresh on each completed cycle so the dashboard reflects the latest
-    // sync without the user clicking through. The worker emits `synced` once
-    // it has finished writing rows for the cycle.
-    statusUnlisten = await listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
-      if (event.payload.phase === "synced") {
+    if (statusUnlisten === null) {
+      // Refresh on each completed cycle so the dashboard reflects the latest
+      // sync without the user clicking through. The worker emits `synced`
+      // once it has finished writing rows for the cycle.
+      statusUnlisten = await listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
+        if (event.payload.phase === "synced") {
+          void load();
+        }
+      });
+    }
+    if (refreshUnlisten === null) {
+      // Triage writes (ADR 0018: archive / unarchive) emit this so the active
+      // view reloads without waiting for the next sync tick. The store's own
+      // `archive` / `unarchive` actions already trigger a single coalesced
+      // reload after their fan-out completes; this listener catches writes
+      // that originate outside the store (other windows, future surfaces).
+      refreshUnlisten = await listen(DASHBOARD_REFRESH_EVENT, () => {
+        if (inFlightArchiveBatches > 0) return;
         void load();
-      }
-    });
+      });
+    }
   }
 
   function unbind(): void {
     if (statusUnlisten !== null) {
       statusUnlisten();
       statusUnlisten = null;
+    }
+    if (refreshUnlisten !== null) {
+      refreshUnlisten();
+      refreshUnlisten = null;
     }
   }
 
@@ -590,6 +745,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setSearchQuery,
     clearFilters,
     markPullRequestUnread,
+    archive,
+    unarchive,
+    archiveError,
+    dismissArchiveError,
     openPullRequest,
     closeExpanded,
     bind,
