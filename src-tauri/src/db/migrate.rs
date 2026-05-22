@@ -21,6 +21,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0009_comment_body_html.sql"),
     include_str!("../../migrations/0010_triage_state.sql"),
     include_str!("../../migrations/0011_review_url.sql"),
+    include_str!("../../migrations/0012_archive_and_settings.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -110,6 +111,8 @@ mod tests {
             "requested_reviewers",
             "pull_request_viewer_relations",
             "users",
+            // 0012 archive + settings foundation.
+            "app_settings",
         ];
         for name in expected {
             let count: i64 = conn
@@ -146,6 +149,8 @@ mod tests {
             "idx_reviews_pr_submitted_at",
             // 0010 triage_state.
             "idx_pr_viewer_relations_attention",
+            // 0012 archive + settings.
+            "idx_relations_archived_at",
         ];
         for name in expected {
             let count: i64 = conn
@@ -437,5 +442,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(relations, 0, "relations should cascade from accounts");
+    }
+
+    #[test]
+    fn archive_column_exists_on_pull_request_viewer_relations() {
+        let conn = fresh();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_request_viewer_relations')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "archived_at"),
+            "missing pull_request_viewer_relations.archived_at column"
+        );
+    }
+
+    #[test]
+    fn app_settings_singleton_seeded_with_one_row() {
+        let conn = fresh();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM app_settings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "app_settings must hold exactly one row after migration"
+        );
+        let id: i64 = conn
+            .query_row("SELECT id FROM app_settings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(id, 1, "the seeded singleton must be keyed id = 1");
+    }
+
+    #[test]
+    fn app_settings_check_constraint_blocks_a_second_row() {
+        // The migration pins the singleton with `CHECK (id = 1)`. Attempting
+        // to INSERT a second row must fail so accidental writes can't fork
+        // the settings state.
+        let conn = fresh();
+        let err = conn
+            .execute("INSERT INTO app_settings (id) VALUES (2)", [])
+            .expect_err("second row must be rejected by the CHECK constraint");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK constraint failure, got: {err}"
+        );
     }
 }
