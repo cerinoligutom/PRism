@@ -49,8 +49,13 @@ pub trait TokenSource: Send + Sync {
 pub enum AuthError {
     #[error("no token configured for account {0}")]
     Missing(AccountId),
+    /// OS keychain failure. Carries the typed `KeychainError` so the renderer
+    /// can route `BackendUnavailable` to a platform-specific install hint and
+    /// `AccessDenied` to a permission-denied message. Use `Display` (or the
+    /// inner variant directly) for user-facing copy; do not `to_string` the
+    /// outer `AuthError` if you care about the specific arm.
     #[error("keychain access failed: {0}")]
-    Keychain(String),
+    Keychain(#[from] crate::auth::keychain::KeychainError),
     #[error("token is empty for account {0}")]
     Empty(AccountId),
 }
