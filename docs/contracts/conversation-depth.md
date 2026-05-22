@@ -445,6 +445,18 @@ pub struct ConversationStats {
     /// `threads_total` is zero.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
+    /// Distinct authors across `review_comments`, `issue_comments`, and
+    /// submitted `reviews`. Computed at read time as a UNION over the three
+    /// surfaces; `PENDING` reviews are excluded so a reviewer's pending draft
+    /// doesn't promote them to participant.
+    pub participants: i64,
+    /// Per-state count of submitted reviews. `PENDING` is excluded from every
+    /// bucket and from the total.
+    pub reviews_summary: ReviewsSummary,
+    /// Most recent activity timestamp across `review_comments.created_at`,
+    /// `issue_comments.created_at`, and `reviews.submitted_at`. `None` when
+    /// no row exists in any of the three tables for the PR.
+    pub last_activity_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -453,6 +465,15 @@ pub struct CommentBreakdown {
     pub issue: i64,     // pull_requests.issue_comments_count
     pub summary: i64,   // count of reviews with non-empty body
     pub total: i64,     // sum of the three above
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct ReviewsSummary {
+    pub approved: i64,
+    pub changes_requested: i64,
+    pub commented: i64,
+    pub dismissed: i64,
+    pub total: i64,     // sum of the four buckets (PENDING excluded)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -621,6 +642,60 @@ SELECT
 
 `review_count` sums the per-thread total derived from the sync cycle's `comments.totalCount` write (`reply_count = totalCount - 1`, so `reply_count + 1` is the per-thread comment count). The breakdown is cycle-accurate even on PRs that have never been drawer-opened; it doesn't depend on the lazy hydrator having populated `review_comments` (ADR 0010's lazy-hydrate-on-detail-open decision still holds for the comment _bodies_).
 
+### Participants
+
+```sql
+SELECT COUNT(*) FROM (
+    SELECT c.author_login AS login
+      FROM review_comments c
+      JOIN review_threads t ON t.id = c.review_thread_id
+     WHERE t.pull_request_id = ?
+    UNION
+    SELECT ic.author_login FROM issue_comments ic
+     WHERE ic.pull_request_id = ?
+    UNION
+    SELECT r.reviewer_login FROM reviews r
+     WHERE r.pull_request_id = ?
+       AND r.state <> 'PENDING'
+);
+```
+
+Distinct authors across the three conversational surfaces. `PENDING` reviewers are excluded because the review isn't visible to anyone else yet.
+
+### Reviews submitted
+
+```sql
+SELECT
+  SUM(CASE WHEN state = 'APPROVED'          THEN 1 ELSE 0 END) AS approved,
+  SUM(CASE WHEN state = 'CHANGES_REQUESTED' THEN 1 ELSE 0 END) AS changes_requested,
+  SUM(CASE WHEN state = 'COMMENTED'         THEN 1 ELSE 0 END) AS commented,
+  SUM(CASE WHEN state = 'DISMISSED'         THEN 1 ELSE 0 END) AS dismissed,
+  SUM(CASE WHEN state <> 'PENDING'          THEN 1 ELSE 0 END) AS total
+  FROM reviews
+ WHERE pull_request_id = ?;
+```
+
+Per-state count of submitted reviews. `PENDING` rows are excluded from every bucket and from the total.
+
+### Last activity
+
+```sql
+SELECT MAX(ts) FROM (
+    SELECT MAX(c.created_at) AS ts
+      FROM review_comments c
+      JOIN review_threads t ON t.id = c.review_thread_id
+     WHERE t.pull_request_id = ?
+    UNION ALL
+    SELECT MAX(ic.created_at) FROM issue_comments ic
+     WHERE ic.pull_request_id = ?
+    UNION ALL
+    SELECT MAX(r.submitted_at) FROM reviews r
+     WHERE r.pull_request_id = ?
+);
+```
+
+Newest activity timestamp across conversational rows. `timeline_events` (push / merge / close / reopen) isn't included — the stat tracks conversation, not state changes. `NULL` when none of the three tables has a row for the PR.
+
 ## Dashboard rollup
 
 `write_pr_updates` recomputes the rollup columns after the thread upserts have committed. One UPDATE per PR, gated on the active account so the `(resolved x involved)` split reflects whoever's syncing:
@@ -754,7 +829,7 @@ defineProps<{
 }>();
 ```
 
-Renders the 2×2 stat grid. Each tile reads from `stats`; em-dash placeholders for `null` fields.
+Renders a vertical stack of full-width stat tiles (oldest unresolved, avg response, resolution rate, comments total, participants, reviews submitted, last activity). Numerals use `--fs-32`; each tile is wrapped in a `PRismTooltip` whose body explains the calculation. Em-dash placeholders for `null` fields.
 
 ### `ReviewsTab.vue`
 

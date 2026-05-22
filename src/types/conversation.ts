@@ -77,6 +77,18 @@ export interface CommentBreakdown {
   readonly total: number;
 }
 
+/** Per-state count of submitted reviews. `pending` reviews are excluded
+ * because they aren't visible to anyone but the reviewer yet. State buckets
+ * mirror the GraphQL `PullRequestReviewState` constants. */
+export interface ReviewsSummary {
+  readonly approved: number;
+  readonly changes_requested: number;
+  readonly commented: number;
+  readonly dismissed: number;
+  /** Sum of the four buckets above. */
+  readonly total: number;
+}
+
 export interface ConversationStats {
   readonly threads_total: number;
   readonly threads_unresolved: number;
@@ -96,6 +108,15 @@ export interface ConversationStats {
   /** `[0.0, 1.0]`. */
   readonly resolution_rate: number;
   readonly comment_breakdown: CommentBreakdown;
+  /** Distinct authors across review comments, issue comments, and submitted
+   * reviews. Reviewers whose only review is `PENDING` aren't counted. */
+  readonly participants: number;
+  /** Per-state count of submitted reviews; powers the "Reviews submitted"
+   * tile and its tooltip breakdown. */
+  readonly reviews_summary: ReviewsSummary;
+  /** Unix seconds; null when no comments / reviews exist. The conversation
+   * stats card renders this relative ("3h ago"). */
+  readonly last_activity_at: number | null;
 }
 
 export interface PullRequestReview {

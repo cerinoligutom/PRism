@@ -113,6 +113,19 @@ pub struct ConversationStats {
     /// when `threads_total` is zero.
     pub resolution_rate: f64,
     pub comment_breakdown: CommentBreakdown,
+    /// Distinct authors who've commented (review or issue) or submitted a
+    /// review on this PR. The union runs at read time across
+    /// `review_comments.author_login`, `issue_comments.author_login`, and
+    /// `reviews.reviewer_login` so it reflects the live hydrated state.
+    pub participants: i64,
+    /// Submitted-review breakdown by `reviews.state`. `pending` rows are
+    /// excluded; the surface only summarises reviews the author has actually
+    /// submitted.
+    pub reviews_summary: ReviewsSummary,
+    /// Most recent activity timestamp across review comments, issue comments,
+    /// and submitted reviews. `None` when the PR has no comments and no
+    /// submitted reviews. Render relative on the frontend.
+    pub last_activity_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +137,20 @@ pub struct CommentBreakdown {
     /// Count of `reviews` rows for this PR with a non-empty `body`.
     pub summary: i64,
     /// `review + issue + summary`.
+    pub total: i64,
+}
+
+/// Per-state count of submitted reviews on a PR. Each field counts rows in
+/// `reviews` whose `state` matches the GraphQL `PullRequestReviewState`
+/// constant. `pending` is excluded by construction (those aren't submitted
+/// yet).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReviewsSummary {
+    pub approved: i64,
+    pub changes_requested: i64,
+    pub commented: i64,
+    pub dismissed: i64,
+    /// Sum of the four buckets above.
     pub total: i64,
 }
 
