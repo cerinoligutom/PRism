@@ -145,7 +145,7 @@ onUnmounted(() => {
 <template>
   <div class="accounts-panel">
     <header class="accounts-panel__header">
-      <h1 class="accounts-panel__title">Accounts &amp; sync</h1>
+      <h1 class="accounts-panel__title">Accounts</h1>
       <span class="accounts-panel__sub">{{ sublabel }}</span>
     </header>
 

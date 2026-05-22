@@ -5,15 +5,6 @@ import { RouterLink, RouterView } from "vue-router";
 <template>
   <section class="settings">
     <aside class="settings__side">
-      <div class="settings__back">
-        <RouterLink to="/" class="nav-item">
-          <span class="nav-icon">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M7 4L3 8l4 4M3 8h10" /></svg>
-          </span>
-          Back to dashboard
-        </RouterLink>
-      </div>
-
       <h6 class="section-title settings__heading">Settings</h6>
       <nav class="settings__nav">
         <RouterLink to="/settings/appearance" class="nav-item" :class="{ active: $route.name === 'settings.appearance' }">
@@ -27,6 +18,12 @@ import { RouterLink, RouterView } from "vue-router";
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6a4 4 0 018 0v3l1 2H3l1-2V6z" /><path d="M6.5 13a1.5 1.5 0 003 0" /></svg>
           </span>
           Notifications
+        </RouterLink>
+        <RouterLink to="/settings/sync" class="nav-item" :class="{ active: $route.name === 'settings.sync' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4.5a5.5 5.5 0 00-9.7 1.7" /><path d="M3 8.5V4.5h4" /><path d="M3 11.5a5.5 5.5 0 009.7-1.7" /><path d="M13 7.5v4h-4" /></svg>
+          </span>
+          Sync
         </RouterLink>
         <RouterLink to="/settings/accounts" class="nav-item" :class="{ active: $route.name === 'settings.accounts' }">
           <span class="nav-icon">
@@ -64,10 +61,6 @@ import { RouterLink, RouterView } from "vue-router";
   display: flex;
   flex-direction: column;
   background: var(--bg-2);
-}
-
-.settings__back {
-  margin-bottom: var(--s-2);
 }
 
 .settings__heading {
