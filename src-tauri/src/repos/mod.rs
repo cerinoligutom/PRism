@@ -1,4 +1,4 @@
-//! Repository discovery + opt-in surface for the Team view (M2-D).
+//! Repository discovery + opt-in surface for the Tracked view (M2-D).
 //!
 //! Responsibilities split between submodules:
 //! - [`types`] — the `RepoSummary` DTO returned to the frontend.
@@ -13,5 +13,5 @@ pub mod commands;
 pub mod store;
 pub mod types;
 
-pub use commands::{list_repos_for_account, refresh_account_repos, set_repo_team_tracked};
+pub use commands::{list_repos_for_account, refresh_account_repos, set_repo_tracked};
 pub use types::RepoSummary;

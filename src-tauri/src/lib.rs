@@ -6,7 +6,7 @@
 //! - `github`: GraphQL + REST clients
 //! - `sync`: background worker
 //! - `dashboard`: dashboard query surface (M2)
-//! - `repos`: repo discovery + Team-tracked opt-in (M2-D)
+//! - `repos`: repo discovery + Tracked opt-in (M2-D)
 //! - `conversation`: per-thread state, conversation stats, lazy hydrator (M3)
 //! - `triage`: per-account read-state, mention counters, "needs my attention" (M4)
 //! - `settings`: app-wide settings singleton (notification prefs, M6 foundation)
@@ -65,7 +65,7 @@ pub fn run() {
             dashboard::commands::list_dashboard_view_counts,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,
-            repos::commands::set_repo_team_tracked,
+            repos::commands::set_repo_tracked,
             settings::commands::get_app_settings,
             settings::commands::set_notification_permission_state,
             settings::commands::update_app_settings,

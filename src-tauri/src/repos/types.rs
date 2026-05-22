@@ -12,5 +12,5 @@ pub struct RepoSummary {
     pub name: String,
     /// `"public"`, `"private"`, or `"internal"` — straight from GitHub.
     pub visibility: String,
-    pub is_team_tracked: bool,
+    pub is_tracked: bool,
 }

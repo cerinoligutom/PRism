@@ -14,7 +14,7 @@ export type DashboardView =
   | "authored"
   | "assigned"
   | "watching"
-  | "team"
+  | "tracked"
   | "archive";
 
 /**
@@ -146,7 +146,7 @@ export interface DashboardPullRequest {
   readonly repo: RepoRef;
   /** Tracked accounts with a relation to this PR. Sorted ascending. Length
    * 1 in the single-account-filter path; 1..N in the unified path; empty
-   * for Team-view PRs in the unified path that have no relation rows. See
+   * for Tracked-view PRs in the unified path that have no relation rows. See
    * ADR 0016 ("Dashboard row shape - option 1"). */
   readonly account_ids: readonly number[];
   /** True when the viewer hasn't opened this PR since its last upstream

@@ -7,18 +7,18 @@
 //! Fixture shape (shared across every test):
 //!
 //! - Accounts: 1 = alice (login `alice`), 2 = bob (login `bob`).
-//! - Repos: 10 (alice/web), 20 (alice/api, team-tracked), 30 (bob/cli,
-//!   team-tracked).
+//! - Repos: 10 (alice/web), 20 (alice/api, tracked), 30 (bob/cli,
+//!   tracked).
 //! - PRs:
 //!   - 100 (alice/web, #1): alice authored; bob review-requested.
 //!     `latest_status_change_at = 1000`. Has two submitted reviews + pending.
 //!   - 200 (alice/web, #2): alice involved (commented). `updated_at = 900`,
 //!     no `latest_status_change_at`.
-//!   - 300 (alice/api, #1): team-tracked repo, no relations seeded.
+//!   - 300 (alice/api, #1): tracked repo, no relations seeded.
 //!     `latest_status_change_at = 1500`. Carries a DISMISSED review that must
 //!     be dropped from the projection.
 //!   - 400 (bob/cli,  #1): bob authored; alice involved + review-requested.
-//!     Team-tracked. `latest_status_change_at = 2000`.
+//!     Tracked. `latest_status_change_at = 2000`.
 //!   - 500 (alice/web, #3): bob involved. `updated_at = 800`,
 //!     `latest_status_change_at = NULL`. CI = SUCCESS 5/5.
 
@@ -58,7 +58,7 @@ fn seed_fixture(conn: &Connection) {
             (1, 'alice-acct', 'github.com', 'alice', 0),
             (2, 'bob-acct',   'github.com', 'bob',   0);
 
-        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
             (10, 1, 'alice', 'web', 'public', 0),
             (20, 1, 'alice', 'api', 'public', 1),
             (30, 2, 'bob',   'cli', 'public', 1);
@@ -214,37 +214,42 @@ fn watching_view_returns_only_involved_prs_per_account() {
 }
 
 #[test]
-fn team_view_uses_repo_flag_and_skips_relations_table() {
+fn tracked_view_uses_repo_flag_and_skips_relations_table() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
-    // PR 300 sits in repo 20 (account 1, team-tracked); PR 400 in repo 30
-    // (account 2, team-tracked). PR 100 sits in repo 10 (not team-tracked)
+    // PR 300 sits in repo 20 (account 1, tracked); PR 400 in repo 30
+    // (account 2, tracked). PR 100 sits in repo 10 (not tracked)
     // even though alice authored it, so it must not appear here.
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     assert_eq!(
         rows.iter().map(|r| r.id).collect::<Vec<_>>(),
         vec![400, 300],
-        "Team view: ordered by COALESCE desc across every team-tracked repo"
+        "Tracked view: ordered by COALESCE desc across every tracked repo"
     );
 
-    let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Tracked,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
     assert_eq!(
         rows.iter().map(|r| r.id).collect::<Vec<_>>(),
         vec![300],
-        "Team view filtered to account 1's team-tracked repos"
+        "Tracked view filtered to account 1's tracked repos"
     );
 }
 
 #[test]
-fn team_view_drops_dismissed_reviews_from_projection() {
+fn tracked_view_drops_dismissed_reviews_from_projection() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(
         pr_300.reviewers.is_empty(),
@@ -375,7 +380,7 @@ fn ci_summary_populates_state_total_passing() {
     seed_fixture(&conn);
 
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     let pr_400 = rows.iter().find(|r| r.id == 400).unwrap();
     let ci = pr_400.ci.as_ref().expect("PR 400 has CI");
     assert_eq!(ci.state, "FAILURE");
@@ -405,7 +410,7 @@ fn empty_db_returns_empty_vec_for_every_view() {
         DashboardView::Authored,
         DashboardView::Assigned,
         DashboardView::Watching,
-        DashboardView::Team,
+        DashboardView::Tracked,
     ] {
         let rows = list_pull_requests(&conn, view, DashboardSort::Updated, None).unwrap();
         assert!(rows.is_empty(), "{view:?} should be empty on a bare DB");
@@ -481,9 +486,14 @@ fn draft_flag_round_trips_as_bool() {
     let conn = fresh_db();
     seed_fixture(&conn);
 
-    // PR 300 is the only draft in the fixture, surfaced via the Team view.
-    let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    // PR 300 is the only draft in the fixture, surfaced via the Tracked view.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Tracked,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(pr_300.is_draft);
 }
@@ -740,7 +750,7 @@ fn reviewer_hydration_deduplicates_multiple_reviews_per_login() {
         INSERT INTO accounts (id, label, host, login, created_at) VALUES
             (1, 'alice-acct', 'github.com', 'alice', 0);
 
-        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
@@ -799,7 +809,7 @@ fn reviewer_hydration_state_priority_tiebreak_on_equal_submitted_at() {
         INSERT INTO accounts (id, label, host, login, created_at) VALUES
             (1, 'alice-acct', 'github.com', 'alice', 0);
 
-        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
@@ -847,7 +857,7 @@ fn reviewer_hydration_drops_login_whose_only_state_is_dismissed_even_when_reques
         INSERT INTO accounts (id, label, host, login, created_at) VALUES
             (1, 'alice-acct', 'github.com', 'alice', 0);
 
-        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
@@ -1354,15 +1364,15 @@ fn mentioned_count_unread_projects_relation_column() {
     assert_eq!(pr.mentioned_count_unread, 4);
 }
 
-/// Team view without an account filter short-circuits the relation join.
+/// Tracked view without an account filter short-circuits the relation join.
 /// Every row defaults to `unread = true`, `needs_attention = false`,
 /// `mentioned_count_unread = 0`.
 #[test]
-fn team_view_union_defaults_triage_fields() {
+fn tracked_view_union_defaults_triage_fields() {
     let conn = fresh_db();
     seed_fixture(&conn);
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     assert!(!rows.is_empty());
     for pr in rows.iter() {
         assert!(pr.unread, "PR {} should default to unread", pr.id);
@@ -1375,35 +1385,40 @@ fn team_view_union_defaults_triage_fields() {
     }
 }
 
-/// Team view scoped to an account defaults the triage projections to false /
+/// Tracked view scoped to an account defaults the triage projections to false /
 /// 0 for PRs whose owning-account has no relation row. In the seeded fixture
-/// PR 300 sits in `alice/api` (team-tracked, owned by account 1) and no
+/// PR 300 sits in `alice/api` (tracked, owned by account 1) and no
 /// relations row references it - the LEFT JOIN misses and COALESCE trips.
 #[test]
-fn team_view_account_scoped_defaults_when_no_relation_row() {
+fn tracked_view_account_scoped_defaults_when_no_relation_row() {
     let conn = fresh_db();
     seed_fixture(&conn);
-    let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Tracked,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(pr_300.unread, "missing relation row reads as unread");
     assert!(!pr_300.needs_attention);
     assert_eq!(pr_300.mentioned_count_unread, 0);
 }
 
-/// Team view scoped to an account reads the triage state from the matching
+/// Tracked view scoped to an account reads the triage state from the matching
 /// relation row when one exists. The fixture's PR 100 sits in `alice/web`
-/// (not team-tracked) so it doesn't surface in the Team view; instead seed a
-/// fresh team-tracked PR that has a populated relation row for the same
+/// (not tracked) so it doesn't surface in the Tracked view; instead seed a
+/// fresh tracked PR that has a populated relation row for the same
 /// account.
 #[test]
-fn team_view_account_scoped_reads_relation_row_when_present() {
+fn tracked_view_account_scoped_reads_relation_row_when_present() {
     let conn = fresh_db();
     seed_fixture(&conn);
-    // Promote alice/web (repo 10) to team-tracked so PR 100's existing
-    // relation row surfaces via the Team view, then populate the triage
+    // Promote alice/web (repo 10) to tracked so PR 100's existing
+    // relation row surfaces via the Tracked view, then populate the triage
     // columns on that row.
-    conn.execute("UPDATE repos SET is_team_tracked = 1 WHERE id = 10", [])
+    conn.execute("UPDATE repos SET is_tracked = 1 WHERE id = 10", [])
         .unwrap();
     conn.execute(
         "UPDATE pull_request_viewer_relations
@@ -1413,12 +1428,17 @@ fn team_view_account_scoped_reads_relation_row_when_present() {
         [],
     )
     .unwrap();
-    let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Tracked,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
     let pr = rows
         .iter()
         .find(|r| r.id == 100)
-        .expect("PR 100 surfaces in account-scoped Team view");
+        .expect("PR 100 surfaces in account-scoped Tracked view");
     assert!(pr.needs_attention);
     assert_eq!(pr.mentioned_count_unread, 3);
 }
@@ -1742,27 +1762,27 @@ fn union_reviewer_is_you_stays_false_when_no_in_scope_account_matches() {
 }
 
 #[test]
-fn union_team_view_surfaces_team_repo_pr_without_relations() {
-    // A PR in a team-tracked repo with no relation rows still surfaces in
-    // the Team union view; the view filter is `repos.is_team_tracked = 1`,
+fn union_tracked_view_surfaces_tracked_repo_pr_without_relations() {
+    // A PR in a tracked repo with no relation rows still surfaces in
+    // the Tracked union view; the view filter is `repos.is_tracked = 1`,
     // not the relations table. `account_ids` is empty for such rows.
     let conn = fresh_db();
     seed_fixture(&conn);
-    // PR 300 sits in alice/api (team-tracked) with no relation rows seeded.
+    // PR 300 sits in alice/api (tracked) with no relation rows seeded.
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(
         pr_300.account_ids.is_empty(),
-        "Team-view PR with no relations carries an empty account_ids list"
+        "Tracked-view PR with no relations carries an empty account_ids list"
     );
     assert!(pr_300.unread, "no relation -> defaults to unread");
 }
 
 #[test]
-fn union_team_view_merges_relations_when_present() {
-    // PR 400 (bob/cli, team-tracked) has relations under both accounts. The
-    // union Team view aggregates over both rows: account_ids = [1, 2] and
+fn union_tracked_view_merges_relations_when_present() {
+    // PR 400 (bob/cli, tracked) has relations under both accounts. The
+    // union Tracked view aggregates over both rows: account_ids = [1, 2] and
     // the triage merge applies. Seed needs_attention on alice's relation so
     // the MAX is non-zero.
     let conn = fresh_db();
@@ -1778,7 +1798,7 @@ fn union_team_view_merges_relations_when_present() {
     .unwrap();
 
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     let pr_400 = rows.iter().find(|r| r.id == 400).unwrap();
     assert_eq!(pr_400.account_ids, vec![1, 2]);
     assert!(pr_400.needs_attention);
@@ -1829,7 +1849,7 @@ fn union_url_uses_repo_owning_account_host_not_first_relation_owner() {
 
 // ===== ADR 0018: archive exclusion + Archive view (issue #194) =====
 //
-// Default views (Authored / Assigned / Watching / Team) hide archived rows.
+// Default views (Authored / Assigned / Watching / Tracked) hide archived rows.
 // The new `DashboardView::Archive` returns the inverse - only archived rows -
 // and defaults to `archived_at DESC`. Unified scope respects the merged-row
 // rule: a PR is archived in the union iff every relation owner has archived
@@ -1892,23 +1912,23 @@ fn default_views_hide_archived_rows_under_single_account_scope() {
     );
 }
 
-/// Team view (single-account scope): archived (account, PR) row hides the
+/// Tracked view (single-account scope): archived (account, PR) row hides the
 /// per-account triage state but the PR still surfaces if the active account
-/// owns the team-tracked repo. The archive predicate sits on the LEFT JOIN's
+/// owns the tracked repo. The archive predicate sits on the LEFT JOIN's
 /// ON clause, so the relation row drops to NULL and the PR keeps surfacing
-/// with default triage values - same shape as a Team-view PR the viewer has
-/// no relation to. This is the closest read of ADR 0018 for Team's
+/// with default triage values - same shape as a Tracked-view PR the viewer has
+/// no relation to. This is the closest read of ADR 0018 for Tracked's
 /// relation-as-overlay model.
 #[test]
-fn team_view_archived_relation_collapses_to_default_triage_under_single_account_scope() {
+fn tracked_view_archived_relation_collapses_to_default_triage_under_single_account_scope() {
     let conn = fresh_db();
     seed_fixture(&conn);
-    // Promote alice/web (repo 10) to team-tracked so PR 100 (alice authored)
-    // surfaces in Team. Then archive alice's relation on PR 100 and set
-    // needs_attention - the team-view row should still appear but with the
+    // Promote alice/web (repo 10) to tracked so PR 100 (alice authored)
+    // surfaces in Tracked. Then archive alice's relation on PR 100 and set
+    // needs_attention - the tracked-view row should still appear but with the
     // default false / 0 triage values.
     conn.execute_batch(
-        "UPDATE repos SET is_team_tracked = 1 WHERE id = 10;
+        "UPDATE repos SET is_tracked = 1 WHERE id = 10;
          UPDATE pull_request_viewer_relations
             SET archived_at = strftime('%s', 'now'),
                 needs_attention = 1,
@@ -1917,12 +1937,17 @@ fn team_view_archived_relation_collapses_to_default_triage_under_single_account_
     )
     .unwrap();
 
-    let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Tracked,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
     let pr_100 = rows
         .iter()
         .find(|r| r.id == 100)
-        .expect("PR 100 still appears via the team-tracked repo");
+        .expect("PR 100 still appears via the tracked repo");
     assert!(
         !pr_100.needs_attention,
         "archived relation must not leak its triage state"
@@ -2002,15 +2027,15 @@ fn default_views_hide_fully_archived_pr_under_unified_scope() {
     }
 }
 
-/// Unified scope Team view: a team-tracked PR with no relations stays
-/// visible (nothing to archive). A team-tracked PR with every relation
+/// Unified scope Tracked view: a tracked PR with no relations stays
+/// visible (nothing to archive). A tracked PR with every relation
 /// archived drops.
 #[test]
-fn team_view_unified_scope_archive_semantics() {
+fn tracked_view_unified_scope_archive_semantics() {
     let conn = fresh_db();
     seed_fixture(&conn);
-    // PR 300 sits in alice/api (team-tracked) with no relation rows - stays
-    // visible. PR 400 sits in bob/cli (team-tracked) with relations on
+    // PR 300 sits in alice/api (tracked) with no relation rows - stays
+    // visible. PR 400 sits in bob/cli (tracked) with relations on
     // accounts 1 and 2 - archive both so it should drop.
     conn.execute(
         "UPDATE pull_request_viewer_relations
@@ -2021,26 +2046,26 @@ fn team_view_unified_scope_archive_semantics() {
     .unwrap();
 
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     assert!(
         rows.iter().any(|r| r.id == 300),
-        "team-tracked PR with no relations stays visible"
+        "tracked PR with no relations stays visible"
     );
     assert!(
         rows.iter().all(|r| r.id != 400),
-        "team-tracked PR with every relation archived drops; got {:?}",
+        "tracked PR with every relation archived drops; got {:?}",
         rows.iter().map(|r| r.id).collect::<Vec<_>>()
     );
 }
 
-/// Unified scope Team view: a partial archive keeps the team-tracked PR
+/// Unified scope Tracked view: a partial archive keeps the tracked PR
 /// visible via the unarchived relation, with `account_ids` reflecting only
 /// the surviving relation owners.
 #[test]
-fn team_view_unified_scope_partial_archive_keeps_pr_visible() {
+fn tracked_view_unified_scope_partial_archive_keeps_pr_visible() {
     let conn = fresh_db();
     seed_fixture(&conn);
-    // Archive account 1's relation on PR 400 (team-tracked under bob/cli).
+    // Archive account 1's relation on PR 400 (tracked under bob/cli).
     // Account 2's relation stays unarchived.
     conn.execute(
         "UPDATE pull_request_viewer_relations
@@ -2051,7 +2076,7 @@ fn team_view_unified_scope_partial_archive_keeps_pr_visible() {
     .unwrap();
 
     let rows =
-        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+        list_pull_requests(&conn, DashboardView::Tracked, DashboardSort::Updated, None).unwrap();
     let pr_400 = rows
         .iter()
         .find(|r| r.id == 400)
@@ -2168,7 +2193,7 @@ fn archive_view_unified_scope_dedupes_partial_archive() {
 }
 
 /// Archive view ignores the four-view-split predicates entirely; a row that
-/// would surface in Authored, Assigned, Watching, OR Team falls into the
+/// would surface in Authored, Assigned, Watching, OR Tracked falls into the
 /// archive based purely on `rel.archived_at IS NOT NULL`.
 #[test]
 fn archive_view_ignores_view_split_predicates() {
@@ -2177,7 +2202,7 @@ fn archive_view_ignores_view_split_predicates() {
         r#"
         INSERT INTO accounts (id, label, host, login, created_at) VALUES
             (1, 'alice-acct', 'github.com', 'alice', 0);
-        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
             (10, 1, 'alice', 'web', 'public', 0);
 
         -- Four PRs covering each view-split flag exactly once.
@@ -2187,7 +2212,7 @@ fn archive_view_ignores_view_split_predicates() {
             (501, 10, 1, 'auth',     'open', 0, 'alice', 0, 100, 'main', 'a'),
             (502, 10, 2, 'review',   'open', 0, 'bob',   0, 200, 'main', 'b'),
             (503, 10, 3, 'watching', 'open', 0, 'bob',   0, 300, 'main', 'c'),
-            (504, 10, 4, 'team',     'open', 0, 'bob',   0, 400, 'main', 'd');
+            (504, 10, 4, 'tracked',  'open', 0, 'bob',   0, 400, 'main', 'd');
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
@@ -2230,7 +2255,7 @@ fn expected_view_counts_from_list(
         DashboardView::Authored,
         DashboardView::Assigned,
         DashboardView::Watching,
-        DashboardView::Team,
+        DashboardView::Tracked,
         DashboardView::Archive,
     ];
     let lens: Vec<i64> = views
@@ -2245,7 +2270,7 @@ fn expected_view_counts_from_list(
         authored: lens[0],
         assigned: lens[1],
         watching: lens[2],
-        team: lens[3],
+        tracked: lens[3],
         archive: lens[4],
     }
 }

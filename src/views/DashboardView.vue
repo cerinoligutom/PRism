@@ -97,7 +97,7 @@ const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
   authored: "authored",
   assigned: "assigned",
   watching: "watching",
-  team: "team",
+  tracked: "tracked",
   archive: "archived",
 };
 
@@ -107,7 +107,7 @@ const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
 // queue). Hiding the rail also keeps the empty-state filtering logic from
 // claiming the view is "filtered" when it's not.
 const isArchive = computed<boolean>(() => dashboard.view === "archive");
-const isTeam = computed<boolean>(() => dashboard.view === "team");
+const isTracked = computed<boolean>(() => dashboard.view === "tracked");
 
 const viewInlineLabel = computed<string>(
   () => VIEW_INLINE_LABEL[dashboard.view as DashboardViewName] ?? dashboard.view,
@@ -427,12 +427,12 @@ watch(() => route.meta?.dashboardView, () => {
           from the row overflow menu.
         </p>
       </div>
-      <div v-else-if="isTeam" class="dashboard-empty">
-        <h2 class="dashboard-empty__title">No team-tracked repositories yet</h2>
+      <div v-else-if="isTracked" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">No tracked repositories yet</h2>
         <p class="dashboard-empty__copy">
-          The Team view shows PRs from repositories you've opted in.
-          PRism doesn't read your GitHub teams - you pick the repos
-          yourself so API budget stays under control.
+          The Tracked view shows PRs from repositories you've opted in.
+          You pick the repos yourself so API budget stays under control.
+          A separate Teams-driven view lands in M8.
         </p>
         <PRismButton to="/settings/repositories" variant="primary">
           Open Repositories settings

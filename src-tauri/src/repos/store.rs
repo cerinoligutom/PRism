@@ -1,6 +1,6 @@
 //! SQL helpers for the `repos` table.
 //!
-//! The `repos.is_team_tracked` flag drives the Team view (M2 dashboard). The
+//! The `repos.is_tracked` flag drives the Tracked view (M2 dashboard). The
 //! upsert preserves it across refreshes — re-discovering a repo from GitHub
 //! must never reset the user's opt-in state.
 
@@ -15,7 +15,7 @@ pub fn list_for_account(
     account_id: i64,
 ) -> Result<Vec<RepoSummary>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, owner, name, visibility, is_team_tracked
+        "SELECT id, account_id, owner, name, visibility, is_tracked
          FROM repos
          WHERE account_id = ?1
          ORDER BY owner COLLATE NOCASE, name COLLATE NOCASE",
@@ -26,21 +26,21 @@ pub fn list_for_account(
     Ok(rows)
 }
 
-/// Flip the `is_team_tracked` flag for one repo. Returns the number of rows
+/// Flip the `is_tracked` flag for one repo. Returns the number of rows
 /// affected so callers can surface a not-found error if the id is stale.
-pub fn set_team_tracked(
+pub fn set_tracked(
     conn: &Connection,
     repo_id: i64,
     tracked: bool,
 ) -> Result<usize, rusqlite::Error> {
     conn.execute(
-        "UPDATE repos SET is_team_tracked = ?1 WHERE id = ?2",
+        "UPDATE repos SET is_tracked = ?1 WHERE id = ?2",
         params![tracked as i64, repo_id],
     )
 }
 
 /// Upsert a batch of repos for an account, preserving each repo's existing
-/// `is_team_tracked` flag.
+/// `is_tracked` flag.
 ///
 /// Conflicts are resolved on the `(account_id, owner, name)` unique constraint
 /// so two accounts pointing at the same GitHub repo own their opt-in state
@@ -81,7 +81,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoSummary> {
         owner: row.get(2)?,
         name: row.get(3)?,
         visibility: row.get(4)?,
-        is_team_tracked: row.get::<_, i64>(5)? != 0,
+        is_tracked: row.get::<_, i64>(5)? != 0,
     })
 }
 
@@ -129,11 +129,11 @@ mod tests {
         assert_eq!(inserted[0].owner, "sitemate");
         assert_eq!(inserted[0].name, "web");
         assert_eq!(inserted[0].visibility, "private");
-        assert!(!inserted[0].is_team_tracked);
+        assert!(!inserted[0].is_tracked);
     }
 
     #[test]
-    fn upsert_preserves_is_team_tracked_across_refreshes() {
+    fn upsert_preserves_is_tracked_across_refreshes() {
         // Discovering a repo a second time must never reset the user's opt-in.
         let mut conn = fresh_conn();
         let inserted = upsert_for_account(
@@ -143,7 +143,7 @@ mod tests {
         )
         .unwrap();
         let local_id = inserted[0].id;
-        let affected = set_team_tracked(&conn, local_id, true).unwrap();
+        let affected = set_tracked(&conn, local_id, true).unwrap();
         assert_eq!(affected, 1);
 
         // Same repo, slightly different visibility (e.g. user made it public).
@@ -151,7 +151,7 @@ mod tests {
             upsert_for_account(&mut conn, 1, &[repo_node(100, "sitemate", "web", "public")])
                 .unwrap();
         assert_eq!(after.len(), 1);
-        assert!(after[0].is_team_tracked, "team-tracked flag must survive");
+        assert!(after[0].is_tracked, "tracked flag must survive");
         assert_eq!(after[0].visibility, "public");
         assert_eq!(after[0].id, local_id, "local repo id must be stable");
     }
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn upsert_does_not_delete_repos_missing_from_the_payload() {
         // A repo that disappears from GitHub's response must stay in the DB
-        // for now: the user may still want to opt it out of Team view
+        // for now: the user may still want to opt it out of the Tracked view
         // explicitly. Pruning is a separate (out-of-scope) concern.
         let mut conn = fresh_conn();
         upsert_for_account(
@@ -201,9 +201,9 @@ mod tests {
     }
 
     #[test]
-    fn set_team_tracked_returns_zero_for_unknown_repo() {
+    fn set_tracked_returns_zero_for_unknown_repo() {
         let conn = fresh_conn();
-        let affected = set_team_tracked(&conn, 999, true).unwrap();
+        let affected = set_tracked(&conn, 999, true).unwrap();
         assert_eq!(affected, 0);
     }
 
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn two_accounts_sharing_one_github_repo_get_independent_rows() {
         // Multi-account scenario: account A and account B both have access to
-        // the same GitHub repo. They must own their `is_team_tracked` flag
+        // the same GitHub repo. They must own their `is_tracked` flag
         // independently — opting in from A must not toggle B.
         let mut conn = fresh_conn();
         conn.execute(
@@ -260,10 +260,10 @@ mod tests {
             upsert_for_account(&mut conn, 2, &[repo_node(42, "shared", "repo", "public")]).unwrap();
         assert_ne!(a[0].id, b[0].id, "each account must own a distinct row");
 
-        set_team_tracked(&conn, a[0].id, true).unwrap();
+        set_tracked(&conn, a[0].id, true).unwrap();
         let a_after = list_for_account(&conn, 1).unwrap();
         let b_after = list_for_account(&conn, 2).unwrap();
-        assert!(a_after[0].is_team_tracked);
-        assert!(!b_after[0].is_team_tracked);
+        assert!(a_after[0].is_tracked);
+        assert!(!b_after[0].is_tracked);
     }
 }

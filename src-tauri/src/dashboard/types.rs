@@ -13,11 +13,15 @@ pub enum DashboardView {
     Authored,
     Assigned,
     Watching,
-    Team,
+    /// Per-repo opt-in surface (issue #220, formerly named "Team"). PRs from
+    /// repos with `is_tracked = 1` show up here regardless of whether the
+    /// viewer has a personal relation to them. M8 lands a separate Teams-
+    /// driven view; this one stays repo-flag-gated.
+    Tracked,
     /// Archive bucket (ADR 0018). Returns only rows where the
     /// `pull_request_viewer_relations.archived_at` column is non-NULL. Ignores
     /// the four-view-split predicates (`is_authored`, `is_review_requested`,
-    /// `is_involved`, `repos.is_team_tracked`) - archive is global across every
+    /// `is_involved`, `repos.is_tracked`) - archive is global across every
     /// relation a viewer holds. Wave 2 wires the route, sidebar entry, and the
     /// PR row archive action; this variant lands the read path only.
     Archive,
@@ -92,9 +96,9 @@ pub struct DashboardPullRequest {
     /// Watching). Sorted ascending. In the single-account-filter path the
     /// vector has length 1 - the active account id. In the unified path
     /// (`account_id = None`) it carries 1..N ids: every relation owner the
-    /// `GROUP BY pr.id` merge folded together. For the Team view in unified
-    /// mode a PR with no relation rows still surfaces (the view filter is on
-    /// `repos.is_team_tracked`); in that shape the vector is empty.
+    /// `GROUP BY pr.id` merge folded together. For the Tracked view in
+    /// unified mode a PR with no relation rows still surfaces (the view
+    /// filter is on `repos.is_tracked`); in that shape the vector is empty.
     ///
     /// The frontend reads the first id as the representative account when it
     /// needs one (e.g. the `mark unread` action's per-account fallback target);
@@ -106,7 +110,7 @@ pub struct DashboardPullRequest {
     /// update. Derived at query time as
     /// `read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`
     /// against the active account's `pull_request_viewer_relations` row.
-    /// `None` collapses to `false` if the join misses (e.g. a Team-view PR
+    /// `None` collapses to `false` if the join misses (e.g. a Tracked-view PR
     /// the active account has no relation row for). In the unified path the
     /// per-relation flag is merged via `MAX` so the row reads unread when any
     /// in-scope account is unread. See ADR 0015 and
@@ -181,6 +185,6 @@ pub struct DashboardViewCounts {
     pub authored: i64,
     pub assigned: i64,
     pub watching: i64,
-    pub team: i64,
+    pub tracked: i64,
     pub archive: i64,
 }

@@ -32,10 +32,10 @@ export const router = createRouter({
       meta: { dashboardView: "watching" satisfies DashboardViewName },
     },
     {
-      path: "/dashboard/team",
-      name: "dashboard.team",
+      path: "/dashboard/tracked",
+      name: "dashboard.tracked",
       component: DashboardView,
-      meta: { dashboardView: "team" satisfies DashboardViewName },
+      meta: { dashboardView: "tracked" satisfies DashboardViewName },
     },
     {
       // ADR 0018: archive bucket. Inverts the default-view archive predicate

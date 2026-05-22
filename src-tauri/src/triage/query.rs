@@ -176,7 +176,7 @@ pub fn auto_archive_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
 ///
 /// Eligibility predicate (per the post-M6 smoke feedback):
 ///
-/// 1. The PR has at least one viewer relation row (Team-view PRs with no
+/// 1. The PR has at least one viewer relation row (Tracked-view PRs with no
 ///    relations are someone-else's territory; the retention sweep stays
 ///    out of that lane).
 /// 2. Every relation row has `archived_at IS NOT NULL`.
@@ -225,7 +225,7 @@ pub fn archive_retention_sweep(conn: &Connection) -> Result<usize, rusqlite::Err
 /// 4. Viewer authored the PR AND `review_decision = 'CHANGES_REQUESTED'`.
 ///
 /// The UPDATE is a no-op when the relation row doesn't exist for the pair
-/// (Team-view PRs never get a row - see contract). Callers that need the row
+/// (Tracked-view PRs never get a row - see contract). Callers that need the row
 /// present should UPSERT first.
 ///
 /// Returns a (possibly empty) [`Vec<NotificationTrigger>`] describing the
@@ -376,15 +376,15 @@ pub fn chip_predicate(chip: ChipKey) -> &'static str {
 ///
 /// Single-account (`Some(id)`):
 /// Authored / Assigned / Watching gate on the matching relation flag against
-/// the active account; the LEFT JOIN inside the team variant lets
+/// the active account; the LEFT JOIN inside the tracked variant lets
 /// `rel.needs_attention` resolve to NULL (which the count predicate then
-/// ignores) when the active account has no relation row for a Team-view PR.
+/// ignores) when the active account has no relation row for a Tracked-view PR.
 ///
 /// Unified (`None`) (ADR 0016, issue #171):
 /// Mirrors the dashboard query's union-mode FROM shape so the chip-count and
 /// the chip-filtered dashboard list see the same row set. The view filter for
 /// Authored / Assigned / Watching becomes an EXISTS sub-query (matching any
-/// tracked account's relation row); Team stays gated on `r.is_team_tracked`.
+/// tracked account's relation row); Tracked stays gated on `r.is_tracked`.
 /// The relation is brought in via LEFT JOIN _without_ an account predicate so
 /// `rel.needs_attention` resolves against every relation owner, mirroring the
 /// dashboard query's `MAX(needs_attention)` semantics. The chip predicate is
@@ -399,7 +399,7 @@ fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'sta
     // ADR 0018, decision 5: chip counts exclude archived rows so the chip
     // numbers match the dashboard list shapes. Single-account paths add
     // `AND rel.archived_at IS NULL` to the WHERE for the relation-backed
-    // views and to the LEFT JOIN's ON clause for the Team view. Unified
+    // views and to the LEFT JOIN's ON clause for the Tracked view. Unified
     // paths mirror the dashboard query's `archived_at IS NULL` predicate on
     // both the EXISTS sub-query and the LEFT JOIN.
     //
@@ -431,14 +431,14 @@ fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'sta
                AND rel.account_id = ?1
                AND rel.archived_at IS NULL"
         }
-        (DashboardView::Team, Some(_)) => {
+        (DashboardView::Tracked, Some(_)) => {
             "FROM pull_requests pr
              JOIN repos r ON r.id = pr.repo_id
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
                AND rel.account_id = ?1
                AND rel.archived_at IS NULL
-             WHERE r.is_team_tracked = 1 AND r.account_id = ?1"
+             WHERE r.is_tracked = 1 AND r.account_id = ?1"
         }
         (DashboardView::Authored, None) => {
             "FROM pull_requests pr
@@ -476,13 +476,13 @@ fn chip_count_from_clause(view: DashboardView, account_id: Option<i64>) -> &'sta
                    AND rel_filter.archived_at IS NULL
              )"
         }
-        (DashboardView::Team, None) => {
+        (DashboardView::Tracked, None) => {
             "FROM pull_requests pr
              JOIN repos r ON r.id = pr.repo_id
              LEFT JOIN pull_request_viewer_relations rel
                 ON rel.pull_request_id = pr.id
                AND rel.archived_at IS NULL
-             WHERE r.is_team_tracked = 1
+             WHERE r.is_tracked = 1
                AND (NOT EXISTS (
                        SELECT 1 FROM pull_request_viewer_relations rel_any
                         WHERE rel_any.pull_request_id = pr.id
@@ -570,15 +570,15 @@ pub fn list_filter_chip_counts(
 /// the given account, bucketed by the four dashboard views. The partial
 /// index `idx_pr_viewer_relations_attention` keeps the per-account scan to
 /// the attention rows; the per-view buckets then gate by the matching
-/// relation flag or, for Team, the repo's `is_team_tracked = 1` AND
-/// `account_id = ?` predicates the dashboard Team view uses.
+/// relation flag or, for Tracked, the repo's `is_tracked = 1` AND
+/// `account_id = ?` predicates the dashboard Tracked view uses.
 ///
-/// The Team count is account-scoped because `needs_attention` is itself a
-/// per-account signal: even though the Team view's row set comes from
-/// `is_team_tracked` repos rather than relation flags, the attention column
-/// is only meaningful for the active account. The repo-owner predicate
-/// matches the Team view's `r.account_id = ?` filter so the badge can't
-/// over-count cross-account relation rows.
+/// The Tracked count is account-scoped because `needs_attention` is itself a
+/// per-account signal: even though the Tracked view's row set comes from
+/// `is_tracked` repos rather than relation flags, the attention column is
+/// only meaningful for the active account. The repo-owner predicate matches
+/// the Tracked view's `r.account_id = ?` filter so the badge can't over-count
+/// cross-account relation rows.
 ///
 /// ADR 0018, decision 5: archived rows do not contribute to attention totals.
 /// `rel.archived_at IS NULL` gates the per-account scan so an archived PR
@@ -598,9 +598,9 @@ pub fn count_sidebar_attention(
                         SELECT 1 FROM pull_requests pr
                           JOIN repos r ON r.id = pr.repo_id
                          WHERE pr.id = rel.pull_request_id
-                           AND r.is_team_tracked = 1
+                           AND r.is_tracked = 1
                            AND r.account_id = ?1
-                    ) THEN 1 ELSE 0 END) AS team
+                    ) THEN 1 ELSE 0 END) AS tracked
            FROM pull_request_viewer_relations rel
           WHERE rel.account_id = ?1
             AND rel.needs_attention = 1
@@ -611,7 +611,7 @@ pub fn count_sidebar_attention(
             authored: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
             assigned: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
             watching: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-            team: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            tracked: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
         })
     })?;
     Ok(counts)
@@ -980,13 +980,13 @@ mod tests {
     }
 
     /// Shared fixture for the sidebar count helper: one account (alice), three
-    /// repos (one team-tracked), four PRs covering each view-flag combo.
+    /// repos (one tracked), four PRs covering each view-flag combo.
     /// `needs_attention` is toggled in each test as needed.
     fn seed_sidebar_fixture(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (1, 'a', 'github.com', 'alice', 0);
-             INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
                 (10, 1, 'alice', 'web', 'public', 0),
                 (20, 1, 'alice', 'api', 'public', 1);
              INSERT INTO pull_requests
@@ -999,7 +999,7 @@ mod tests {
              -- PR 100: authored
              -- PR 200: assigned (review-requested)
              -- PR 300: watching (involved only)
-             -- PR 400: in a team-tracked repo, no direct flags
+             -- PR 400: in a tracked repo, no direct flags
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
                  is_involved, last_seen_at) VALUES
@@ -1116,8 +1116,8 @@ mod tests {
     }
 
     #[test]
-    fn list_filter_chip_counts_team_view_uses_repo_flag_not_relations() {
-        // Team-view rows surface via `repos.is_team_tracked = 1`; the
+    fn list_filter_chip_counts_tracked_view_uses_repo_flag_not_relations() {
+        // Tracked-view rows surface via `repos.is_tracked = 1`; the
         // needs_attention count comes from the LEFT JOIN to relations on the
         // active account.
         let conn = fresh_db();
@@ -1126,7 +1126,7 @@ mod tests {
             INSERT INTO accounts (id, label, host, login, created_at) VALUES
                 (1, 'a', 'github.com', 'alice', 0);
 
-            INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
                 (10, 1, 'alice', 'web', 'public', 1);
 
             INSERT INTO pull_requests
@@ -1143,7 +1143,7 @@ mod tests {
         )
         .unwrap();
 
-        let counts = list_filter_chip_counts(&conn, DashboardView::Team, Some(1)).unwrap();
+        let counts = list_filter_chip_counts(&conn, DashboardView::Tracked, Some(1)).unwrap();
         assert_eq!(counts.drafts, 1);
         assert_eq!(counts.ci_failing, 1);
         assert_eq!(counts.needs_attention, 1);
@@ -1251,7 +1251,7 @@ mod tests {
         // Empty-in-scope guard: no accounts means no PRs admitted by any
         // view, so every chip count is zero. The PR table can be non-empty
         // (orphaned data); the WHERE clauses filter it out via the relation
-        // (Authored / Assigned / Watching) or repo-owner (Team) joins.
+        // (Authored / Assigned / Watching) or repo-owner (Tracked) joins.
         let conn = fresh_db();
         // Account-less PR + relation rows that point to a missing account.
         // The repos table requires an account_id FK; insert a placeholder so
@@ -1269,7 +1269,7 @@ mod tests {
             DashboardView::Authored,
             DashboardView::Assigned,
             DashboardView::Watching,
-            DashboardView::Team,
+            DashboardView::Tracked,
         ] {
             let counts = list_filter_chip_counts(&conn, view, None).unwrap();
             assert_eq!(counts.needs_attention, 0, "{view:?} empty-scope");
@@ -1298,10 +1298,10 @@ mod tests {
     }
 
     #[test]
-    fn list_filter_chip_counts_union_team_view_surfaces_team_repo_pr_without_relations() {
-        // Team view in unified mode shows PRs from any team-tracked repo on
+    fn list_filter_chip_counts_union_tracked_view_surfaces_tracked_repo_pr_without_relations() {
+        // Tracked view in unified mode shows PRs from any tracked repo on
         // any tracked account, even when the active user has no relation row
-        // for the PR. Mirrors the dashboard query's Team union path.
+        // for the PR. Mirrors the dashboard query's Tracked union path.
         let conn = fresh_db();
         conn.execute_batch(
             r#"
@@ -1309,23 +1309,23 @@ mod tests {
                 (1, 'alice-acct', 'github.com', 'alice', 0),
                 (2, 'bob-acct',   'github.com', 'bob',   0);
 
-            INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked) VALUES
                 (10, 1, 'alice', 'web', 'public', 1),
                 (20, 2, 'bob',   'cli', 'public', 1);
 
             INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
                  created_at, updated_at, base_ref, head_ref) VALUES
-                (100, 10, 1, 'alice-team', 'open', 1, 'someone-else',
+                (100, 10, 1, 'alice-tracked', 'open', 1, 'someone-else',
                  0, strftime('%s','now'), 'main', 'feat-a'),
-                (200, 20, 1, 'bob-team',   'open', 1, 'someone-else',
+                (200, 20, 1, 'bob-tracked',   'open', 1, 'someone-else',
                  0, strftime('%s','now'), 'main', 'feat-b');
             "#,
         )
         .unwrap();
 
-        let counts = list_filter_chip_counts(&conn, DashboardView::Team, None).unwrap();
-        assert_eq!(counts.drafts, 2, "both team-tracked PRs are drafts");
+        let counts = list_filter_chip_counts(&conn, DashboardView::Tracked, None).unwrap();
+        assert_eq!(counts.drafts, 2, "both tracked PRs are drafts");
     }
 
     // ===== sidebar attention tests (M4-C) =====
@@ -1352,12 +1352,12 @@ mod tests {
         let counts = count_sidebar_attention(&conn, 1).unwrap();
         // PR 100 fires Authored. PR 200 fires Assigned. PR 300 fires Watching.
         // PR 400 has no view flag (none of authored/assigned/involved) but
-        // does sit in a team-tracked repo, so Team alone fires for it.
-        // PRs 100/200/300 sit in repo 10 (not team-tracked) so Team counts 1.
+        // does sit in a tracked repo, so Tracked alone fires for it.
+        // PRs 100/200/300 sit in repo 10 (not tracked) so Tracked counts 1.
         assert_eq!(counts.authored, 1);
         assert_eq!(counts.assigned, 1);
         assert_eq!(counts.watching, 1);
-        assert_eq!(counts.team, 1);
+        assert_eq!(counts.tracked, 1);
     }
 
     /// A PR that fires both Authored and Watching contributes to both
@@ -1403,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    fn count_sidebar_attention_team_requires_team_tracked_repo() {
+    fn count_sidebar_attention_tracked_requires_tracked_repo() {
         let conn = fresh_db();
         seed_sidebar_fixture(&conn);
         conn.execute(
@@ -1413,28 +1413,29 @@ mod tests {
             [],
         )
         .unwrap();
-        // PRs 100/200/300 sit in repo 10 (not team-tracked). The Team bucket
+        // PRs 100/200/300 sit in repo 10 (not tracked). The Tracked bucket
         // must remain at zero because none of the attention-flagged PRs live
-        // in a team-tracked repo.
+        // in a tracked repo.
         let counts = count_sidebar_attention(&conn, 1).unwrap();
-        assert_eq!(counts.team, 0);
+        assert_eq!(counts.tracked, 0);
     }
 
-    /// The Team bucket must mirror the dashboard Team view's
+    /// The Tracked bucket must mirror the dashboard Tracked view's
     /// `r.account_id = ?` predicate so a relation row owned by account 1
-    /// on a team-tracked repo owned by account 2 doesn't over-count.
+    /// on a tracked repo owned by account 2 doesn't over-count.
     #[test]
-    fn count_sidebar_attention_team_requires_repo_owner_matches_active_account() {
+    fn count_sidebar_attention_tracked_requires_repo_owner_matches_active_account() {
         let conn = fresh_db();
         seed_sidebar_fixture(&conn);
-        // Seed account 2 + a team-tracked repo it owns, plus a PR in that
-        // repo. Then attach a relation row from account 1's perspective with
-        // needs_attention = 1. The dashboard Team view scoped to account 1
-        // would NOT show this PR (repo owner is 2), so the count must agree.
+        // Seed account 2 + a tracked repo it owns, plus a PR in that repo.
+        // Then attach a relation row from account 1's perspective with
+        // needs_attention = 1. The dashboard Tracked view scoped to account
+        // 1 would NOT show this PR (repo owner is 2), so the count must
+        // agree.
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (2, 'b', 'github.com', 'bob', 0);
-             INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked)
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked)
                 VALUES (30, 2, 'bob', 'cli', 'public', 1);
              INSERT INTO pull_requests
                 (id, repo_id, number, title, state, draft, author_login,
@@ -1447,10 +1448,10 @@ mod tests {
         )
         .unwrap();
         let counts = count_sidebar_attention(&conn, 1).unwrap();
-        // Watching catches PR 500 (alice is involved). Team must not, because
-        // repo 30 is owned by account 2.
+        // Watching catches PR 500 (alice is involved). Tracked must not,
+        // because repo 30 is owned by account 2.
         assert_eq!(counts.watching, 1);
-        assert_eq!(counts.team, 0);
+        assert_eq!(counts.tracked, 0);
     }
 
     // ===== archive (M6) =====
@@ -1962,7 +1963,7 @@ mod tests {
 
     #[test]
     fn archive_retention_sweep_skips_pr_with_no_relations() {
-        // Team-view-only PRs (no viewer relations) are out of scope. The
+        // Tracked-view-only PRs (no viewer relations) are out of scope. The
         // user never engaged with them; archive retention doesn't apply.
         let conn = fresh_db();
         conn.execute_batch(
