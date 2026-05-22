@@ -10,6 +10,7 @@ PRism gives developers, reviewers, and engineering leads a single focused dashbo
 - **[Architecture](Architecture)** — system design, with links to the ADRs that locked each decision.
 - **[Roadmap](Roadmap)** — M1–M7 milestones and what's in each.
 - **[Conventions](Conventions)** — quick reference for commits, PRs, ADRs.
+- **[Platform QA](Platform-QA)** — per-platform checklist run before tagging a release.
 - **[FAQ](FAQ)** — common questions.
 
 ## Outside the wiki

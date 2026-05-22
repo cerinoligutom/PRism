@@ -10,7 +10,7 @@ PRism v1 is delivered across eight milestones. Each milestone is tracked in GitH
 | [M4 — Triage UX](https://github.com/cerinoligutom/PRism/milestone/4) | Sorting, quick-filter chips, search, unread/mention highlighting, "needs my attention" composite signal |
 | [M5 — Multi-account & GHE](https://github.com/cerinoligutom/PRism/milestone/5) | Multiple PATs, per-account host config, GHE compatibility testing |
 | [M6 — Notifications & polish](https://github.com/cerinoligutom/PRism/milestone/6) | Desktop notifications, in-app badges, settings UI, last-synced indicator, manual refresh, archive bucket, TTL |
-| [M7 — Hardening & launch](https://github.com/cerinoligutom/PRism/milestone/7) | Performance tuning, rate-limit guardrails, error handling, keychain edge cases, cross-platform QA. Also picks up the cosmetic Team -> Tracked rename (#220) since the current "Team" view is per-repo opt-in, not GitHub-Teams-driven |
+| [M7 — Hardening & launch](https://github.com/cerinoligutom/PRism/milestone/7) | Performance tuning, rate-limit guardrails, error handling, keychain edge cases, cross-platform QA (see [Platform QA](Platform-QA)). Also picks up the cosmetic Team -> Tracked rename (#220) since the current "Team" view is per-repo opt-in, not GitHub-Teams-driven |
 | [M8 — Team view (GitHub Teams integration)](https://github.com/cerinoligutom/PRism/milestone/9) | An actual Teams-driven view: subscribe to GitHub Teams; PRs where a subscribed team is a requested reviewer or where a team member is author/assignee surface here. Distinct from the M7-renamed Tracked view. ADR 0019 pins the data model + match predicate (#221) |
 
 Milestone order is indicative; M1 must land first, but the others overlap.
