@@ -183,6 +183,44 @@ fn list_pr_threads_carries_head_comment_snapshot() {
     assert_eq!(head.created_at, 1000);
 }
 
+#[test]
+fn list_pr_threads_projects_diff_hunk_through_to_dto() {
+    // Issue #162: the hydrator writes `review_threads.diff_hunk` once per
+    // thread on the head-comment write path. The projection through
+    // `list_pr_threads` surfaces it on the DTO so the frontend can render
+    // the file-context block above the thread card. Threads without a
+    // hydrated hunk (legacy rows + PRs whose drawer has never been opened)
+    // project as `None`.
+    let db = fresh_db();
+    seed_fixture(&db);
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE review_threads
+                SET diff_hunk = '@@ -10,2 +10,3 @@\n a\n-b\n+c'
+              WHERE id = 1000",
+            [],
+        )
+        .unwrap();
+
+    let conn = db.lock().unwrap();
+    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
+    let by_id: std::collections::HashMap<i64, Option<String>> = threads
+        .iter()
+        .map(|t| (t.id, t.diff_hunk.clone()))
+        .collect();
+    assert_eq!(
+        by_id[&1000].as_deref(),
+        Some("@@ -10,2 +10,3 @@\n a\n-b\n+c"),
+    );
+    assert!(
+        by_id[&1001].is_none(),
+        "non-hydrated thread carries no hunk"
+    );
+    assert!(by_id[&1002].is_none());
+    assert!(by_id[&1003].is_none());
+}
+
 // ===== unread derivation (issue #158) =====
 
 /// Insert a viewer-relation row for (`account_id`, PR 100) with the given
@@ -644,6 +682,7 @@ fn make_comment(id: &str, db_id: i64, login: &str, created_at: &str) -> ReviewCo
         line: Some(7),
         original_line: Some(7),
         side: Some("RIGHT".into()),
+        diff_hunk: None,
     }
 }
 

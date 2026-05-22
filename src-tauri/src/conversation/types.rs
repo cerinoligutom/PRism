@@ -59,6 +59,13 @@ pub struct PullRequestThread {
     /// never opened the PR; the thread is unread. Always `false` when
     /// `account_id` is None (no viewer = no read state).
     pub unread: bool,
+    /// Unified-diff hunk GitHub attaches to every inline review comment in
+    /// the thread. Persisted once per thread by the lazy hydrator (all
+    /// comments in a thread share the same hunk); rendered as the
+    /// file-context block above each thread card. `None` until the hydrator
+    /// has run for the PR (legacy rows + PRs whose drawer has never been
+    /// opened). See issue #162.
+    pub diff_hunk: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

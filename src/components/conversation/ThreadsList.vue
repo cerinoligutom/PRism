@@ -14,6 +14,7 @@ import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import DiffHunkBlock from "./DiffHunkBlock.vue";
 
 interface Props {
   threads: readonly PullRequestThread[];
@@ -298,6 +299,20 @@ async function openCommentOnGitHub(
               v-if="thread.is_outdated"
               class="thread-card__chip thread-card__chip--outdated"
             >OUTDATED</span>
+          </div>
+
+          <!-- The wrapping div carries `@click.stop` so a click on the
+               diff-hunk block (e.g. selecting text) doesn't bubble up to
+               the row-level expand toggle. -->
+          <div
+            v-if="thread.diff_hunk !== null && thread.diff_hunk.length > 0"
+            class="thread-card__diff-hunk"
+            @click.stop
+          >
+            <DiffHunkBlock
+              :hunk="thread.diff_hunk"
+              :path="thread.path"
+            />
           </div>
 
           <div v-if="!isExpanded(thread.id)" class="thread-card__snippet">
@@ -643,6 +658,14 @@ async function openCommentOnGitHub(
 .thread-card__chip--outdated {
   background: var(--bg-4);
   color: var(--text-mute);
+}
+
+.thread-card__diff-hunk {
+  /* Sits between the file-path row and the snippet; the component's own
+   * top margin handles the gap from the path row. Reset the cursor since
+   * the parent card carries `role="button"` - the hunk itself isn't an
+   * action target. */
+  cursor: default;
 }
 
 .thread-card__snippet {

@@ -23,6 +23,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0011_review_url.sql"),
     include_str!("../../migrations/0012_archive_and_settings.sql"),
     include_str!("../../migrations/0013_rename_team_tracked.sql"),
+    include_str!("../../migrations/0014_diff_hunk.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -238,6 +239,7 @@ mod tests {
             "line",
             "start_line",
             "url",
+            "diff_hunk",
         ];
         let mut stmt = conn
             .prepare("SELECT name FROM pragma_table_info('review_threads')")
@@ -394,13 +396,17 @@ mod tests {
     fn rename_team_tracked_to_tracked_preserves_row_data() {
         // Replay the migrations up to but not including 0013, write a row
         // with `is_team_tracked = 1`, then run the rename and read back
-        // through `is_tracked` to prove the bit survived.
+        // through `is_tracked` to prove the bit survived. Index 12 is
+        // 0013_rename_team_tracked.sql (entries are zero-indexed, NNNN
+        // numbers start at 0001) so `take(12)` lands every migration up
+        // through 0012 and stops before the rename.
+        const PRE_RENAME_PREFIX: usize = 12;
         let mut conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&conn).unwrap();
         let pre_rename = Migrations::new(
             MIGRATION_SOURCES
                 .iter()
-                .take(MIGRATION_SOURCES.len() - 1)
+                .take(PRE_RENAME_PREFIX)
                 .map(|sql| M::up(sql))
                 .collect(),
         );
