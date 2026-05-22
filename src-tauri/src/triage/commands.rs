@@ -11,13 +11,25 @@
 //!
 //! Wave 2-D fills in `list_filter_chip_counts`. See
 //! `docs/contracts/triage-ux.md` ("Tauri command surface") for the contract.
+//!
+//! M6 wave 1 adds `mark_pr_archived` / `mark_pr_unarchived` (ADR 0018). Both
+//! commands fire [`DASHBOARD_REFRESH_EVENT`] on success so the frontend can
+//! reload the affected views without waiting for the next sync tick.
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::dashboard::DashboardView;
 use crate::db::DbHandle;
 use crate::triage::query;
 use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
+
+/// Fired when a triage write that affects dashboard membership commits.
+/// The frontend listens for this and reloads the active view; the payload is
+/// empty because every subscriber re-queries the canonical dashboard state.
+/// See ADR 0018 - manual archive + unarchive are the first writers; the
+/// auto-archive sweep relies on the existing `sync://status` cycle reload
+/// instead.
+pub const DASHBOARD_REFRESH_EVENT: &str = "dashboard://refresh";
 
 /// Mark a PR as read.
 ///
@@ -100,6 +112,66 @@ pub fn mark_pr_unread(
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
     Ok(())
+}
+
+/// Manual archive write for one `(account_id, pull_request_id)` pair.
+/// ADR 0018 keeps manual + auto archive on the same `archived_at` column;
+/// this command is the manual writer the row overflow menu invokes. The
+/// frontend supplies a single `account_id` per call - in unified scope it
+/// fans out across every relation owner the viewer holds (one invoke per
+/// account), mirroring the mark-read fan-out from ADR 0016.
+///
+/// UPSERTs the relation row so an account whose viewer hasn't opened the
+/// drawer can still archive the PR. Wraps the write in a transaction even
+/// though the underlying UPSERT is a single statement so the future addition
+/// of a recompute / cascade follow-up doesn't break the atomicity contract
+/// established by `mark_pr_read`. Emits [`DASHBOARD_REFRESH_EVENT`] on
+/// success so the frontend reloads without waiting for the next sync tick.
+#[tauri::command]
+pub fn mark_pr_archived<R: Runtime>(
+    pull_request_id: i64,
+    account_id: i64,
+    db: State<'_, DbHandle>,
+    app_handle: AppHandle<R>,
+) -> Result<(), String> {
+    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+    query::mark_archived(&tx, account_id, pull_request_id)
+        .map_err(|e| format!("mark archived: {e}"))?;
+    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    emit_dashboard_refresh(&app_handle);
+    Ok(())
+}
+
+/// Reverse of [`mark_pr_archived`]: clear `archived_at` so the PR
+/// reappears in the default views. UPSERTs the row the same way so an
+/// Archive-view unarchive against a PR the viewer never opened works
+/// without a sync round-trip first. Per ADR 0018 the same column
+/// services both manual and auto-archive paths, so the unarchive write
+/// is symmetric.
+#[tauri::command]
+pub fn mark_pr_unarchived<R: Runtime>(
+    pull_request_id: i64,
+    account_id: i64,
+    db: State<'_, DbHandle>,
+    app_handle: AppHandle<R>,
+) -> Result<(), String> {
+    let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+    let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+    query::mark_unarchived(&tx, account_id, pull_request_id)
+        .map_err(|e| format!("mark unarchived: {e}"))?;
+    tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+    emit_dashboard_refresh(&app_handle);
+    Ok(())
+}
+
+/// Fire-and-forget refresh signal. A failed emit logs and continues - the
+/// command's write already succeeded, and the frontend can recover via the
+/// next sync-cycle reload.
+fn emit_dashboard_refresh<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(err) = app.emit(DASHBOARD_REFRESH_EVENT, ()) {
+        eprintln!("failed to emit {DASHBOARD_REFRESH_EVENT}: {err}");
+    }
 }
 
 /// Iterate every account_id that has a relation row for `pull_request_id` and
@@ -435,5 +507,119 @@ mod tests {
         invoke_mark_pr_unread(&db, 100, 1).unwrap();
         let (_, _, _, after) = read_triage(&db);
         assert_eq!(after, 0, "no signals left after thread clears");
+    }
+
+    // ===== archive (M6 wave 1) =====
+
+    /// Mirrors the body of [`super::mark_pr_archived`] minus the AppHandle
+    /// emit. The Tauri runtime can't be booted from a unit test - the
+    /// emit-path lives in a separate helper that's verified by integration
+    /// tests against a real `AppHandle`. The DB write is what matters here.
+    fn invoke_mark_pr_archived(db: &DbHandle, pr: i64, account: i64) -> Result<(), String> {
+        let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+        let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+        query::mark_archived(&tx, account, pr).map_err(|e| format!("mark archived: {e}"))?;
+        tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+        Ok(())
+    }
+
+    fn invoke_mark_pr_unarchived(db: &DbHandle, pr: i64, account: i64) -> Result<(), String> {
+        let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
+        let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+        query::mark_unarchived(&tx, account, pr).map_err(|e| format!("mark unarchived: {e}"))?;
+        tx.commit().map_err(|e| format!("commit tx: {e}"))?;
+        Ok(())
+    }
+
+    fn read_archived_at(db: &DbHandle) -> Option<i64> {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT archived_at FROM pull_request_viewer_relations
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    #[test]
+    fn mark_pr_archived_via_command_sets_archived_at() {
+        let db = fresh_db();
+        seed(&db, "bob", 1_700_000_000, 0, None);
+        invoke_mark_pr_archived(&db, 100, 1).unwrap();
+        assert!(read_archived_at(&db).is_some());
+    }
+
+    #[test]
+    fn mark_pr_archived_via_command_preserves_read_state_and_attention() {
+        // Set up a row with active read-state and needs_attention, then
+        // archive. The archive write must leave those alone.
+        let db = fresh_db();
+        seed(&db, "alice", 1_700_000_000, 2, None);
+        invoke_mark_pr_read(&db, 100, 1).unwrap();
+        // After mark_pr_read, the relation has read_at set, mentions = 0,
+        // and signal-1 keeps needs_attention = 1.
+        let (read_at_before, _, _, attention_before) = read_triage(&db);
+        assert!(read_at_before.is_some());
+        assert_eq!(attention_before, 1);
+
+        invoke_mark_pr_archived(&db, 100, 1).unwrap();
+
+        let (read_at_after, _, mentions_after, attention_after) = read_triage(&db);
+        assert_eq!(
+            read_at_after, read_at_before,
+            "archive write must not touch read_at"
+        );
+        assert_eq!(mentions_after, 0);
+        assert_eq!(
+            attention_after, attention_before,
+            "archive write must not touch needs_attention"
+        );
+        assert!(read_archived_at(&db).is_some());
+    }
+
+    #[test]
+    fn mark_pr_unarchived_via_command_clears_archived_at() {
+        let db = fresh_db();
+        seed(&db, "bob", 1_700_000_000, 0, None);
+        invoke_mark_pr_archived(&db, 100, 1).unwrap();
+        assert!(read_archived_at(&db).is_some());
+
+        invoke_mark_pr_unarchived(&db, 100, 1).unwrap();
+        assert_eq!(read_archived_at(&db), None);
+    }
+
+    #[test]
+    fn mark_pr_archived_via_command_upserts_when_relation_missing() {
+        // Seed account + PR but no relation row, mirroring the "Team-view"
+        // flow where the user reaches a PR before discovery created the row.
+        let db = fresh_db();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO accounts (id, label, host, login, created_at)
+                    VALUES (1, 'a', 'github.com', 'alice', 0);
+                 INSERT INTO repos (id, account_id, owner, name, visibility)
+                    VALUES (10, 1, 'owner', 'repo', 'public');
+                 INSERT INTO pull_requests
+                    (id, repo_id, number, title, state, draft, author_login,
+                     created_at, updated_at, base_ref, head_ref)
+                    VALUES (100, 10, 1, 't', 'open', 0, 'bob',
+                            0, 1_700_000_000, 'main', 'feat');",
+            )
+            .unwrap();
+        }
+        invoke_mark_pr_archived(&db, 100, 1).unwrap();
+        let conn = db.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

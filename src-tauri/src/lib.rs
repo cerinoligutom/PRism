@@ -96,7 +96,9 @@ pub fn run() {
             sync::commands::set_sync_interval,
             triage::commands::list_filter_chip_counts,
             triage::commands::list_sidebar_attention_counts,
+            triage::commands::mark_pr_archived,
             triage::commands::mark_pr_read,
+            triage::commands::mark_pr_unarchived,
             triage::commands::mark_pr_unread,
         ])
         .run(tauri::generate_context!())

@@ -947,6 +947,97 @@ async fn end_of_cycle_pruning_drops_stale_relations() {
 }
 
 #[tokio::test]
+async fn end_of_cycle_runs_auto_archive_sweep() {
+    // Per ADR 0018 the sweep runs once at the end of every cycle. The cycle's
+    // enrichment phase would overwrite any pre-seeded `state` / `updated_at`
+    // on a PR it visits, so the sweep fixture lives on a second account whose
+    // repos this cycle does not iterate. Account 1 syncs (with empty
+    // discovery and no repos so enrichment is a no-op); account 2 owns the
+    // PRs the sweep should touch.
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+
+    // Account 2 owns the PRs the sweep targets; it does not run a cycle here.
+    {
+        let conn = harness.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'bob-acct', 'github.com', 'bob', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (200, 2, 'bob', 'cli', 'public')",
+            [],
+        )
+        .unwrap();
+        // PR 999: closed, 60 days inactive - sweep must archive.
+        // PR 888: open, 90 days inactive - sweep must skip.
+        conn.execute(
+            "INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (999, 200, 1, 'closed-old', 'closed', 0, 'bob',
+                        0, strftime('%s','now','-60 days'), 'main', 'feat'),
+                       (888, 200, 2, 'open-old', 'open', 0, 'bob',
+                        0, strftime('%s','now','-90 days'), 'main', 'feat')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at)
+                VALUES (2, 999, 0, 0, 1, strftime('%s','now')),
+                       (2, 888, 0, 0, 1, strftime('%s','now'))",
+            [],
+        )
+        .unwrap();
+    }
+
+    mount_empty_discovery(&server).await;
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    // Account 1 has no repos so discovery completes empty and the cycle
+    // skips with NoReposConfigured - the sweep still runs.
+    assert!(matches!(report.outcome, CycleOutcome::Skipped { .. }));
+
+    let (closed_archived_at, open_archived_at): (Option<i64>, Option<i64>) = {
+        let conn = harness.db.lock().unwrap();
+        let closed = conn
+            .query_row(
+                "SELECT archived_at FROM pull_request_viewer_relations
+                  WHERE account_id = 2 AND pull_request_id = 999",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten();
+        let open = conn
+            .query_row(
+                "SELECT archived_at FROM pull_request_viewer_relations
+                  WHERE account_id = 2 AND pull_request_id = 888",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten();
+        (closed, open)
+    };
+    assert!(
+        closed_archived_at.is_some(),
+        "closed PR inactive 60 days must be archived by the sweep"
+    );
+    assert!(
+        open_archived_at.is_none(),
+        "open PR must not be archived regardless of inactivity"
+    );
+}
+
+#[tokio::test]
 async fn discovery_failure_returns_failed_and_skips_pruning() {
     // A 500 from the very first discovery query halts the cycle as `Failed`
     // and leaves any pre-existing relations alone (no pruning on failure).
