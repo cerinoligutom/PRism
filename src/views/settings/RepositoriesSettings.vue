@@ -18,19 +18,19 @@ const search = ref("");
 // toggling triggers reactivity via reassignment.
 const collapsedOrgs = ref<Set<string>>(new Set());
 
-const totalTeamTracked = computed(() => {
+const totalTracked = computed(() => {
   let count = 0;
   for (const account of accountsStore.accounts) {
     for (const repo of reposStore.getRepos(account.id)) {
-      if (repo.is_team_tracked) count += 1;
+      if (repo.is_tracked) count += 1;
     }
   }
   return count;
 });
 
 const sublabel = computed(() => {
-  const n = totalTeamTracked.value;
-  return `${n} TEAM REPO${n === 1 ? "" : "S"}`;
+  const n = totalTracked.value;
+  return `${n} TRACKED REPO${n === 1 ? "" : "S"}`;
 });
 
 function avatarClass(accountId: number): string {
@@ -78,7 +78,7 @@ function groupForAccount(accountId: number): OrgGroup[] {
     .map<OrgGroup>(([owner, repos]) => {
       const sorted = repos.slice().sort((a, b) => a.name.localeCompare(b.name));
       const trackedCount = sorted.reduce(
-        (n, r) => n + (r.is_team_tracked ? 1 : 0),
+        (n, r) => n + (r.is_tracked ? 1 : 0),
         0,
       );
       return { owner, repos: sorted, trackedCount };
@@ -112,10 +112,10 @@ watch(search, (q) => {
   }
 });
 
-async function toggleTeamTracked(repo: RepoSummary): Promise<void> {
-  const next = !repo.is_team_tracked;
+async function toggleTracked(repo: RepoSummary): Promise<void> {
+  const next = !repo.is_tracked;
   try {
-    await reposStore.setTeamTracked(repo.id, next);
+    await reposStore.setTracked(repo.id, next);
     toastStore.show(
       next
         ? `Tracking ${repo.owner}/${repo.name}`
@@ -132,10 +132,10 @@ async function toggleOrgTracked(group: OrgGroup): Promise<void> {
   // Mixed and none both go ON (positive default for the org gesture);
   // all goes OFF.
   const target = orgTrackState(group) !== "all";
-  const work = group.repos.filter((r) => r.is_team_tracked !== target);
+  const work = group.repos.filter((r) => r.is_tracked !== target);
   if (work.length === 0) return;
   try {
-    await Promise.all(work.map((r) => reposStore.setTeamTracked(r.id, target)));
+    await Promise.all(work.map((r) => reposStore.setTracked(r.id, target)));
     toastStore.show(
       target
         ? `Tracking ${work.length} repo${work.length === 1 ? "" : "s"} under ${group.owner}`
@@ -179,8 +179,8 @@ watch(
     </header>
 
     <p class="repositories-panel__intro">
-      Pick which repositories appear in the <strong>Team</strong> view. PRism only fetches Team-view
-      data for repos you opt in. Discovery uses GitHub's
+      Pick which repositories appear in the <strong>Tracked</strong> view. PRism only fetches data for
+      repos you opt in. Discovery uses GitHub's
       <code class="repositories-panel__code">/user/repos</code> endpoint.
     </p>
 
@@ -306,7 +306,7 @@ watch(
               </span>
               <PRismSwitch
                 :model-value="orgTrackState(group) === 'all'"
-                :aria-label="`Toggle Team-tracked for every ${group.owner} repo`"
+                :aria-label="`Toggle Tracked for every ${group.owner} repo`"
                 @update:model-value="toggleOrgTracked(group)"
               />
             </div>
@@ -320,7 +320,7 @@ watch(
               v-for="repo in group.repos"
               :key="repo.id"
               class="repo-row"
-              :class="{ 'repo-row--tracked': repo.is_team_tracked }"
+              :class="{ 'repo-row--tracked': repo.is_tracked }"
             >
               <div class="repo-row__info">
                 <svg
@@ -343,9 +343,9 @@ watch(
                 <span class="repo-row__name">{{ repo.name }}</span>
               </div>
               <PRismSwitch
-                :model-value="repo.is_team_tracked"
-                :aria-label="`Toggle Team-tracked for ${repo.owner}/${repo.name}`"
-                @update:model-value="toggleTeamTracked(repo)"
+                :model-value="repo.is_tracked"
+                :aria-label="`Toggle Tracked for ${repo.owner}/${repo.name}`"
+                @update:model-value="toggleTracked(repo)"
               />
             </li>
           </ul>

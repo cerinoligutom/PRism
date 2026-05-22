@@ -24,7 +24,7 @@ pub enum ChipKey {
 /// Counts for the dashboard's filter-chip row. Each chip's count is
 /// independent of the active chip filter set so the user always sees what
 /// would match if they toggled a single chip alone. The view-scope still
-/// applies (Authored / Assigned / Watching / Team) because the chips never
+/// applies (Authored / Assigned / Watching / Tracked) because the chips never
 /// cross view boundaries.
 ///
 /// Definitions:
@@ -52,14 +52,14 @@ pub struct FilterChipCounts {
 /// existing `.has-attention` class when any matching PR is outstanding in
 /// that view. Mirrors the four `DashboardView` variants.
 ///
-/// The Team view's count is account-scoped through the same join the
+/// The Tracked view's count is account-scoped through the same join the
 /// dashboard query uses: only PRs the active account has a relation row for
-/// contribute (because `needs_attention` is per-account). The Team view's
+/// contribute (because `needs_attention` is per-account). The Tracked view's
 /// repo-tracking flag still gates which PRs are eligible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SidebarAttentionCounts {
     pub authored: i64,
     pub assigned: i64,
     pub watching: i64,
-    pub team: i64,
+    pub tracked: i64,
 }

@@ -2,7 +2,7 @@
 //!
 //! Three commands cover the panel's needs:
 //! - [`list_repos_for_account`] — read every `repos` row for one account.
-//! - [`set_repo_team_tracked`] — flip the `is_team_tracked` opt-in for one repo.
+//! - [`set_repo_tracked`] — flip the `is_tracked` opt-in for one repo.
 //! - [`refresh_account_repos`] — call GitHub's `/user/repos` and upsert.
 //!
 //! Token material never crosses the command boundary; the refresh command goes
@@ -71,13 +71,13 @@ pub fn list_repos_for_account(
 }
 
 #[tauri::command]
-pub fn set_repo_team_tracked(
+pub fn set_repo_tracked(
     repo_id: i64,
     tracked: bool,
     db: State<'_, DbHandle>,
 ) -> Result<(), ReposCommandError> {
     let conn = db.lock().map_err(|_| ReposCommandError::Internal)?;
-    let affected = store::set_team_tracked(&conn, repo_id, tracked)
+    let affected = store::set_tracked(&conn, repo_id, tracked)
         .map_err(|e| internal(&format!("update repo: {e}")))?;
     if affected == 0 {
         return Err(ReposCommandError::RepoNotFound);

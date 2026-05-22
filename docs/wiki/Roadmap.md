@@ -5,7 +5,7 @@ PRism v1 is delivered across eight milestones. Each milestone is tracked in GitH
 | Milestone | Focus |
 |---|---|
 | [M1 — Foundations](https://github.com/cerinoligutom/PRism/milestone/1) | Tauri scaffold, PAT auth + keychain storage, SQLite schema, single-account GitHub sync (REST + GraphQL clients) |
-| [M2 — Core dashboard](https://github.com/cerinoligutom/PRism/milestone/2) | Four views (authored / reviewer / watching / team), grouping by org and repo, basic per-PR row (title, timing, reviewer state, CI summary) |
+| [M2 — Core dashboard](https://github.com/cerinoligutom/PRism/milestone/2) | Four views (authored / reviewer / watching / tracked), grouping by org and repo, basic per-PR row (title, timing, reviewer state, CI summary) |
 | [M3 — Conversation depth](https://github.com/cerinoligutom/PRism/milestone/3) | Per-thread state, comment-type breakdown, conversation stats (oldest unresolved, avg time-to-response, resolution rate), per-thread previews |
 | [M4 — Triage UX](https://github.com/cerinoligutom/PRism/milestone/4) | Sorting, quick-filter chips, search, unread/mention highlighting, "needs my attention" composite signal |
 | [M5 — Multi-account & GHE](https://github.com/cerinoligutom/PRism/milestone/5) | Multiple PATs, per-account host config, GHE compatibility testing |

@@ -23,7 +23,7 @@ const links: readonly NavLink[] = [
   { view: "authored", to: "/dashboard/authored", label: "Authored by me" },
   { view: "assigned", to: "/dashboard/assigned", label: "Assigned to me" },
   { view: "watching", to: "/dashboard/watching", label: "Watching" },
-  { view: "team", to: "/dashboard/team", label: "Team" },
+  { view: "tracked", to: "/dashboard/tracked", label: "Tracked" },
   { view: "archive", to: "/dashboard/archive", label: "Archive" },
 ];
 
@@ -31,7 +31,7 @@ interface SidebarAttentionCounts {
   readonly authored: number;
   readonly assigned: number;
   readonly watching: number;
-  readonly team: number;
+  readonly tracked: number;
 }
 
 interface SyncStatusEvent {
@@ -49,7 +49,7 @@ const attention = ref<SidebarAttentionCounts>({
   authored: 0,
   assigned: 0,
   watching: 0,
-  team: 0,
+  tracked: 0,
 });
 
 let statusUnlisten: UnlistenFn | null = null;
@@ -62,7 +62,7 @@ const hasAttention = computed<Partial<Record<DashboardView, boolean>>>(() => ({
   authored: attention.value.authored > 0,
   assigned: attention.value.assigned > 0,
   watching: attention.value.watching > 0,
-  team: attention.value.team > 0,
+  tracked: attention.value.tracked > 0,
 }));
 
 async function refreshAttention(): Promise<void> {
@@ -76,7 +76,7 @@ async function refreshAttention(): Promise<void> {
       ? accountsStore.accounts.map((a) => a.id)
       : [filter];
   if (ids.length === 0) {
-    attention.value = { authored: 0, assigned: 0, watching: 0, team: 0 };
+    attention.value = { authored: 0, assigned: 0, watching: 0, tracked: 0 };
     return;
   }
   try {
@@ -92,14 +92,14 @@ async function refreshAttention(): Promise<void> {
         authored: acc.authored + next.authored,
         assigned: acc.assigned + next.assigned,
         watching: acc.watching + next.watching,
-        team: acc.team + next.team,
+        tracked: acc.tracked + next.tracked,
       }),
-      { authored: 0, assigned: 0, watching: 0, team: 0 },
+      { authored: 0, assigned: 0, watching: 0, tracked: 0 },
     );
   } catch {
     // Counts are advisory - on failure the badge falls back to the unstyled
     // count chip without taking the panel down.
-    attention.value = { authored: 0, assigned: 0, watching: 0, team: 0 };
+    attention.value = { authored: 0, assigned: 0, watching: 0, tracked: 0 };
   }
 }
 
@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
           <template v-else-if="link.view === 'watching'">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8C3 4.5 5.5 3 8 3s5 1.5 6.5 5C13 11.5 10.5 13 8 13s-5-1.5-6.5-5z" /></svg>
           </template>
-          <template v-else-if="link.view === 'team'">
+          <template v-else-if="link.view === 'tracked'">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="6" r="2" /><circle cx="11" cy="6" r="2" /><path d="M1 14c.5-2 2-3 4-3s3.5 1 4 3M7 14c.5-2 2-3 4-3s3.5 1 4 3" /></svg>
           </template>
           <template v-else>

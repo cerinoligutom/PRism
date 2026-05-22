@@ -8,7 +8,7 @@ export interface RepoSummary {
   readonly owner: string;
   readonly name: string;
   readonly visibility: string;
-  readonly is_team_tracked: boolean;
+  readonly is_tracked: boolean;
 }
 
 type ReposCommandError =
@@ -102,7 +102,7 @@ export const useReposStore = defineStore("repos", () => {
     }
   }
 
-  async function setTeamTracked(repoId: number, tracked: boolean): Promise<void> {
+  async function setTracked(repoId: number, tracked: boolean): Promise<void> {
     lastError.value = null;
     // Optimistic update so the toggle feels instant; revert on failure.
     const previous = byAccount.value;
@@ -110,13 +110,13 @@ export const useReposStore = defineStore("repos", () => {
     for (const [accountIdStr, repos] of Object.entries(previous)) {
       const accountId = Number(accountIdStr);
       next[accountId] = repos.map((repo) =>
-        repo.id === repoId ? { ...repo, is_team_tracked: tracked } : repo,
+        repo.id === repoId ? { ...repo, is_tracked: tracked } : repo,
       );
     }
     byAccount.value = next;
 
     try {
-      await invoke<void>("set_repo_team_tracked", { repoId, tracked });
+      await invoke<void>("set_repo_tracked", { repoId, tracked });
     } catch (err) {
       // Roll the optimistic update back so the UI reflects truth.
       byAccount.value = previous;
@@ -139,7 +139,7 @@ export const useReposStore = defineStore("repos", () => {
     isRefreshing,
     load,
     refresh,
-    setTeamTracked,
+    setTracked,
     clearError,
   };
 });

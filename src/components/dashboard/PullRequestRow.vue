@@ -259,7 +259,7 @@ async function onCopyLink(): Promise<void> {
 
 /**
  * Whether the overflow menu can offer an archive action for this row. A
- * Team-view row in unified scope can surface without any relation rows
+ * Tracked-view row in unified scope can surface without any relation rows
  * (`account_ids === []`) - there's no `(account, PR)` pair to write to, so
  * the archive entry is suppressed. Both Archive and Unarchive paths share
  * this guard; the `isArchiveView` prop picks the wording / command.

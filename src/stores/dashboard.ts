@@ -18,7 +18,7 @@ export type DashboardView =
   | "authored"
   | "assigned"
   | "watching"
-  | "team"
+  | "tracked"
   | "archive";
 
 /**
@@ -93,8 +93,8 @@ export interface DashboardPullRequest {
   /**
    * Tracked accounts with a relation to this PR. Sorted ascending. Length 1
    * in the single-account-filter path; 1..N in the unified path; empty for
-   * Team-view PRs in the unified path that have no relation rows (the view
-   * filter is `repos.is_team_tracked`, not the relations table). The first
+   * Tracked-view PRs in the unified path that have no relation rows (the
+   * view filter is `repos.is_tracked`, not the relations table). The first
    * id is the representative account when consumers need one. See
    * ADR 0016 ("Dashboard row shape - option 1").
    */
@@ -130,7 +130,7 @@ interface DashboardViewCountsPayload {
   readonly authored: number;
   readonly assigned: number;
   readonly watching: number;
-  readonly team: number;
+  readonly tracked: number;
   readonly archive: number;
 }
 
@@ -152,7 +152,7 @@ const VIEW_LABELS: Record<DashboardView, string> = {
   authored: "Authored by me",
   assigned: "Assigned to me",
   watching: "Watching",
-  team: "Team",
+  tracked: "Tracked",
   archive: "Archive",
 };
 
@@ -225,7 +225,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     authored: 0,
     assigned: 0,
     watching: 0,
-    team: 0,
+    tracked: 0,
     archive: 0,
   });
   const loading = ref(false);
@@ -431,7 +431,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
         authored: counts.authored,
         assigned: counts.assigned,
         watching: counts.watching,
-        team: counts.team,
+        tracked: counts.tracked,
         archive: counts.archive,
       };
       pullRequests.value = activeRows;

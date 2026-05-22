@@ -22,6 +22,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0010_triage_state.sql"),
     include_str!("../../migrations/0011_review_url.sql"),
     include_str!("../../migrations/0012_archive_and_settings.sql"),
+    include_str!("../../migrations/0013_rename_team_tracked.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -369,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn is_team_tracked_defaults_to_zero() {
+    fn is_tracked_defaults_to_zero() {
         let conn = fresh();
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
@@ -379,11 +380,45 @@ mod tests {
         )
         .unwrap();
         let tracked: i64 = conn
-            .query_row("SELECT is_team_tracked FROM repos WHERE id = 10", [], |r| {
+            .query_row("SELECT is_tracked FROM repos WHERE id = 10", [], |r| {
                 r.get(0)
             })
             .unwrap();
         assert_eq!(tracked, 0);
+    }
+
+    /// Migration 0013 renames `is_team_tracked` to `is_tracked`. SQLite's
+    /// `ALTER TABLE ... RENAME COLUMN` is in-place, so any rows opted in
+    /// before the rename keep their flag under the new name.
+    #[test]
+    fn rename_team_tracked_to_tracked_preserves_row_data() {
+        // Replay the migrations up to but not including 0013, write a row
+        // with `is_team_tracked = 1`, then run the rename and read back
+        // through `is_tracked` to prove the bit survived.
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_rename = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(MIGRATION_SOURCES.len() - 1)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_rename.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked)
+                VALUES (10, 1, 'owner', 'repo', 'public', 1);",
+        )
+        .unwrap();
+        migrations().to_latest(&mut conn).unwrap();
+        let tracked: i64 = conn
+            .query_row("SELECT is_tracked FROM repos WHERE id = 10", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tracked, 1, "opt-in must survive the column rename");
     }
 
     #[test]

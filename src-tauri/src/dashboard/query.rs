@@ -7,20 +7,20 @@
 //!
 //! - Authored / Assigned / Watching read from `pull_request_viewer_relations`
 //!   gated by the matching flag column (each flag has a partial index).
-//! - Team reads `repos.is_team_tracked = 1` directly; the relations table is
-//!   not touched because the Team relationship is a repo property.
+//! - Tracked reads `repos.is_tracked = 1` directly; the relations table is
+//!   not touched because the Tracked relationship is a repo property.
 //!
 //! `account_id = None` returns the dedupe-and-merge union across every
 //! account (ADR 0016). The relation-backed views GROUP BY `pr.id` so a PR
 //! authored by account A and review-requested for account B surfaces as one
 //! row whose triage signals are merged (`unread = MAX`,
 //! `needs_attention = MAX`, `mentioned_count_unread = SUM`) and whose
-//! `account_ids` carries every relation owner. The Team view's union path
+//! `account_ids` carries every relation owner. The Tracked view's union path
 //! keeps the same GROUP BY but joins relations without an account scope so
-//! every relation row a PR has feeds the aggregations; PRs in team-tracked
-//! repos with no relation rows still surface (the Team filter is the repo's
-//! `is_team_tracked = 1`, not the relations table) with an empty
-//! `account_ids` and the default triage values.
+//! every relation row a PR has feeds the aggregations; PRs in tracked repos
+//! with no relation rows still surface (the Tracked filter is the repo's
+//! `is_tracked = 1`, not the relations table) with an empty `account_ids`
+//! and the default triage values.
 //!
 //! ## Threads rollup
 //!
@@ -38,8 +38,8 @@
 //! predicate. A failing account whose relation rows got pruned mid-cycle does
 //! not drop PRs another account also sees. The merge aggregates over zero or
 //! more relation rows per PR; an empty `account_ids` slot is the visible
-//! signal that a PR surfaced via the Team-view path (or that every relation
-//! row for the PR was pruned in the most recent cycle).
+//! signal that a PR surfaced via the Tracked-view path (or that every
+//! relation row for the PR was pruned in the most recent cycle).
 
 use std::collections::HashMap;
 
@@ -58,11 +58,11 @@ use crate::triage::types::ChipKey;
 ///
 /// The trailing `rel.*` projections (M4-C) read the active account's triage
 /// state. Relation-backed views (Authored / Assigned / Watching) already JOIN
-/// `pull_request_viewer_relations rel` so the columns flow directly. The Team
-/// view adds a LEFT JOIN on the same alias - scoped to the active account when
-/// one is provided, an inert `ON 0` join otherwise - so the SELECT keeps a
-/// stable shape across every view. See `docs/contracts/triage-ux.md`
-/// ("Read-state derivation") and ADR 0015.
+/// `pull_request_viewer_relations rel` so the columns flow directly. The
+/// Tracked view adds a LEFT JOIN on the same alias - scoped to the active
+/// account when one is provided, an inert `ON 0` join otherwise - so the
+/// SELECT keeps a stable shape across every view. See
+/// `docs/contracts/triage-ux.md` ("Read-state derivation") and ADR 0015.
 ///
 /// The `tb.*` projections come from the `thread_buckets` subquery that every
 /// view's FROM clause LEFT JOINs (ADR 0016). `COALESCE(tb.total, 0)` keeps the
@@ -178,7 +178,7 @@ enum QueryShape {
 ///
 /// `NeedsMe` references `rel.needs_attention`; the caller must ensure `rel`
 /// is in scope (either via the relation-view JOIN or via a LEFT JOIN against
-/// `pull_request_viewer_relations` in the Team view path).
+/// `pull_request_viewer_relations` in the Tracked view path).
 ///
 /// `QueryShape::Union` swaps the projection for the merged-aggregation one
 /// and appends `GROUP BY pr.id` before the chip clause. The chip predicates
@@ -203,7 +203,7 @@ fn build_sql(
         }
         DashboardSort::Stale => "ORDER BY pr.updated_at ASC, pr.id DESC",
         DashboardSort::NeedsMe => {
-            // `COALESCE` keeps the column NULL-safe for the Team view path,
+            // `COALESCE` keeps the column NULL-safe for the Tracked view path,
             // where the LEFT JOIN against `pull_request_viewer_relations`
             // misses when the active account has no relation row. The union
             // path's MAX over the relation rows is non-NULL when any row
@@ -346,7 +346,7 @@ fn view_query(
         DashboardView::Watching => {
             relation_view_query("is_involved", sort, account_id, active_chips)
         }
-        DashboardView::Team => team_view_query(sort, account_id, active_chips),
+        DashboardView::Tracked => tracked_view_query(sort, account_id, active_chips),
         DashboardView::Archive => archive_view_query(sort, account_id, active_chips),
     }
 }
@@ -472,15 +472,15 @@ fn relation_view_query(
     }
 }
 
-/// Team view: PRs in repos opted into team tracking. The relation row is read
+/// Tracked view: PRs in repos opted into Tracked. The relation row is read
 /// account-scoped via a LEFT JOIN so the triage projections (`unread`,
 /// `needs_attention`, `mentioned_count_unread`) reflect the active account.
 /// Without an account filter (the union case) the LEFT JOIN drops the
 /// per-account predicate so every relation row for the PR feeds the merge
-/// aggregations; PRs in team-tracked repos with no relation rows still
-/// surface (the view filter is `repos.is_team_tracked = 1`, not the
-/// relations table) with `account_ids = []` and the default triage values.
-fn team_view_query(
+/// aggregations; PRs in tracked repos with no relation rows still surface
+/// (the view filter is `repos.is_tracked = 1`, not the relations table)
+/// with `account_ids = []` and the default triage values.
+fn tracked_view_query(
     sort: DashboardSort,
     account_id: Option<i64>,
     active_chips: &[ChipKey],
@@ -489,14 +489,15 @@ fn team_view_query(
     let chip_clause = chip_where_clause(active_chips);
     match account_id {
         Some(id) => {
-            // ADR 0018, decision 5: Team view also hides archived rows. The
-            // relation join is a LEFT JOIN (PRs in team-tracked repos surface
+            // ADR 0018, decision 5: Tracked view also hides archived rows.
+            // The relation join is a LEFT JOIN (PRs in tracked repos surface
             // even without a relation row), so the archive predicate sits on
             // the ON clause - an archived relation row drops to NULL during
             // the join and the PR keeps surfacing with the default triage
-            // values (same shape as a Team-view PR the viewer has no relation
-            // to). The repo-flag filter remains the row-set predicate; archive
-            // is a per-account viewer signal layered on top.
+            // values (same shape as a Tracked-view PR the viewer has no
+            // relation to). The repo-flag filter remains the row-set
+            // predicate; archive is a per-account viewer signal layered on
+            // top.
             let from_and_where = format!(
                 "FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
@@ -507,7 +508,7 @@ fn team_view_query(
                      ON rel.pull_request_id = pr.id
                     AND rel.account_id = ?1
                     AND rel.archived_at IS NULL
-                  WHERE r.is_team_tracked = 1
+                  WHERE r.is_tracked = 1
                     AND r.account_id = ?1
                     AND pr.state = 'open'"
             );
@@ -523,11 +524,11 @@ fn team_view_query(
             )
         }
         None => {
-            // ADR 0018 unified-scope Team view: hide a PR iff it has at least
-            // one relation AND every relation is archived. A team-tracked PR
-            // with no relations stays visible (the team filter is repo-based;
-            // there is nothing to archive). A PR with mixed archive states
-            // stays visible via the unarchived relation.
+            // ADR 0018 unified-scope Tracked view: hide a PR iff it has at
+            // least one relation AND every relation is archived. A tracked PR
+            // with no relations stays visible (the Tracked filter is
+            // repo-based; there is nothing to archive). A PR with mixed
+            // archive states stays visible via the unarchived relation.
             //
             // The LEFT JOIN filters relations to the unarchived subset so the
             // GROUP BY's `account_ids` only carries surviving relation owners.
@@ -542,7 +543,7 @@ fn team_view_query(
                      ON rel.pull_request_id = pr.id
                     AND rel.archived_at IS NULL
                  {thread_buckets}
-                  WHERE r.is_team_tracked = 1
+                  WHERE r.is_tracked = 1
                     AND pr.state = 'open'
                     AND (NOT EXISTS (
                             SELECT 1 FROM pull_request_viewer_relations rel_any
@@ -565,7 +566,7 @@ fn team_view_query(
 /// Archive view: PRs the viewer has archived (ADR 0018). Inverts the
 /// archive predicate from the four default views - the FROM/WHERE keys on
 /// `rel.archived_at IS NOT NULL`. Ignores `is_authored` / `is_review_requested`
-/// / `is_involved` / `repos.is_team_tracked`; archive is global across every
+/// / `is_involved` / `repos.is_tracked`; archive is global across every
 /// relation a viewer holds.
 ///
 /// Default sort: `archived_at DESC`, most-recently-archived first. The Archive
@@ -695,7 +696,7 @@ pub fn list_pull_requests(
 }
 
 /// Count-friendly FROM + WHERE for the named view + account scope. Mirrors the
-/// view predicates [`relation_view_query`], [`team_view_query`], and
+/// view predicates [`relation_view_query`], [`tracked_view_query`], and
 /// [`archive_view_query`] use, stripped of the projection-only joins
 /// (`repos`, `accounts`, `users`, `thread_buckets`) so the planner only walks
 /// what the COUNT(*) needs.
@@ -714,7 +715,7 @@ fn view_row_scope_sql(view: DashboardView, account_id: Option<i64>) -> (String, 
         DashboardView::Authored => relation_view_row_scope("is_authored", account_id),
         DashboardView::Assigned => relation_view_row_scope("is_review_requested", account_id),
         DashboardView::Watching => relation_view_row_scope("is_involved", account_id),
-        DashboardView::Team => team_view_row_scope(account_id),
+        DashboardView::Tracked => tracked_view_row_scope(account_id),
         DashboardView::Archive => archive_view_row_scope(account_id),
     }
 }
@@ -760,15 +761,15 @@ fn relation_view_row_scope(flag_column: &str, account_id: Option<i64>) -> (Strin
     }
 }
 
-/// Row-scope FROM + WHERE for the Team view. Single-account scopes by
+/// Row-scope FROM + WHERE for the Tracked view. Single-account scopes by
 /// `repos.account_id`; the union path drops a PR iff every relation owner has
-/// archived it (mirroring [`team_view_query`]).
-fn team_view_row_scope(account_id: Option<i64>) -> (String, Vec<i64>) {
+/// archived it (mirroring [`tracked_view_query`]).
+fn tracked_view_row_scope(account_id: Option<i64>) -> (String, Vec<i64>) {
     match account_id {
         Some(id) => (
             "FROM pull_requests pr
              JOIN repos r ON r.id = pr.repo_id
-             WHERE r.is_team_tracked = 1
+             WHERE r.is_tracked = 1
                AND r.account_id = ?1
                AND pr.state = 'open'"
                 .to_string(),
@@ -777,7 +778,7 @@ fn team_view_row_scope(account_id: Option<i64>) -> (String, Vec<i64>) {
         None => (
             "FROM pull_requests pr
              JOIN repos r ON r.id = pr.repo_id
-             WHERE r.is_team_tracked = 1
+             WHERE r.is_tracked = 1
                AND pr.state = 'open'
                AND (NOT EXISTS (
                        SELECT 1 FROM pull_request_viewer_relations rel_any
@@ -835,14 +836,14 @@ pub fn list_view_counts(
     let (authored, params) = view_row_scope_sql(DashboardView::Authored, account_id);
     let (assigned, _) = view_row_scope_sql(DashboardView::Assigned, account_id);
     let (watching, _) = view_row_scope_sql(DashboardView::Watching, account_id);
-    let (team, _) = view_row_scope_sql(DashboardView::Team, account_id);
+    let (tracked, _) = view_row_scope_sql(DashboardView::Tracked, account_id);
     let (archive, _) = view_row_scope_sql(DashboardView::Archive, account_id);
     let sql = format!(
         "SELECT
             (SELECT COUNT(*) {authored}) AS authored,
             (SELECT COUNT(*) {assigned}) AS assigned,
             (SELECT COUNT(*) {watching}) AS watching,
-            (SELECT COUNT(*) {team})     AS team,
+            (SELECT COUNT(*) {tracked})  AS tracked,
             (SELECT COUNT(*) {archive})  AS archive"
     );
     conn.query_row(&sql, params_from_iter(params.iter()), |row| {
@@ -850,7 +851,7 @@ pub fn list_view_counts(
             authored: row.get(0)?,
             assigned: row.get(1)?,
             watching: row.get(2)?,
-            team: row.get(3)?,
+            tracked: row.get(3)?,
             archive: row.get(4)?,
         })
     })
@@ -899,15 +900,15 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     // - single-account path: `CAST(a.id AS TEXT)` -> exactly one id, e.g. "1".
     // - union path: `GROUP_CONCAT(DISTINCT rel.account_id ORDER BY ...)` ->
     //   a sorted, comma-joined list. Empty when no relation row was joined
-    //   (Team-view PR with no relations).
+    //   (Tracked-view PR with no relations).
     let account_ids_csv: String = row.get(28)?;
     let account_ids = parse_account_ids_csv(&account_ids_csv);
     let account_host: String = row.get(29)?;
 
     // M4-C: triage projections from `pull_request_viewer_relations rel`.
     // `unread` is computed in SQL via CASE; COALESCE handles missing relation
-    // rows (Team-view union case) by defaulting to false / 0. See ADR 0015
-    // ("Read-state storage") and `docs/contracts/triage-ux.md`
+    // rows (Tracked-view union case) by defaulting to false / 0. See
+    // ADR 0015 ("Read-state storage") and `docs/contracts/triage-ux.md`
     // ("Read-state derivation").
     //
     // In the unified path the column carries `MAX(...)` / `SUM(...)` over
@@ -961,7 +962,7 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
 }
 
 /// Parse the comma-separated `account_ids` projection into a sorted vector.
-/// Empty input -> empty vector (Team-view PR with no relations).
+/// Empty input -> empty vector (Tracked-view PR with no relations).
 /// Non-numeric tokens are dropped silently; the projection only ever emits
 /// integer ids so a parse failure indicates a SQL composition bug rather than
 /// a runtime data shape we should propagate. The list is already sorted in
@@ -1263,79 +1264,79 @@ mod tests {
     }
 
     #[test]
-    fn team_query_uses_repo_team_flag() {
-        let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1), &[]);
+    fn tracked_query_uses_repo_tracked_flag() {
+        let (sql, _) = view_query(DashboardView::Tracked, DashboardSort::Updated, Some(1), &[]);
         assert!(
-            sql.contains("r.is_team_tracked = 1"),
-            "team query missing repo flag; SQL: {sql}"
+            sql.contains("r.is_tracked = 1"),
+            "tracked query missing repo flag; SQL: {sql}"
         );
     }
 
-    /// M4-C: Team view LEFT JOINs the relations table so the triage projections
-    /// (`unread`, `needs_attention`, `mentioned_count_unread`) reflect the
-    /// active account. With no account scope the join short-circuits via
-    /// `ON 0` so the COALESCE defaults trip.
+    /// M4-C: Tracked view LEFT JOINs the relations table so the triage
+    /// projections (`unread`, `needs_attention`, `mentioned_count_unread`)
+    /// reflect the active account. With no account scope the join
+    /// short-circuits via `ON 0` so the COALESCE defaults trip.
     #[test]
-    fn team_query_left_joins_relations_when_account_scoped() {
-        let (sql, _) = view_query(DashboardView::Team, DashboardSort::Updated, Some(1), &[]);
+    fn tracked_query_left_joins_relations_when_account_scoped() {
+        let (sql, _) = view_query(DashboardView::Tracked, DashboardSort::Updated, Some(1), &[]);
         assert!(
             sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
-            "team query must LEFT JOIN relations when account-scoped; SQL: {sql}"
+            "tracked query must LEFT JOIN relations when account-scoped; SQL: {sql}"
         );
         assert!(
             sql.contains("rel.account_id = ?1"),
-            "team query relation join must filter on account; SQL: {sql}"
+            "tracked query relation join must filter on account; SQL: {sql}"
         );
     }
 
     #[test]
-    fn team_query_union_left_joins_relations_without_account_predicate() {
+    fn tracked_query_union_left_joins_relations_without_account_predicate() {
         // ADR 0016: the union path keeps the LEFT JOIN to feed the merge
         // aggregations, but drops the `rel.account_id = ?1` predicate so every
-        // relation row for the PR contributes. PRs in team-tracked repos
-        // without any relation rows still surface (view filter is on
-        // `repos.is_team_tracked = 1`); the merge aggregates over zero
-        // relation rows and defaults the triage columns via COALESCE.
-        let (sql, params) = view_query(DashboardView::Team, DashboardSort::Updated, None, &[]);
+        // relation row for the PR contributes. PRs in tracked repos without
+        // any relation rows still surface (view filter is on
+        // `repos.is_tracked = 1`); the merge aggregates over zero relation
+        // rows and defaults the triage columns via COALESCE.
+        let (sql, params) = view_query(DashboardView::Tracked, DashboardSort::Updated, None, &[]);
         assert!(params.is_empty());
         assert!(
             sql.contains("LEFT JOIN pull_request_viewer_relations rel\n                     ON rel.pull_request_id = pr.id"),
-            "team union path must LEFT JOIN relations without an account filter; SQL: {sql}"
+            "tracked union path must LEFT JOIN relations without an account filter; SQL: {sql}"
         );
         assert!(
             !sql.contains("LEFT JOIN pull_request_viewer_relations rel ON 0"),
-            "team union path must not short-circuit the relation join; SQL: {sql}"
+            "tracked union path must not short-circuit the relation join; SQL: {sql}"
         );
         assert!(
             sql.contains("GROUP BY pr.id"),
-            "team union path must dedupe via GROUP BY pr.id; SQL: {sql}"
+            "tracked union path must dedupe via GROUP BY pr.id; SQL: {sql}"
         );
     }
 
     #[test]
-    fn team_query_left_joins_relations_for_needs_me_sort() {
-        let (sql, _) = view_query(DashboardView::Team, DashboardSort::NeedsMe, Some(1), &[]);
+    fn tracked_query_left_joins_relations_for_needs_me_sort() {
+        let (sql, _) = view_query(DashboardView::Tracked, DashboardSort::NeedsMe, Some(1), &[]);
         assert!(
             sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
-            "team query missing LEFT JOIN for NeedsMe sort; SQL: {sql}"
+            "tracked query missing LEFT JOIN for NeedsMe sort; SQL: {sql}"
         );
         assert!(
             sql.contains("rel.account_id = ?1"),
-            "team query missing account scope on the LEFT JOIN; SQL: {sql}"
+            "tracked query missing account scope on the LEFT JOIN; SQL: {sql}"
         );
     }
 
     #[test]
-    fn team_query_left_joins_relations_for_needs_attention_chip() {
+    fn tracked_query_left_joins_relations_for_needs_attention_chip() {
         let (sql, _) = view_query(
-            DashboardView::Team,
+            DashboardView::Tracked,
             DashboardSort::Updated,
             Some(1),
             &[ChipKey::NeedsAttention],
         );
         assert!(
             sql.contains("LEFT JOIN pull_request_viewer_relations rel"),
-            "team query missing LEFT JOIN for needs-attention chip; SQL: {sql}"
+            "tracked query missing LEFT JOIN for needs-attention chip; SQL: {sql}"
         );
     }
 
@@ -1507,12 +1508,13 @@ mod tests {
         );
     }
 
-    /// Team view's account-scoped path uses `?1` twice for the relation join.
-    /// The threads rollup reuses the same parameter so the bound vector stays
-    /// length-1.
+    /// Tracked view's account-scoped path uses `?1` twice for the relation
+    /// join. The threads rollup reuses the same parameter so the bound vector
+    /// stays length-1.
     #[test]
-    fn team_query_account_scoped_threads_rollup_reuses_account_parameter() {
-        let (sql, params) = view_query(DashboardView::Team, DashboardSort::Updated, Some(3), &[]);
+    fn tracked_query_account_scoped_threads_rollup_reuses_account_parameter() {
+        let (sql, params) =
+            view_query(DashboardView::Tracked, DashboardSort::Updated, Some(3), &[]);
         assert_eq!(params, vec![3], "single bound i64 even though ?1 reappears");
         assert!(
             sql.contains("a.id = ?1"),
