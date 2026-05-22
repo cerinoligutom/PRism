@@ -2,6 +2,8 @@
 //! swapped for an in-memory mock in tests without touching the OS keychain.
 
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 use secrecy::SecretString;
 use thiserror::Error;
@@ -9,6 +11,39 @@ use thiserror::Error;
 use crate::auth::store::AccountId;
 
 const SERVICE: &str = "com.cerinoligutom.prism";
+
+/// Number of attempts for keychain reads that hit transient `PlatformFailure`.
+///
+/// On macOS the first read after a fresh code signature races the "Allow
+/// keychain access?" prompt. The user typically clicks within a second; three
+/// attempts at 500ms apart gives them that window without giving up.
+const RETRY_ATTEMPTS: usize = 3;
+const RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Run `fetch` up to `attempts` times, retrying only on
+/// [`keyring::Error::PlatformFailure`] (the macOS prompt race). Other variants
+/// return immediately so we don't paper over genuine failures.
+fn retry_on_platform_failure<T>(
+    attempts: usize,
+    delay: Duration,
+    mut fetch: impl FnMut() -> Result<T, keyring::Error>,
+) -> Result<T, keyring::Error> {
+    debug_assert!(attempts >= 1);
+    let mut last = None;
+    for attempt in 0..attempts {
+        match fetch() {
+            Ok(v) => return Ok(v),
+            Err(keyring::Error::PlatformFailure(e)) => {
+                last = Some(keyring::Error::PlatformFailure(e));
+                if attempt + 1 < attempts {
+                    thread::sleep(delay);
+                }
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    Err(last.expect("retry loop ran at least once"))
+}
 
 #[derive(Debug, Error)]
 pub enum KeychainError {
@@ -51,7 +86,9 @@ impl Default for OsKeychain {
 impl KeychainBackend for OsKeychain {
     fn get(&self, account: &AccountId) -> Result<Option<SecretString>, KeychainError> {
         let entry = Self::entry(account)?;
-        match entry.get_password() {
+        let result =
+            retry_on_platform_failure(RETRY_ATTEMPTS, RETRY_DELAY, || entry.get_password());
+        match result {
             Ok(token) => Ok(Some(SecretString::from(token))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(KeychainError::Other(e.to_string())),
@@ -147,5 +184,59 @@ mod tests {
     fn mock_delete_missing_is_a_no_op() {
         let kc = MockKeychain::new();
         kc.delete(&99).expect("delete should be idempotent");
+    }
+
+    fn platform_failure() -> keyring::Error {
+        keyring::Error::PlatformFailure(Box::new(std::io::Error::other("simulated prompt race")))
+    }
+
+    #[test]
+    fn retry_succeeds_on_third_attempt_after_two_platform_failures() {
+        let mut calls = 0;
+        let result = retry_on_platform_failure(3, Duration::from_millis(1), || {
+            calls += 1;
+            if calls < 3 {
+                Err(platform_failure())
+            } else {
+                Ok("ghp_ok".to_string())
+            }
+        });
+        assert_eq!(result.expect("third attempt should succeed"), "ghp_ok");
+        assert_eq!(calls, 3, "should have made exactly three attempts");
+    }
+
+    #[test]
+    fn retry_returns_platform_failure_after_exhausting_attempts() {
+        let mut calls = 0;
+        let result = retry_on_platform_failure::<String>(3, Duration::from_millis(1), || {
+            calls += 1;
+            Err(platform_failure())
+        });
+        assert!(matches!(result, Err(keyring::Error::PlatformFailure(_))));
+        assert_eq!(calls, 3, "should have exhausted all attempts");
+    }
+
+    #[test]
+    fn retry_does_not_retry_no_entry() {
+        let mut calls = 0;
+        let result = retry_on_platform_failure::<String>(3, Duration::from_millis(1), || {
+            calls += 1;
+            Err(keyring::Error::NoEntry)
+        });
+        assert!(matches!(result, Err(keyring::Error::NoEntry)));
+        assert_eq!(calls, 1, "NoEntry should not be retried");
+    }
+
+    #[test]
+    fn retry_does_not_retry_no_storage_access() {
+        let mut calls = 0;
+        let result = retry_on_platform_failure::<String>(3, Duration::from_millis(1), || {
+            calls += 1;
+            Err(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("denied"),
+            )))
+        });
+        assert!(matches!(result, Err(keyring::Error::NoStorageAccess(_))));
+        assert_eq!(calls, 1, "NoStorageAccess should not be retried");
     }
 }
