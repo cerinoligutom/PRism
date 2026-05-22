@@ -1,7 +1,17 @@
 name: CI
 
 # Runs on every PR targeting main and on every push to main. The wiki-sync
-# workflow handles docs/wiki/ → wiki repo mirroring separately.
+# workflow handles docs/wiki/ -> wiki repo mirroring separately.
+#
+# Cross-platform matrix:
+# - `rust-check` fans out across ubuntu-latest, macos-latest, and windows-latest
+#   so platform-specific regressions (Windows path handling, macOS keychain /
+#   notification surfaces, Linux libsecret) are caught before merge. `fail-fast:
+#   false` keeps the cross-platform signal intact when a single runner trips.
+# - `rust-lint`, `frontend`, `secrets-scan`, and `pr-title` stay on ubuntu-latest
+#   because they have no platform-specific behaviour and one runner is enough.
+# - The libwebkit2gtk / libayatana-appindicator / librsvg apt install step is
+#   gated on `runner.os == 'Linux'` so the macOS and Windows runners skip it.
 
 on:
   pull_request:
@@ -137,8 +147,15 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   rust-check:
-    name: Rust — check + test
-    runs-on: ubuntu-latest
+    name: Rust — check + test (${{ matrix.os }})
+    strategy:
+      # Keep the cross-platform signal intact even when one runner trips on a
+      # transient infra issue — the whole point of the matrix is parallel
+      # platform coverage, not lockstep success.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -146,6 +163,9 @@ jobs:
         # Only the bits that aren't on the ubuntu-latest runner image already.
         # libssl-dev / pkg-config / build-essential are preinstalled.
         # libsoup-3.0 and libgtk-3 come in transitively via libwebkit2gtk-4.1-dev.
+        # macOS and Windows runners ship the equivalent system frameworks, so
+        # skip the apt step there.
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -160,7 +180,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          shared-key: ci-rust-check
+          # Per-OS cache key — sharing one key across runners would thrash the
+          # cache (different target triples) and slow every leg down.
+          shared-key: ci-rust-check-${{ matrix.os }}
 
       - name: Cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
