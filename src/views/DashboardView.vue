@@ -13,6 +13,7 @@ import DashboardSearch from "@/components/dashboard/DashboardSearch.vue";
 import FilteredEmptyState from "@/components/dashboard/FilteredEmptyState.vue";
 import AccountPicker from "@/components/dashboard/AccountPicker.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
@@ -172,6 +173,41 @@ function onMarkUnread(pr: DashboardPullRequest): void {
   // relation row for the PR. Both surfaces converge on a single round-trip
   // that matches the merged row's read semantics.
   void dashboard.markPullRequestUnread(pr.id, null);
+}
+
+function onArchive(pr: DashboardPullRequest): void {
+  // ADR 0018 + ADR 0016: the Tauri command takes one (account, PR) per call,
+  // so the store fans out across the row's `account_ids`. In default views
+  // those are the unarchived relation owners; archiving them is the action.
+  void dashboard.archive(pr.id, pr.account_ids);
+}
+
+function onUnarchive(pr: DashboardPullRequest): void {
+  // Archive-view row: `account_ids` holds the archived relation owners; the
+  // unarchive write clears `archived_at` for each one.
+  void dashboard.unarchive(pr.id, pr.account_ids);
+}
+
+/**
+ * True when the current route surfaces the Archive view. Issue #197 lands
+ * the route + sidebar entry; this PR keeps the row wiring backward-safe by
+ * reading from the route meta directly so the union doesn't need to change
+ * ahead of #197. The Tauri-side `DashboardView::Archive` variant already
+ * accepts the wire value.
+ */
+const isArchiveView = computed<boolean>(
+  () => route.meta?.dashboardView === "archive",
+);
+
+/**
+ * Resolve a failed-fan-out account id to a display label. Falls back to the
+ * id when the account is no longer in the lookup (e.g. removed between the
+ * write and the failure handler).
+ */
+function archiveErrorAccountLabel(id: number): string {
+  const marker = accountMarkersById.value.get(id);
+  if (marker === undefined) return `account #${id}`;
+  return marker.label || marker.login;
 }
 
 function onAccountScopeUpdate(value: number | null): void {
@@ -379,19 +415,43 @@ watch(() => route.meta?.dashboardView, () => {
           :failing="bucket.failingCount"
           :latest-updated-at="bucket.latestUpdatedAt"
         />
-        <PullRequestRow
-          v-for="pr in bucket.items"
-          :key="`${pr.account_ids.join('-')}:${pr.id}`"
-          :pull-request="pr"
-          :density="dashboard.density"
-          :unread="pr.unread"
-          :needs-attention="pr.needs_attention"
-          :accounts-by-id="accountMarkersById"
-          :single-account-scope="isSingleAccountScope"
-          @open="openPullRequest"
-          @mark-unread="onMarkUnread"
-        />
+        <TransitionGroup name="dashboard-row" tag="div" class="dashboard__rows">
+          <PullRequestRow
+            v-for="pr in bucket.items"
+            :key="`${pr.account_ids.join('-')}:${pr.id}`"
+            :pull-request="pr"
+            :density="dashboard.density"
+            :unread="pr.unread"
+            :needs-attention="pr.needs_attention"
+            :accounts-by-id="accountMarkersById"
+            :single-account-scope="isSingleAccountScope"
+            :is-archive-view="isArchiveView"
+            @open="openPullRequest"
+            @mark-unread="onMarkUnread"
+            @archive="onArchive"
+            @unarchive="onUnarchive"
+          />
+        </TransitionGroup>
       </section>
+    </div>
+
+    <div
+      v-if="dashboard.archiveError !== null && dashboard.archiveError.length > 0"
+      class="dashboard__archive-error"
+    >
+      <PRismCallout variant="danger">
+        <strong>Archive failed for {{ dashboard.archiveError.length === 1 ? "one account" : `${dashboard.archiveError.length} accounts` }}.</strong>
+        <span class="dashboard__archive-error-accounts">
+          {{ dashboard.archiveError.map((f: { accountId: number }) => archiveErrorAccountLabel(f.accountId)).join(", ") }}
+        </span>
+        <button
+          type="button"
+          class="dashboard__archive-error-dismiss"
+          @click="dashboard.dismissArchiveError()"
+        >
+          Dismiss
+        </button>
+      </PRismCallout>
     </div>
 
     <PullRequestDrawer
@@ -480,6 +540,36 @@ watch(() => route.meta?.dashboardView, () => {
   color: var(--danger);
 }
 
+.dashboard__archive-error {
+  padding: var(--s-3) var(--s-6) var(--s-3);
+  border-top: 1px solid var(--border-1);
+}
+
+.dashboard__archive-error-accounts {
+  margin-left: 6px;
+  color: var(--text-mute);
+}
+
+.dashboard__archive-error-dismiss {
+  background: transparent;
+  border: 0;
+  padding: 0 0 0 var(--s-3);
+  color: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.dashboard__archive-error-dismiss:hover {
+  color: var(--text-strong);
+}
+
+.dashboard__archive-error-dismiss:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .dashboard__list {
   flex: 1;
   overflow-y: auto;
@@ -488,6 +578,25 @@ watch(() => route.meta?.dashboardView, () => {
 
 .dashboard__group {
   margin-top: var(--s-2);
+}
+
+.dashboard__rows {
+  display: contents;
+}
+
+/* Optimistic archive flip: fade + collapse the row out of the list while the
+ * fan-out completes. The leave-active class drives the animation; the leave-to
+ * class is the final state. `dashboard__rows` uses `display: contents` so the
+ * wrapping div doesn't break the row's grid alignment with the bucket header. */
+.dashboard-row-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.dashboard-row-leave-to {
+  opacity: 0;
+  transform: translateX(8px);
 }
 
 .dashboard__empty {
