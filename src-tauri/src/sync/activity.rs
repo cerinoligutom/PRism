@@ -64,6 +64,17 @@ pub enum ActivityKind {
         name: String,
         url: String,
     },
+    /// One PR's detail fetch was skipped because the discovery-phase
+    /// `pull_requests.updated_at` matched the previous-cycle marker, so
+    /// nothing upstream has moved (issue #232). The timeline call still runs
+    /// (REST conditional, ~1% cost on 304); only the GraphQL PR-detail round
+    /// trip is elided.
+    PrSkippedNoChange {
+        number: i64,
+        owner: String,
+        name: String,
+        url: String,
+    },
     /// A phase ended cleanly.
     ///
     /// `cache_skips` reports how many GraphQL responses the phase short-circuited

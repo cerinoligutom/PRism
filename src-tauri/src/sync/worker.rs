@@ -1024,6 +1024,33 @@ fn emit_activity_pr_fetched(
     );
 }
 
+fn emit_activity_pr_skipped_no_change(
+    ctx: &WorkerContext,
+    account: &Account,
+    owner: &str,
+    name: &str,
+    number: i64,
+    url: &str,
+) {
+    let message = format!("Skipped {owner}/{name}#{number} (no change)");
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Info,
+            Some(account.id),
+            ActivityKind::PrSkippedNoChange {
+                number,
+                owner: owner.to_string(),
+                name: name.to_string(),
+                url: url.to_string(),
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
 fn emit_activity_phase_completed(
     ctx: &WorkerContext,
     account: &Account,
@@ -1307,10 +1334,11 @@ async fn sync_repo(
     let mut visited = 0usize;
     for pr in &prs {
         visited += 1;
-        // Per-PR sub-budget gate: skip the PR if either of the buckets the
-        // next two calls will hit is already below the guard. Returning a
-        // tagged RateLimited carries the resource hint up to the cycle's
-        // error handler so the status bar's message names the right bucket.
+        // Per-PR sub-budget gate (issue #235): skip the PR if either of the
+        // buckets the next two calls will hit is already below the guard.
+        // Returning a tagged `RateLimited` carries the resource hint up to
+        // the cycle's error handler so the status bar's message names the
+        // right bucket.
         let snapshot = client.rate().snapshot();
         let graphql_snap = snapshot.for_bucket(RateResource::Graphql);
         if under_guard(graphql_snap, RATE_BUDGET_GUARD_PCT) {
@@ -1327,33 +1355,69 @@ async fn sync_repo(
             });
         }
 
-        // PR detail (GraphQL) — primary surface per ADR 0006.
-        // Wrapped in `timeout` so a hung upstream call doesn't stall the loop.
-        let (detail, detail_body) = timeout(
-            Duration::from_secs(30),
-            client.pr_detail_with_raw(crate::github::graphql::PrCoord {
-                owner: &repo.owner,
-                name: &repo.name,
-                number: pr.number,
-            }),
-        )
-        .await
-        .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
-        .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
+        // Pre-flight skip (issue #232): if discovery just wrote a
+        // `pull_requests.updated_at` that matches the previous-cycle marker
+        // for this PR, skip the GraphQL PR-detail round trip entirely. The
+        // GraphQL endpoint doesn't honour `If-None-Match`, so this is how we
+        // recover the "nothing changed" saving REST already gets from ETag
+        // 304s. Timeline still runs (REST-conditional, ADR 0004) so the
+        // latest-status-change derivation stays current.
+        let pr_detail_marker = pr_detail_marker_key(pr.id);
+        let skip_detail = client
+            .graphql_cache_entry(&pr_detail_marker)
+            .and_then(|entry| entry.body_sha256)
+            .is_some_and(|stored| {
+                stored == crate::github::client::sha256(&pr_detail_marker_bytes(pr.updated_at))
+            });
 
-        // Body-hash cache (ADR 0004, issue #234): when the detail response is
-        // byte-identical to last cycle, the detail-driven DB writes can be
-        // elided (the prior cycle's values are still authoritative). Timeline
-        // sits on its own REST ETag and still runs - the latest-status-change
-        // derivation must pick up new timeline events even when the GraphQL
-        // detail is unchanged.
-        let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
-        let detail_cache_hit = client.graphql_body_unchanged(&detail_cache_key, &detail_body);
-        let detail_for_write = if detail_cache_hit {
+        let (detail, detail_body) = if skip_detail {
             *detail_cache_skips = detail_cache_skips.saturating_add(1);
+            (None, bytes::Bytes::new())
+        } else {
+            // PR detail (GraphQL) — primary surface per ADR 0006.
+            // Wrapped in `timeout` so a hung upstream call doesn't stall the loop.
+            let (fetched, body) = timeout(
+                Duration::from_secs(30),
+                client.pr_detail_with_raw(crate::github::graphql::PrCoord {
+                    owner: &repo.owner,
+                    name: &repo.name,
+                    number: pr.number,
+                }),
+            )
+            .await
+            .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
+            .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
+            // Stamp the issue #232 marker so the next cycle's pre-flight
+            // comparison sees the freshly-persisted `updated_at`. Falling back
+            // to `pr.updated_at` keeps the marker aligned when GraphQL returns
+            // a thin payload (no `updatedAt` field).
+            let marker_for_next_cycle = fetched
+                .as_ref()
+                .and_then(|d| rfc3339_to_unix(&d.updated_at))
+                .unwrap_or(pr.updated_at);
+            client.cache_graphql_body(
+                &pr_detail_marker,
+                &pr_detail_marker_bytes(marker_for_next_cycle),
+            );
+            (fetched, body)
+        };
+
+        // Post-flight body-hash cache (ADR 0004, issue #234): only relevant
+        // when we actually made the call. On a byte-identical detail body,
+        // skip the detail-driven DB writes (the prior cycle's values are
+        // still authoritative). Timeline still runs (REST ETag) so the
+        // latest-status-change derivation picks up new events.
+        let detail_for_write = if skip_detail {
             None
         } else {
-            detail.as_ref()
+            let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
+            let detail_cache_hit = client.graphql_body_unchanged(&detail_cache_key, &detail_body);
+            if detail_cache_hit {
+                *detail_cache_skips = detail_cache_skips.saturating_add(1);
+                None
+            } else {
+                detail.as_ref()
+            }
         };
 
         // Timeline (REST) — feeds the latest-status-change derivation (ADR 0007).
@@ -1378,7 +1442,10 @@ async fn sync_repo(
             ListTimeline::NotModified => None,
         };
 
-        // Persist whatever new data we have.
+        // Persist whatever new data we have. When the pre-flight skip
+        // (#232) or the post-flight body-hash check (#234) elided detail,
+        // `detail_for_write` is `None` and `write_pr_updates` only touches
+        // the timeline-derived columns and timeline events.
         let triggers = write_pr_updates(
             &ctx.db,
             account.id,
@@ -1397,9 +1464,10 @@ async fn sync_repo(
         // formatter miss or sink failure is logged inside the helper.
         dispatch_triggers(&ctx.db, &ctx.notify_sink, &triggers);
 
-        // Activity feed: emit the per-PR detail event, then a phase progress
-        // tick. Detail's URL is the canonical deep-link target; fall back to
-        // the GitHub web URL if the GraphQL payload was thin (None branch).
+        // Activity feed: emit per-PR detail or skip event, then a phase
+        // progress tick. Detail's URL is the canonical deep-link target;
+        // fall back to the GitHub web URL when GraphQL was skipped or the
+        // payload was thin.
         *enriched_so_far = enriched_so_far.saturating_add(1);
         let pr_url = detail.as_ref().map(|d| d.url.clone()).unwrap_or_else(|| {
             format!(
@@ -1407,7 +1475,18 @@ async fn sync_repo(
                 repo.owner, repo.name, pr.number
             )
         });
-        emit_activity_pr_fetched(ctx, account, &repo.owner, &repo.name, pr.number, &pr_url);
+        if skip_detail {
+            emit_activity_pr_skipped_no_change(
+                ctx,
+                account,
+                &repo.owner,
+                &repo.name,
+                pr.number,
+                &pr_url,
+            );
+        } else {
+            emit_activity_pr_fetched(ctx, account, &repo.owner, &repo.name, pr.number, &pr_url);
+        }
         emit_activity_phase_progress(
             ctx,
             account,
@@ -1417,6 +1496,19 @@ async fn sync_repo(
         );
     }
     Ok(visited)
+}
+
+/// Cache key for the previous-cycle `updated_at` marker, scoped per PR. The
+/// helper hides the format so callers don't grow string-formatting copies.
+fn pr_detail_marker_key(pr_id: i64) -> String {
+    format!("pr-detail:{pr_id}")
+}
+
+/// Canonical bytes for the previous-cycle marker. Big-endian gives a stable
+/// representation across hosts; we hash these bytes to compare against the
+/// `body_sha256` slot the GraphQL cache stores.
+fn pr_detail_marker_bytes(updated_at: i64) -> [u8; 8] {
+    updated_at.to_be_bytes()
 }
 
 #[derive(Debug)]
@@ -1430,6 +1522,12 @@ pub struct RepoRow {
 pub struct PrRow {
     pub id: i64,
     pub number: i64,
+    /// Mirror of `pull_requests.updated_at` (unix seconds) at the moment the
+    /// enrichment loop reads the row. Compared against the previous-cycle
+    /// `pr-detail:{pr_id}` marker (stored via `client.cache_graphql_body`) to
+    /// skip the GraphQL PR-detail round trip when nothing upstream has moved
+    /// (issue #232).
+    pub updated_at: i64,
 }
 
 pub fn list_repos_for_account(
@@ -1453,12 +1551,14 @@ pub fn list_repos_for_account(
 
 pub fn list_prs_for_repo(db: &DbHandle, repo_id: i64) -> Result<Vec<PrRow>, rusqlite::Error> {
     let conn = crate::db::lock_db(db)?;
-    let mut stmt = conn.prepare("SELECT id, number FROM pull_requests WHERE repo_id = ?1")?;
+    let mut stmt =
+        conn.prepare("SELECT id, number, updated_at FROM pull_requests WHERE repo_id = ?1")?;
     let rows = stmt
         .query_map(params![repo_id], |row| {
             Ok(PrRow {
                 id: row.get(0)?,
                 number: row.get(1)?,
+                updated_at: row.get(2)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

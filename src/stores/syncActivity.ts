@@ -44,6 +44,13 @@ export type ActivityKind =
       readonly url: string;
     }
   | {
+      readonly kind: "pr_skipped_no_change";
+      readonly number: number;
+      readonly owner: string;
+      readonly name: string;
+      readonly url: string;
+    }
+  | {
       readonly kind: "phase_completed";
       readonly phase: SyncPhaseLabel;
       readonly summary: string;
@@ -117,6 +124,8 @@ export function phaseLabelFor(event: ActivityEvent, login: string | null): strin
       return null;
     case "pr_fetched":
       return `Fetching detail (#${event.number})...`;
+    case "pr_skipped_no_change":
+      return `Skipping #${event.number} (no change)...`;
     case "phase_completed":
     case "cycle_completed":
     case "cycle_failed":
@@ -138,6 +147,7 @@ export function isActiveCycleEvent(event: ActivityEvent): boolean {
     case "phase_started":
     case "phase_progress":
     case "pr_fetched":
+    case "pr_skipped_no_change":
     case "phase_completed":
       return true;
     case "cycle_completed":
