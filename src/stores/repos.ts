@@ -56,6 +56,21 @@ export const useReposStore = defineStore("repos", () => {
   const isLoadingAny = computed(() => loadingAccountIds.value.size > 0);
   const isRefreshingAny = computed(() => refreshingAccountIds.value.size > 0);
 
+  /**
+   * Total tracked repos across every account whose list has been loaded.
+   * Reflects the in-memory store, so callers must ensure `load(accountId)`
+   * has been invoked for each account they care about before reading it.
+   */
+  const totalTrackedCount = computed<number>(() => {
+    let count = 0;
+    for (const repos of Object.values(byAccount.value)) {
+      for (const repo of repos) {
+        if (repo.is_tracked) count += 1;
+      }
+    }
+    return count;
+  });
+
   function getRepos(accountId: number): readonly RepoSummary[] {
     return byAccount.value[accountId] ?? [];
   }
@@ -134,6 +149,7 @@ export const useReposStore = defineStore("repos", () => {
     lastError,
     isLoadingAny,
     isRefreshingAny,
+    totalTrackedCount,
     getRepos,
     isLoading,
     isRefreshing,

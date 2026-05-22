@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 interface Props {
   /** Plain label rendered when `org` is null (e.g. when grouping by `none`). */
@@ -108,10 +109,12 @@ function onKeydown(event: KeyboardEvent): void {
         <span class="dot" aria-hidden="true"></span>
         {{ failing }} failing
       </span>
-      <span class="group-header__metric">
-        <span aria-hidden="true">↑</span>
-        <PRismRelativeTime :value="latestUpdatedAt" />
-      </span>
+      <PRismTooltip text="Latest activity in this group" :as-child="true">
+        <span class="group-header__metric">
+          <span>active</span>
+          <PRismRelativeTime :value="latestUpdatedAt" />
+        </span>
+      </PRismTooltip>
     </span>
   </div>
 </template>
