@@ -64,6 +64,7 @@ You need Node 24+ LTS, pnpm 11+, and Rust stable. Tauri's [Prerequisites guide](
 - Conventions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Architectural decisions: [docs/adr/](docs/adr/)
 - Long-form docs and runbooks: [wiki](https://github.com/cerinoligutom/PRism/wiki)
+- Release gate: [Platform QA checklist](https://github.com/cerinoligutom/PRism/wiki/Platform-QA)
 
 All work follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/); see [CONTRIBUTING.md](CONTRIBUTING.md) for the type/scope conventions used here.
 
