@@ -7,6 +7,7 @@ import {
   type ActivityLevel,
 } from "@/stores/syncActivity";
 import { useAccountsStore } from "@/stores/accounts";
+import { useSyncStore, type AccountSyncState, type SyncPhase } from "@/stores/sync";
 import { formatDuration } from "@/lib/format";
 
 /**
@@ -32,6 +33,7 @@ const emit = defineEmits<{
 
 const activity = useSyncActivityStore();
 const accounts = useAccountsStore();
+const sync = useSyncStore();
 
 const containerRef = ref<HTMLDivElement | null>(null);
 
@@ -43,6 +45,103 @@ const levelFilter = ref<Record<ActivityLevel, boolean>>({
 });
 
 const visibleAccounts = computed(() => accounts.accounts);
+
+interface AccountStatusRow {
+  readonly id: number;
+  readonly label: string;
+  readonly phase: SyncPhase;
+  readonly phaseClass: string;
+  readonly phaseLabel: string;
+  readonly detail: string | null;
+}
+
+/**
+ * Per-account current state, surfaced at the top of the panel so a user
+ * with a failing account can identify which one without filtering. Sorted
+ * by severity so failing accounts appear first.
+ */
+const accountStatusRows = computed<AccountStatusRow[]>(() => {
+  if (visibleAccounts.value.length <= 1) return [];
+  const stateById = new Map<number, AccountSyncState>();
+  for (const state of sync.accounts) stateById.set(state.account_id, state);
+  const rows = visibleAccounts.value.map((account): AccountStatusRow => {
+    const state = stateById.get(account.id) ?? null;
+    const phase: SyncPhase = state?.phase ?? "idle";
+    return {
+      id: account.id,
+      label: account.label || account.login,
+      phase,
+      phaseClass: phaseDotClass(phase),
+      phaseLabel: phaseDisplayLabel(phase),
+      detail: detailFor(state),
+    };
+  });
+  rows.sort((a, b) => phaseSeverity(b.phase) - phaseSeverity(a.phase));
+  return rows;
+});
+
+function phaseSeverity(phase: SyncPhase): number {
+  switch (phase) {
+    case "error":
+      return 5;
+    case "unauthorized":
+      return 4;
+    case "rate_limited":
+      return 3;
+    case "syncing":
+      return 2;
+    case "synced":
+      return 1;
+    case "idle":
+    default:
+      return 0;
+  }
+}
+
+function phaseDotClass(phase: SyncPhase): string {
+  switch (phase) {
+    case "error":
+      return "account-status__dot account-status__dot--danger";
+    case "unauthorized":
+    case "rate_limited":
+      return "account-status__dot account-status__dot--warning";
+    case "syncing":
+      return "account-status__dot account-status__dot--info account-status__dot--pulse";
+    case "synced":
+      return "account-status__dot account-status__dot--success";
+    case "idle":
+    default:
+      return "account-status__dot";
+  }
+}
+
+function phaseDisplayLabel(phase: SyncPhase): string {
+  switch (phase) {
+    case "error":
+      return "Failed";
+    case "unauthorized":
+      return "Reauth";
+    case "rate_limited":
+      return "Throttled";
+    case "syncing":
+      return "Syncing";
+    case "synced":
+      return "Synced";
+    case "idle":
+    default:
+      return "Idle";
+  }
+}
+
+function detailFor(state: AccountSyncState | null): string | null {
+  if (state === null) return null;
+  if (state.message !== null && state.message !== "") return state.message;
+  if (state.last_synced_at === null) return null;
+  const synced = Date.parse(state.last_synced_at);
+  if (Number.isNaN(synced)) return null;
+  const secs = Math.max(0, Math.floor((Date.now() - synced) / 1000));
+  return `${formatDuration(secs)} ago`;
+}
 
 const filtered = computed<ActivityEvent[]>(() => {
   return activity.events.filter((evt) => {
@@ -198,6 +297,23 @@ function rowClass(event: ActivityEvent): string[] {
         ×
       </button>
     </header>
+    <ul
+      v-if="accountStatusRows.length > 0"
+      class="account-status"
+      role="list"
+      aria-label="Per-account sync state"
+    >
+      <li
+        v-for="row in accountStatusRows"
+        :key="row.id"
+        class="account-status__row"
+      >
+        <span :class="row.phaseClass" :aria-label="row.phaseLabel" />
+        <span class="account-status__label">{{ row.label }}</span>
+        <span class="account-status__phase">{{ row.phaseLabel }}</span>
+        <span v-if="row.detail !== null" class="account-status__detail">{{ row.detail }}</span>
+      </li>
+    </ul>
     <div class="activity-panel__filters">
       <label v-if="visibleAccounts.length > 1" class="activity-panel__field">
         <span class="activity-panel__field-label">Account</span>
@@ -446,5 +562,84 @@ function rowClass(event: ActivityEvent): string[] {
 .activity-row__deeplink:hover {
   color: var(--text-strong);
   background: var(--bg-2);
+}
+
+.account-status {
+  list-style: none;
+  margin: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.account-status__row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-11);
+  color: var(--text);
+}
+
+.account-status__label {
+  font-weight: 500;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-status__phase {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.account-status__detail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.account-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-disabled);
+  flex: 0 0 8px;
+}
+
+.account-status__dot--success {
+  background: var(--success);
+}
+
+.account-status__dot--info {
+  background: var(--info);
+}
+
+.account-status__dot--warning {
+  background: var(--warning);
+}
+
+.account-status__dot--danger {
+  background: var(--danger);
+}
+
+.account-status__dot--pulse {
+  animation: account-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes account-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 </style>
