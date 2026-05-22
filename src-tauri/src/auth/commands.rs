@@ -86,6 +86,18 @@ pub enum AuthCommandError {
         expected_login: String,
         actual_login: String,
     },
+    /// `add_account` refused the PAT because the resolved `(host, login)`
+    /// already maps to a connected account. The `accounts` table's
+    /// `UNIQUE (host, login)` constraint backs this: login uniqueness per
+    /// host is intentional (ADR 0005, ADR 0016). Carries the existing label
+    /// so the renderer can name the account the user is colliding with.
+    /// None of the three fields are secrets.
+    #[error("an account for {login} on {host} is already connected ({existing_label}).")]
+    DuplicateAccount {
+        existing_label: String,
+        login: String,
+        host: String,
+    },
     #[error("an unexpected error occurred. Try again, or check the application logs.")]
     Internal,
 }
@@ -174,6 +186,18 @@ pub async fn add_account(
     let host = normalise_host(&input.host);
     let secret = SecretString::from(input.token);
     let validated = validate_token(&host, &secret).await?;
+
+    // Catch the `UNIQUE (host, login)` collision early so the error surface
+    // is specific (named existing account) rather than a generic "something
+    // went wrong". Pre-check avoids interpreting rusqlite's extended error
+    // codes and keeps the keychain entirely untouched on the rejection.
+    if let Some(existing) = find_duplicate(state.store.as_ref(), &host, &validated.login)? {
+        return Err(AuthCommandError::DuplicateAccount {
+            existing_label: existing.label,
+            login: validated.login,
+            host,
+        });
+    }
 
     let id = state
         .store
@@ -348,6 +372,22 @@ fn find_account(state: &AuthState, account_id: AccountId) -> Result<Account, Aut
         .into_iter()
         .find(|a| a.id == account_id)
         .ok_or(AuthCommandError::NotFound)
+}
+
+/// Returns the existing account row that already owns `(host, login)`, if
+/// any. Lifted out of `add_account` so the test path can exercise the lookup
+/// without standing up the full Tauri command. Host comparison is
+/// case-insensitive on the stored side via `normalise_host`; login matches
+/// verbatim because GitHub logins are case-normalised by the server.
+fn find_duplicate(
+    store: &dyn AccountStore,
+    host: &str,
+    login: &str,
+) -> Result<Option<Account>, AuthCommandError> {
+    let accounts = store.list().map_err(|_| AuthCommandError::Internal)?;
+    Ok(accounts
+        .into_iter()
+        .find(|a| a.host == host && a.login == login))
 }
 
 #[derive(Debug, Deserialize)]
@@ -678,5 +718,48 @@ mod tests {
         // documents the contract.
         let listener = NoopAccountListener;
         listener.on_token_updated(42);
+    }
+
+    // ────── add_account: duplicate (host, login) detection ──────
+
+    #[test]
+    fn find_duplicate_returns_none_on_empty_store() {
+        let store = fresh_store();
+        let got = find_duplicate(store.as_ref(), "github.com", "ada").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn find_duplicate_returns_existing_account_on_match() {
+        // The connected (github.com, ada) account collides with a new PAT
+        // resolved to the same identity. The renderer needs the existing
+        // label to name the colliding account.
+        let store = fresh_store();
+        let _seeded = seed(store.as_ref(), 1, "ada");
+        let got = find_duplicate(store.as_ref(), "github.com", "ada")
+            .unwrap()
+            .expect("expected duplicate");
+        assert_eq!(got.id, 1);
+        assert_eq!(got.label, "Test");
+    }
+
+    #[test]
+    fn find_duplicate_does_not_match_different_host() {
+        // Same login on a different host is a distinct identity. The
+        // schema's UNIQUE (host, login) constraint permits this.
+        let store = fresh_store();
+        seed(store.as_ref(), 1, "ada");
+
+        let got = find_duplicate(store.as_ref(), "github.acme.corp", "ada").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn find_duplicate_does_not_match_different_login() {
+        let store = fresh_store();
+        seed(store.as_ref(), 1, "ada");
+
+        let got = find_duplicate(store.as_ref(), "github.com", "grace").unwrap();
+        assert!(got.is_none());
     }
 }
