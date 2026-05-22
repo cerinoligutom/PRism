@@ -39,11 +39,8 @@ import PRismTooltip from "@/components/ui/PRismTooltip.vue";
           </span>
           Appearance
         </RouterLink>
-        <PRismTooltip text="Lands in M5" :as-child="true">
-          <span class="nav-item nav-item--disabled" aria-disabled="true">Notifications</span>
-        </PRismTooltip>
         <PRismTooltip text="Lands in M6" :as-child="true">
-          <span class="nav-item nav-item--disabled" aria-disabled="true">Views &amp; layout</span>
+          <span class="nav-item nav-item--disabled" aria-disabled="true">Notifications</span>
         </PRismTooltip>
       </nav>
     </aside>
