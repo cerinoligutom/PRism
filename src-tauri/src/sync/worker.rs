@@ -631,6 +631,7 @@ pub async fn run_one_cycle(
         // the sweep here would leave a single-account-no-repos viewer with
         // stale archive coverage.
         run_auto_archive_sweep(&ctx.db);
+        run_archive_retention_sweep(&ctx.db);
         ctx.badge.refresh();
         let finished_at = SystemTime::now();
         finish_completed(ctx, account, client, finished_at);
@@ -729,10 +730,17 @@ pub async fn run_one_cycle(
     // completes; the next cycle retries.
     run_auto_archive_sweep(&ctx.db);
 
-    // Dock badge refresh (ADR 0017 decision 3). Sits after the sweep so the
-    // count reflects both the per-account fan-out and the archive flip in a
-    // single update. The non-macOS sink is a no-op; the macOS sink writes
-    // the global `needs_attention` count to the main window.
+    // Hard-delete PRs whose every viewer relation has been archived for
+    // more than 60 days, plus everything that cascades from them. Bounds
+    // DB growth without affecting recently-archived rows or open PRs.
+    // Best-effort; a failure logs and continues.
+    run_archive_retention_sweep(&ctx.db);
+
+    // Dock badge refresh (ADR 0017 decision 3). Sits after both sweeps so
+    // the count reflects the per-account fan-out, the archive flip, and
+    // any retention-driven deletes in a single update. The non-macOS sink
+    // is a no-op; the macOS sink writes the global unread count to the
+    // main window.
     ctx.badge.refresh();
 
     let finished_at = SystemTime::now();
@@ -778,6 +786,43 @@ fn run_auto_archive_sweep(db: &DbHandle) {
         return;
     }
     eprintln!("auto-archive sweep complete: archived={archived}");
+}
+
+/// Wrap [`crate::triage::query::archive_retention_sweep`] in a transaction and
+/// log the affected row count. Hard-deletes PRs whose every viewer relation
+/// has been archived for more than 60 days; the FK cascade drops review
+/// threads, comments, timeline events, and the relations themselves. A
+/// failure inside the sweep is logged and swallowed - the sweep is
+/// best-effort housekeeping and the next cycle retries.
+fn run_archive_retention_sweep(db: &DbHandle) {
+    let mut conn = match db.lock() {
+        Ok(g) => g,
+        Err(err) => {
+            eprintln!("archive retention sweep: db poisoned: {err}");
+            return;
+        }
+    };
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            eprintln!("archive retention sweep: begin tx: {err}");
+            return;
+        }
+    };
+    let deleted = match crate::triage::query::archive_retention_sweep(&tx) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("archive retention sweep: delete: {err}");
+            return;
+        }
+    };
+    if let Err(err) = tx.commit() {
+        eprintln!("archive retention sweep: commit: {err}");
+        return;
+    }
+    if deleted > 0 {
+        eprintln!("archive retention sweep complete: deleted={deleted}");
+    }
 }
 
 fn count_prs_across_repos(db: &DbHandle, repos: &[RepoRow]) -> u32 {

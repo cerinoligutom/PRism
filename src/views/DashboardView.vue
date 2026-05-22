@@ -17,6 +17,7 @@ import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
+import { useSyncStore } from "@/stores/sync";
 import {
   useDashboardStore,
   type DashboardGroup,
@@ -32,8 +33,20 @@ const router = useRouter();
 const dashboard = useDashboardStore();
 const accounts = useAccountsStore();
 const appearance = useAppearanceStore();
+const sync = useSyncStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
+
+/**
+ * Single "is something fetching right now" flag for the dashboard's
+ * interactive controls. Includes both the per-route dashboard list
+ * hydration (`dashboard.loading`) and the global sync worker cycle
+ * (`sync.aggregate === 'syncing'`) so manual Refresh, filter chips, and
+ * the status-bar keyboard hint all reflect the same state.
+ */
+const isFetching = computed(
+  () => dashboard.loading || sync.aggregate === "syncing",
+);
 
 /**
  * Shared lookup from account id to a render-ready marker. Computed once at
@@ -292,7 +305,7 @@ watch(() => route.meta?.dashboardView, () => {
           <button
             type="button"
             class="btn btn-icon"
-            :disabled="dashboard.loading"
+            :disabled="isFetching"
             @click="refresh"
           >
             <svg
@@ -324,6 +337,7 @@ watch(() => route.meta?.dashboardView, () => {
           v-if="!isArchive"
           :counts="dashboard.chipCounts"
           :active="(dashboard.activeChips as ReadonlySet<ChipKey>)"
+          :disabled="isFetching"
           @toggle="onToggleChip"
           @clear="onClearChips"
         />

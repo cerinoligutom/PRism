@@ -398,6 +398,11 @@ fn relation_view_query(
             // has archived. The INNER JOIN keys on the (account, PR) relation
             // row, so a `rel.archived_at IS NOT NULL` row drops directly from
             // the WHERE.
+            // Post-M6: closed/merged PRs are filtered from default views
+            // (`pr.state = 'open'`). The auto-archive sweep routes them to the
+            // Archive view immediately on state change, so this predicate +
+            // the sweep together make default views an "active work" surface
+            // without a stale-data window.
             let from_and_where = format!(
                 "FROM pull_request_viewer_relations rel
                  JOIN pull_requests pr ON pr.id = rel.pull_request_id
@@ -407,7 +412,8 @@ fn relation_view_query(
                  {thread_buckets}
                  WHERE rel.{flag_column} = 1
                    AND rel.account_id = ?1
-                   AND rel.archived_at IS NULL"
+                   AND rel.archived_at IS NULL
+                   AND pr.state = 'open'"
             );
             (
                 build_sql(
@@ -450,7 +456,8 @@ fn relation_view_query(
                    ON rel.pull_request_id = pr.id
                    AND rel.archived_at IS NULL
                  {thread_buckets}
-                 WHERE EXISTS (
+                 WHERE pr.state = 'open'
+                   AND EXISTS (
                     SELECT 1 FROM pull_request_viewer_relations rel_filter
                      WHERE rel_filter.pull_request_id = pr.id
                        AND rel_filter.{flag_column} = 1
@@ -501,7 +508,8 @@ fn team_view_query(
                     AND rel.account_id = ?1
                     AND rel.archived_at IS NULL
                   WHERE r.is_team_tracked = 1
-                    AND r.account_id = ?1"
+                    AND r.account_id = ?1
+                    AND pr.state = 'open'"
             );
             (
                 build_sql(
@@ -535,6 +543,7 @@ fn team_view_query(
                     AND rel.archived_at IS NULL
                  {thread_buckets}
                   WHERE r.is_team_tracked = 1
+                    AND pr.state = 'open'
                     AND (NOT EXISTS (
                             SELECT 1 FROM pull_request_viewer_relations rel_any
                              WHERE rel_any.pull_request_id = pr.id

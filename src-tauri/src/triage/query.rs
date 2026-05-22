@@ -138,19 +138,22 @@ pub fn mark_unarchived(
 
 /// Run the auto-archive sweep once. Sets `archived_at = now` on every
 /// `pull_request_viewer_relations` row whose underlying PR is closed or
-/// merged and has been inactive for 30+ days. Idempotent: the `archived_at
-/// IS NULL` predicate skips already-archived rows so re-runs produce the
-/// same result as the first run.
+/// merged. Idempotent: the `archived_at IS NULL` predicate skips
+/// already-archived rows so re-runs produce the same result as the first
+/// run.
 ///
-/// Account-agnostic by design (ADR 0018, decision 2): the predicate depends
-/// only on `pull_requests.state` and `pull_requests.updated_at`, so the
-/// sweep writes across every relation owner in one statement instead of
+/// Account-agnostic by design (ADR 0018, decision 2 - revised post-M6):
+/// the predicate depends only on `pull_requests.state`, so the sweep
+/// writes across every relation owner in one statement instead of
 /// fanning per-account. Returns the number of rows archived this call.
 ///
-/// The 30-day window measures `pull_requests.updated_at` (inactivity), not
-/// the state-transition timestamp. A PR closed yesterday whose last
-/// activity is 5 days old still waits the full 30 from that 5-day mark -
-/// matching the roadmap's "inactivity TTL" framing.
+/// The original 30-day inactivity TTL was dropped during M6 smoke
+/// feedback: closed/merged PRs are now hidden from default views by a
+/// `pr.state = 'open'` predicate in [`crate::dashboard::query`], so
+/// leaving them around in default views during the 30-day inactivity
+/// window served no UX purpose. Immediate archive routes them straight
+/// to the Archive view, and [`archive_retention_sweep`] hard-deletes
+/// them 60 days later.
 pub fn auto_archive_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
     conn.execute(
         "UPDATE pull_request_viewer_relations
@@ -159,8 +162,49 @@ pub fn auto_archive_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
             AND pull_request_id IN (
                 SELECT id FROM pull_requests
                  WHERE state IN ('closed', 'merged')
-                   AND updated_at < strftime('%s','now','-30 days')
             )",
+        [],
+    )
+}
+
+/// Hard-delete PRs whose every viewer relation has been archived for more
+/// than 60 days, plus everything that cascades from them (review_threads,
+/// review_comments, issue_comments, timeline_events, reviews,
+/// requested_reviewers, pull_request_viewer_relations). Bounds local DB
+/// growth so long-running PRism installs don't accumulate years of merged
+/// PRs.
+///
+/// Eligibility predicate (per the post-M6 smoke feedback):
+///
+/// 1. The PR has at least one viewer relation row (Team-view PRs with no
+///    relations are someone-else's territory; the retention sweep stays
+///    out of that lane).
+/// 2. Every relation row has `archived_at IS NOT NULL`.
+/// 3. Every relation row's `archived_at` is older than 60 days.
+///
+/// Returns the number of `pull_requests` rows deleted. Cascade-deleted
+/// rows in related tables are not counted (SQLite's cascade is silent).
+///
+/// Runs in its own transaction one cycle after the auto-archive sweep
+/// inside [`crate::sync::worker`]. A failure aborts the transaction but
+/// doesn't propagate up - the cleanup is a best-effort housekeeping pass.
+pub fn archive_retention_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM pull_requests
+          WHERE id IN (
+              SELECT pr.id
+                FROM pull_requests pr
+               WHERE EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel
+                        WHERE rel.pull_request_id = pr.id
+                     )
+                 AND NOT EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel
+                        WHERE rel.pull_request_id = pr.id
+                          AND (rel.archived_at IS NULL
+                               OR rel.archived_at >= strftime('%s','now','-60 days'))
+                     )
+          )",
         [],
     )
 }
@@ -1567,9 +1611,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_archive_sweep_archives_closed_pr_inactive_past_30_days() {
+    fn auto_archive_sweep_archives_closed_pr_immediately() {
+        // Post-M6: the 30-day inactivity gate was dropped. Closed PRs are
+        // archived on the next sweep regardless of `updated_at`.
         let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "closed", 31);
+        seed_pr_for_archive(&conn, 100, "closed", 1);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, last_seen_at)
@@ -1584,9 +1630,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_archive_sweep_archives_merged_pr_inactive_past_30_days() {
+    fn auto_archive_sweep_archives_merged_pr_immediately() {
         let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "merged", 60);
+        seed_pr_for_archive(&conn, 100, "merged", 1);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, last_seen_at)
@@ -1598,23 +1644,6 @@ mod tests {
         let archived = auto_archive_sweep(&conn).unwrap();
         assert_eq!(archived, 1);
         assert!(read_archived_at(&conn, 1, 100).is_some());
-    }
-
-    #[test]
-    fn auto_archive_sweep_skips_closed_pr_inactive_under_30_days() {
-        let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "closed", 29);
-        conn.execute(
-            "INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
-                VALUES (1, 100, 0)",
-            [],
-        )
-        .unwrap();
-
-        let archived = auto_archive_sweep(&conn).unwrap();
-        assert_eq!(archived, 0);
-        assert_eq!(read_archived_at(&conn, 1, 100), None);
     }
 
     #[test]
@@ -1816,5 +1845,140 @@ mod tests {
         assert_eq!(counts.ci_failing, 0);
         assert_eq!(counts.stale, 0);
         assert_eq!(counts.drafts, 0);
+    }
+
+    // ===== archive_retention_sweep (60-day hard delete) =====
+
+    /// Seed an account + repo + PR + a single viewer relation with the
+    /// requested `archived_at` offset (days into the past, or `None` for
+    /// unarchived). Returns once the row is committed so the sweep can read
+    /// against the freshly-seeded state.
+    fn seed_pr_with_archive_age(conn: &Connection, pr_id: i64, archived_days_ago: Option<i64>) {
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT OR IGNORE INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');",
+        )
+        .unwrap();
+        let archived_sql = match archived_days_ago {
+            Some(days) => format!("strftime('%s','now','-{days} days')"),
+            None => "NULL".to_string(),
+        };
+        conn.execute_batch(&format!(
+            "INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES ({pr_id}, 10, {pr_id}, 't', 'merged', 0, 'bob',
+                        0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, last_seen_at, archived_at)
+                VALUES (1, {pr_id}, 0, {archived_sql});"
+        ))
+        .unwrap();
+    }
+
+    fn pr_exists(conn: &Connection, pr_id: i64) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_requests WHERE id = ?1",
+                params![pr_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count == 1
+    }
+
+    #[test]
+    fn archive_retention_sweep_returns_zero_on_empty_db() {
+        let conn = fresh_db();
+        assert_eq!(archive_retention_sweep(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn archive_retention_sweep_deletes_pr_archived_past_60_days() {
+        let conn = fresh_db();
+        seed_pr_with_archive_age(&conn, 100, Some(61));
+        let deleted = archive_retention_sweep(&conn).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(!pr_exists(&conn, 100), "PR row removed");
+        let rel_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations WHERE pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rel_count, 0, "FK cascade dropped the relation row");
+    }
+
+    #[test]
+    fn archive_retention_sweep_skips_pr_archived_under_60_days() {
+        let conn = fresh_db();
+        seed_pr_with_archive_age(&conn, 100, Some(59));
+        let deleted = archive_retention_sweep(&conn).unwrap();
+        assert_eq!(deleted, 0);
+        assert!(pr_exists(&conn, 100), "PR row retained");
+    }
+
+    #[test]
+    fn archive_retention_sweep_skips_pr_with_unarchived_relation() {
+        // A PR archived from one account but still active for another stays
+        // alive - the cleanup waits until every relation has aged past the
+        // 60-day mark.
+        let conn = fresh_db();
+        seed_pr_with_archive_age(&conn, 100, Some(90));
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'b', 'github.com', 'bob', 0);
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, last_seen_at, archived_at)
+                VALUES (2, 100, 0, NULL);",
+        )
+        .unwrap();
+        let deleted = archive_retention_sweep(&conn).unwrap();
+        assert_eq!(deleted, 0);
+        assert!(pr_exists(&conn, 100));
+    }
+
+    #[test]
+    fn archive_retention_sweep_skips_pr_with_recently_archived_relation() {
+        // Two relations, one archived 90 days ago, one archived 30 days ago.
+        // The 30-day relation is too fresh; the sweep waits for it.
+        let conn = fresh_db();
+        seed_pr_with_archive_age(&conn, 100, Some(90));
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'b', 'github.com', 'bob', 0);
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, last_seen_at, archived_at)
+                VALUES (2, 100, 0, strftime('%s','now','-30 days'));",
+        )
+        .unwrap();
+        let deleted = archive_retention_sweep(&conn).unwrap();
+        assert_eq!(deleted, 0);
+        assert!(pr_exists(&conn, 100));
+    }
+
+    #[test]
+    fn archive_retention_sweep_skips_pr_with_no_relations() {
+        // Team-view-only PRs (no viewer relations) are out of scope. The
+        // user never engaged with them; archive retention doesn't apply.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT OR IGNORE INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'merged', 0, 'bob',
+                        0, 0, 'main', 'feat');",
+        )
+        .unwrap();
+        let deleted = archive_retention_sweep(&conn).unwrap();
+        assert_eq!(deleted, 0);
+        assert!(pr_exists(&conn, 100));
     }
 }

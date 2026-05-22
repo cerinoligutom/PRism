@@ -9,9 +9,13 @@ interface Props {
   counts: FilterChipCounts | null;
   /** Set of currently active chip keys. Multi-select; composes as AND. */
   active: ReadonlySet<ChipKey>;
+  /** Disable chip interaction while the dashboard / sync worker is fetching.
+   * Active chips stay visible so the user can see the current filter, but
+   * clicks are blocked to prevent toggling against stale counts. */
+  disabled?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { disabled: false });
 
 const emit = defineEmits<{
   /** Toggle a single chip; the parent owns the Set. */
@@ -89,6 +93,7 @@ defineExpose({
         type="button"
         :class="['chip', { active: isActive(chip.key) }]"
         :aria-pressed="isActive(chip.key)"
+        :disabled="disabled"
         @click="onToggle(chip.key)"
       >
         <span>{{ chip.label }}</span>

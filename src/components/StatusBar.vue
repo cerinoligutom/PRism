@@ -177,7 +177,10 @@ const refreshGlyph = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"
     <span class="status-bar__spacer" />
     <!-- Cmd+K Search and Cmd+, Settings hints land with their M7 bindings. -->
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span> -->
-    <span class="status-bar__item status-bar__item--hint"><kbd>{{ refreshGlyph }}</kbd><kbd>R</kbd> Refresh</span>
+    <span
+      class="status-bar__item status-bar__item--hint"
+      :class="{ 'status-bar__item--hint-disabled': summary.phase === 'syncing' }"
+    ><kbd>{{ refreshGlyph }}</kbd><kbd>R</kbd> Refresh</span>
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span> -->
 
     <Teleport to="body">
@@ -235,6 +238,13 @@ const refreshGlyph = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"
 .status-bar kbd {
   font-size: var(--fs-9);
   padding: 0 4px;
+}
+
+/* Faded look while a sync cycle is in flight - the keyboard shortcut's own
+ * handler no-ops to prevent stampedes (see `useKeyboardShortcuts`), so the
+ * visual disabled state keeps the hint honest. */
+.status-bar__item--hint-disabled {
+  opacity: 0.4;
 }
 
 /* Keyboard hints drop off first when the window is narrower than Tailwind's

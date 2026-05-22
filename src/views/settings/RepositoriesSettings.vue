@@ -2,6 +2,7 @@
 import { computed, onMounted, watch } from "vue";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
+import PRismSwitch from "@/components/ui/PRismSwitch.vue";
 import { useAccountsStore, type Account } from "@/stores/accounts";
 import { useReposStore, type RepoSummary } from "@/stores/repos";
 
@@ -159,20 +160,16 @@ watch(
             </span>
             <span class="repo-row__visibility badge">{{ repo.visibility }}</span>
           </div>
-          <button
-            type="button"
-            class="toggle"
-            :class="{ 'toggle--on': repo.is_team_tracked }"
-            role="switch"
-            :aria-checked="repo.is_team_tracked"
-            :aria-label="`Toggle Team-tracked for ${repo.owner}/${repo.name}`"
-            @click="toggleTeamTracked(repo)"
-          >
-            <span class="toggle__thumb" aria-hidden="true" />
-            <span class="toggle__label">
+          <div class="repo-row__switch">
+            <span class="repo-row__switch-label">
               {{ repo.is_team_tracked ? "Team-tracked" : "Not tracked" }}
             </span>
-          </button>
+            <PRismSwitch
+              :model-value="repo.is_team_tracked"
+              :aria-label="`Toggle Team-tracked for ${repo.owner}/${repo.name}`"
+              @update:model-value="toggleTeamTracked(repo)"
+            />
+          </div>
         </li>
       </ul>
     </section>
@@ -370,53 +367,17 @@ watch(
   text-transform: lowercase;
 }
 
-/* ────── toggle BEM block ────── */
-.toggle {
+/* ────── repo-row__switch BEM element ────── */
+.repo-row__switch {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px 4px 4px;
-  background: transparent;
-  border: 1px solid var(--border-2);
-  border-radius: var(--r-pill);
-  color: var(--text-mute);
-  font-size: var(--fs-11);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  gap: var(--s-3);
 }
 
-.toggle:hover {
-  border-color: var(--border-3);
-  color: var(--text);
-}
-
-.toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-.toggle--on {
-  background: var(--accent-bg);
-  border-color: transparent;
-  color: var(--accent-strong);
-}
-
-.toggle__thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--bg-4);
-  display: inline-block;
-  transition: background 0.12s;
-}
-
-.toggle--on .toggle__thumb {
-  background: var(--accent);
-}
-
-.toggle__label {
+.repo-row__switch-label {
   font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
   letter-spacing: 0.3px;
 }
 </style>
