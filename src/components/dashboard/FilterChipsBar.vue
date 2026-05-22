@@ -87,6 +87,7 @@ defineExpose({
       v-for="chip in chips"
       :key="chip.key"
       :text="tooltipText[chip.key]"
+      side="bottom"
       :as-child="true"
     >
       <button
