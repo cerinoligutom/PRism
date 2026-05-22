@@ -10,9 +10,16 @@ import type { ChipKey, FilterChipCounts } from "@/types/dashboard";
 /**
  * Mirrors `DashboardView` in `src-tauri/src/dashboard/types.rs`. The serde
  * `kebab-case` rename means the Rust command accepts the lowercase variants
- * directly over the Tauri bridge.
+ * directly over the Tauri bridge. `archive` (ADR 0018) inverts the default
+ * views' archive predicate and orders by `archived_at DESC` server-side
+ * when the caller passes `DashboardSort::Updated` (the contract default).
  */
-export type DashboardView = "authored" | "assigned" | "watching" | "team";
+export type DashboardView =
+  | "authored"
+  | "assigned"
+  | "watching"
+  | "team"
+  | "archive";
 
 /**
  * Mirrors `DashboardSort` in `src-tauri/src/dashboard/types.rs`. M4 widens
@@ -121,6 +128,7 @@ const VIEW_LABELS: Record<DashboardView, string> = {
   assigned: "Assigned to me",
   watching: "Watching",
   team: "Team",
+  archive: "Archive",
 };
 
 function bucketKey(pr: DashboardPullRequest, group: DashboardGroup): string {
@@ -182,6 +190,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     assigned: 0,
     watching: 0,
     team: 0,
+    archive: 0,
   });
   const loading = ref(false);
   const lastError = ref<string | null>(null);
@@ -315,26 +324,29 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
   /**
    * Fetches every view in parallel. The active view's rows feed
-   * `pullRequests`; the lengths feed the sidebar counts. Four SQL reads per
-   * load is the price of accurate sidebar counts without back-channelling
-   * the counts separately from the Rust side.
+   * `pullRequests`; the lengths feed the sidebar counts. Five SQL reads per
+   * load is the price of accurate sidebar counts (including the Archive
+   * entry from ADR 0018) without back-channelling the counts separately
+   * from the Rust side.
    */
   async function load(): Promise<void> {
     loading.value = true;
     lastError.value = null;
     const active = view.value;
     try {
-      const [authored, assigned, watching, team] = await Promise.all([
+      const [authored, assigned, watching, team, archive] = await Promise.all([
         fetchView("authored"),
         fetchView("assigned"),
         fetchView("watching"),
         fetchView("team"),
+        fetchView("archive"),
       ]);
       viewCounts.value = {
         authored: authored.length,
         assigned: assigned.length,
         watching: watching.length,
         team: team.length,
+        archive: archive.length,
       };
       const rawActive = (() => {
         switch (active) {
@@ -346,15 +358,31 @@ export const useDashboardStore = defineStore("dashboard", () => {
             return watching;
           case "team":
             return team;
+          case "archive":
+            return archive;
         }
       })();
       // The active view fans out to a second fetch only when chips are
       // active. Reusing the unfiltered result keeps the common no-chip path
-      // at four calls per load, matching the existing budget.
-      pullRequests.value = activeChips.value.size > 0
-        ? await fetchActiveViewWithChips(active)
-        : rawActive;
-      void fetchChipCounts();
+      // at five calls per load, matching the existing budget.
+      //
+      // ADR 0018: chips don't apply to the Archive view - the backend
+      // panics if a chip predicate reaches it via the chip-count path, and
+      // the W2 UI hides the chip rail there. Skipping the chip-filtered
+      // re-fetch keeps the Archive view at one call per load even if a
+      // stale chip set leaked through.
+      const skipChipsForArchive = active === "archive";
+      pullRequests.value =
+        activeChips.value.size > 0 && !skipChipsForArchive
+          ? await fetchActiveViewWithChips(active)
+          : rawActive;
+      // The Archive view's chip rail is hidden; counts would be zeros
+      // regardless. Skip the round-trip.
+      if (!skipChipsForArchive) {
+        void fetchChipCounts();
+      } else {
+        chipCounts.value = null;
+      }
     } catch (err) {
       lastError.value = formatError(err);
       pullRequests.value = [];

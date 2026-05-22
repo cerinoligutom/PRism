@@ -10,7 +10,12 @@
  * "Tauri command surface" section of `docs/contracts/dashboard-data.md`.
  */
 
-export type DashboardView = "authored" | "assigned" | "watching" | "team";
+export type DashboardView =
+  | "authored"
+  | "assigned"
+  | "watching"
+  | "team"
+  | "archive";
 
 /**
  * Mirrors `DashboardSort` in `src-tauri/src/dashboard/types.rs`. M2 shipped
