@@ -17,6 +17,7 @@ import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
+import { useReposStore } from "@/stores/repos";
 import { useSyncStore } from "@/stores/sync";
 import {
   useDashboardStore,
@@ -33,6 +34,7 @@ const router = useRouter();
 const dashboard = useDashboardStore();
 const accounts = useAccountsStore();
 const appearance = useAppearanceStore();
+const repos = useReposStore();
 const sync = useSyncStore();
 
 const hasAccounts = computed(() => !accounts.isEmpty);
@@ -108,6 +110,14 @@ const VIEW_INLINE_LABEL: Record<DashboardViewName, string> = {
 // claiming the view is "filtered" when it's not.
 const isArchive = computed<boolean>(() => dashboard.view === "archive");
 const isTracked = computed<boolean>(() => dashboard.view === "tracked");
+
+/**
+ * Distinguishes "user has opted into >=1 repo but no involved PRs landed yet"
+ * from "user hasn't opted into anything". Drives the Tracked empty state
+ * copy. Reads the in-memory repos store, which the dashboard hydrates from
+ * `onMounted` so the count is meaningful by the time the empty state shows.
+ */
+const hasTrackedRepos = computed<boolean>(() => repos.totalTrackedCount > 0);
 
 const viewInlineLabel = computed<string>(
   () => VIEW_INLINE_LABEL[dashboard.view as DashboardViewName] ?? dashboard.view,
@@ -269,6 +279,20 @@ function restorePersistedScope(): void {
   dashboard.accountFilter = null;
 }
 
+/**
+ * Hydrate the repos store for every connected account that hasn't already
+ * been loaded this session. The Tracked empty state branches on the tracked
+ * count, so it needs the store warm before the branch evaluates; settings
+ * already loads these when the user visits Repositories, but the dashboard
+ * can't assume the user has been there first.
+ */
+async function ensureReposHydrated(): Promise<void> {
+  const work = accounts.accounts
+    .filter((a) => repos.getRepos(a.id).length === 0)
+    .map((a) => repos.load(a.id));
+  if (work.length > 0) await Promise.all(work);
+}
+
 onMounted(async () => {
   await accounts.refresh();
   await dashboard.bind();
@@ -279,7 +303,11 @@ onMounted(async () => {
     dashboard.view = next;
   }
   restorePersistedScope();
-  await dashboard.load();
+  // Run the repos hydration alongside the dashboard load so the Tracked
+  // empty-state branching (`hasTrackedRepos`) has data the moment the
+  // dashboard list resolves to empty - no flicker between the "0 tracked"
+  // and "tracked but empty" copies.
+  await Promise.all([dashboard.load(), ensureReposHydrated()]);
 });
 
 onBeforeUnmount(() => {
@@ -427,7 +455,7 @@ watch(() => route.meta?.dashboardView, () => {
           from the row overflow menu.
         </p>
       </div>
-      <div v-else-if="isTracked" class="dashboard-empty">
+      <div v-else-if="isTracked && !hasTrackedRepos" class="dashboard-empty">
         <h2 class="dashboard-empty__title">No tracked repositories yet</h2>
         <p class="dashboard-empty__copy">
           The Tracked view shows PRs from repositories you've opted in.
@@ -436,6 +464,17 @@ watch(() => route.meta?.dashboardView, () => {
         </p>
         <PRismButton to="/settings/repositories" variant="primary">
           Open Repositories settings
+        </PRismButton>
+      </div>
+      <div v-else-if="isTracked" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">No pull requests in your tracked repositories yet</h2>
+        <p class="dashboard-empty__copy">
+          PRism is syncing the repos you've opted in. None currently have PRs
+          you're involved with. If you expected to see PRs here, double-check
+          you're an author, reviewer, or mentioned on the PR.
+        </p>
+        <PRismButton to="/settings/repositories" variant="primary">
+          Manage tracked repositories
         </PRismButton>
       </div>
       <div v-else class="dashboard-empty">
