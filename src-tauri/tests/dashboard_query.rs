@@ -1823,3 +1823,391 @@ fn union_url_uses_repo_owning_account_host_not_first_relation_owner() {
         "URL host comes from the repo's owning account, never from the union of relation owners"
     );
 }
+
+// ===== ADR 0018: archive exclusion + Archive view (issue #194) =====
+//
+// Default views (Authored / Assigned / Watching / Team) hide archived rows.
+// The new `DashboardView::Archive` returns the inverse - only archived rows -
+// and defaults to `archived_at DESC`. Unified scope respects the merged-row
+// rule: a PR is archived in the union iff every relation owner has archived
+// it.
+
+/// Default views: an archived row drops out of every relation-based view
+/// (Authored / Assigned / Watching). Single-account scope; the archived
+/// relation row is filtered by the WHERE.
+#[test]
+fn default_views_hide_archived_rows_under_single_account_scope() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Archive alice's relations on PR 100 (authored) and PR 200 (watching),
+    // and bob's review-requested relation on PR 100. The seeded fixture
+    // doesn't have an `is_review_requested = 1` relation under account 1
+    // beyond PR 400 (also archived below).
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE account_id = 1 AND pull_request_id IN (100, 200, 400)",
+        [],
+    )
+    .unwrap();
+
+    let authored = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    assert!(
+        authored.iter().all(|r| r.id != 100),
+        "alice's authored archive must drop PR 100; got {:?}",
+        authored.iter().map(|r| r.id).collect::<Vec<_>>()
+    );
+
+    let watching = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    assert!(
+        watching.iter().all(|r| r.id != 200),
+        "PR 200 was archived; Watching must hide it"
+    );
+
+    let assigned = list_pull_requests(
+        &conn,
+        DashboardView::Assigned,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    assert!(
+        assigned.iter().all(|r| r.id != 400),
+        "alice's Assigned archive must drop PR 400"
+    );
+}
+
+/// Team view (single-account scope): archived (account, PR) row hides the
+/// per-account triage state but the PR still surfaces if the active account
+/// owns the team-tracked repo. The archive predicate sits on the LEFT JOIN's
+/// ON clause, so the relation row drops to NULL and the PR keeps surfacing
+/// with default triage values - same shape as a Team-view PR the viewer has
+/// no relation to. This is the closest read of ADR 0018 for Team's
+/// relation-as-overlay model.
+#[test]
+fn team_view_archived_relation_collapses_to_default_triage_under_single_account_scope() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Promote alice/web (repo 10) to team-tracked so PR 100 (alice authored)
+    // surfaces in Team. Then archive alice's relation on PR 100 and set
+    // needs_attention - the team-view row should still appear but with the
+    // default false / 0 triage values.
+    conn.execute_batch(
+        "UPDATE repos SET is_team_tracked = 1 WHERE id = 10;
+         UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now'),
+                needs_attention = 1,
+                mentioned_count_unread = 3
+          WHERE account_id = 1 AND pull_request_id = 100;",
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, Some(1)).unwrap();
+    let pr_100 = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("PR 100 still appears via the team-tracked repo");
+    assert!(
+        !pr_100.needs_attention,
+        "archived relation must not leak its triage state"
+    );
+    assert_eq!(pr_100.mentioned_count_unread, 0);
+}
+
+/// Unified scope: partial-archive (one account archived, the other not)
+/// keeps the PR visible. The `account_ids` reflects only the unarchived
+/// relation owners so the merged row presents as "active" rather than
+/// half-archived.
+#[test]
+fn default_views_keep_partial_archive_pr_visible_under_unified_scope() {
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    // Archive alice's relation only. Bob's relation stays unarchived.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    // Authored union: alice's archive removes her relation from the merge.
+    // The view-filter EXISTS only finds alice's `is_authored = 1` (now
+    // archived), so PR 100 drops from Authored. This is intentional: under
+    // ADR 0018, the EXISTS requires at least one unarchived relation with
+    // the view flag.
+    let authored =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    assert!(
+        authored.iter().all(|r| r.id != 100),
+        "no unarchived is_authored relation -> PR drops from Authored union"
+    );
+
+    // Assigned union: bob's review-requested relation stays unarchived, so
+    // PR 100 surfaces. account_ids carries only bob (alice's archived
+    // relation drops out of the merge).
+    let assigned =
+        list_pull_requests(&conn, DashboardView::Assigned, DashboardSort::Updated, None).unwrap();
+    let pr = assigned
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("bob's unarchived review-request keeps the PR in Assigned");
+    assert_eq!(
+        pr.account_ids,
+        vec![2],
+        "merged row carries only unarchived relation owners; archived ones drop"
+    );
+}
+
+/// Unified scope: every relation archived -> PR drops from every default
+/// view (the merged row has no unarchived relation to keep it alive).
+#[test]
+fn default_views_hide_fully_archived_pr_under_unified_scope() {
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    for view in [
+        DashboardView::Authored,
+        DashboardView::Assigned,
+        DashboardView::Watching,
+    ] {
+        let rows = list_pull_requests(&conn, view, DashboardSort::Updated, None).unwrap();
+        assert!(
+            rows.iter().all(|r| r.id != 100),
+            "{view:?} must hide a PR with every relation archived"
+        );
+    }
+}
+
+/// Unified scope Team view: a team-tracked PR with no relations stays
+/// visible (nothing to archive). A team-tracked PR with every relation
+/// archived drops.
+#[test]
+fn team_view_unified_scope_archive_semantics() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // PR 300 sits in alice/api (team-tracked) with no relation rows - stays
+    // visible. PR 400 sits in bob/cli (team-tracked) with relations on
+    // accounts 1 and 2 - archive both so it should drop.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE pull_request_id = 400",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+    assert!(
+        rows.iter().any(|r| r.id == 300),
+        "team-tracked PR with no relations stays visible"
+    );
+    assert!(
+        rows.iter().all(|r| r.id != 400),
+        "team-tracked PR with every relation archived drops; got {:?}",
+        rows.iter().map(|r| r.id).collect::<Vec<_>>()
+    );
+}
+
+/// Unified scope Team view: a partial archive keeps the team-tracked PR
+/// visible via the unarchived relation, with `account_ids` reflecting only
+/// the surviving relation owners.
+#[test]
+fn team_view_unified_scope_partial_archive_keeps_pr_visible() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Archive account 1's relation on PR 400 (team-tracked under bob/cli).
+    // Account 2's relation stays unarchived.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE account_id = 1 AND pull_request_id = 400",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Team, DashboardSort::Updated, None).unwrap();
+    let pr_400 = rows
+        .iter()
+        .find(|r| r.id == 400)
+        .expect("partial archive keeps the PR visible");
+    assert_eq!(
+        pr_400.account_ids,
+        vec![2],
+        "merged row carries only unarchived relation owners"
+    );
+}
+
+/// Archive view returns only rows where `rel.archived_at IS NOT NULL`,
+/// regardless of which default-view bucket they would otherwise fall into.
+#[test]
+fn archive_view_returns_only_archived_rows() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Archive alice's relations on PR 100 (authored) and PR 200 (watching),
+    // and bob's on PR 500 (watching). Leave PR 400 unarchived under both
+    // accounts to confirm it doesn't surface in the archive view.
+    conn.execute_batch(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE (account_id = 1 AND pull_request_id IN (100, 200))
+             OR (account_id = 2 AND pull_request_id = 500);",
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Archive,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    assert!(
+        ids.contains(&100) && ids.contains(&200),
+        "alice's archive must contain her two archived PRs (100, 200); got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&400),
+        "PR 400 is not archived under alice; must not appear"
+    );
+    assert!(
+        !ids.contains(&500),
+        "PR 500 is archived under bob but not alice; alice's archive must skip it"
+    );
+}
+
+/// Archive view default sort is `archived_at DESC` when the caller passes
+/// `DashboardSort::Updated` (the contract's default).
+#[test]
+fn archive_view_default_sort_is_archived_at_desc() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // Archive PR 100 first (older), PR 200 second, PR 400 third. The query
+    // should return them in 400, 200, 100 order.
+    conn.execute_batch(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = 1000
+          WHERE account_id = 1 AND pull_request_id = 100;
+         UPDATE pull_request_viewer_relations
+            SET archived_at = 2000
+          WHERE account_id = 1 AND pull_request_id = 200;
+         UPDATE pull_request_viewer_relations
+            SET archived_at = 3000
+          WHERE account_id = 1 AND pull_request_id = 400;",
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Archive,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        vec![400, 200, 100],
+        "Archive view default sort orders most-recently-archived first"
+    );
+}
+
+/// Archive view unified scope: a PR archived under any account surfaces
+/// once with `account_ids` containing only the archiving relation owners.
+#[test]
+fn archive_view_unified_scope_dedupes_partial_archive() {
+    let conn = fresh_db();
+    seed_two_account_shared_pr_fixture(&conn);
+    // Archive account 1's relation only. Account 2 keeps its unarchived
+    // relation row.
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET archived_at = strftime('%s', 'now')
+          WHERE account_id = 1 AND pull_request_id = 100",
+        [],
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Archive, DashboardSort::Updated, None).unwrap();
+    let pr = rows
+        .iter()
+        .find(|r| r.id == 100)
+        .expect("partial-archive PR surfaces in the unified archive view");
+    assert_eq!(
+        pr.account_ids,
+        vec![1],
+        "archive view's merged row carries only the archiving relation owners"
+    );
+}
+
+/// Archive view ignores the four-view-split predicates entirely; a row that
+/// would surface in Authored, Assigned, Watching, OR Team falls into the
+/// archive based purely on `rel.archived_at IS NOT NULL`.
+#[test]
+fn archive_view_ignores_view_split_predicates() {
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+        INSERT INTO repos (id, account_id, owner, name, visibility, is_team_tracked) VALUES
+            (10, 1, 'alice', 'web', 'public', 0);
+
+        -- Four PRs covering each view-split flag exactly once.
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, draft, author_login,
+             created_at, updated_at, base_ref, head_ref) VALUES
+            (501, 10, 1, 'auth',     'open', 0, 'alice', 0, 100, 'main', 'a'),
+            (502, 10, 2, 'review',   'open', 0, 'bob',   0, 200, 'main', 'b'),
+            (503, 10, 3, 'watching', 'open', 0, 'bob',   0, 300, 'main', 'c'),
+            (504, 10, 4, 'team',     'open', 0, 'bob',   0, 400, 'main', 'd');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, last_seen_at, archived_at) VALUES
+            (1, 501, 1, 0, 0, 0, 1000),
+            (1, 502, 0, 1, 0, 0, 2000),
+            (1, 503, 0, 0, 1, 0, 3000),
+            (1, 504, 0, 0, 0, 0, 4000);
+        "#,
+    )
+    .unwrap();
+
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Archive,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        vec![504, 503, 502, 501],
+        "Archive admits rows from every view-split bucket sorted by archived_at DESC"
+    );
+}
