@@ -67,7 +67,11 @@ Any PR the user touches (author, assignee, reviewer, commenter, mentionee, react
 
 ## Notifications
 
-Both desktop (native OS toasts) and in-app (badges). In-app badges are the default; toasts are per-event opt-in. Quiet hours suppress toasts. See PRD §5.6.
+Both desktop (native OS toasts) and in-app (badges). In-app attention dots (sidebar, per view) are the always-on signal; native toasts are opt-in via two toggles (PR newly needs your attention, you were mentioned) under a master switch. Defaults: master OFF, both triggers ON once the master is enabled. The OS permission prompt is deferred until the first toast would fire, so users see the ask in context rather than at launch.
+
+OS dock / taskbar badge support: macOS only in v1 (numeric badge from total "needs your attention" count across in-scope accounts). Windows and Linux: documented gap, post-v1.
+
+See PRD §5.6 and ADR 0017.
 
 ## Non-functional targets
 
