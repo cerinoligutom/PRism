@@ -34,6 +34,13 @@ time = { version = "0.3", features = ["serde", "serde-well-known", "macros"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 rusqlite_migration = "2"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Native error dialog shown when Tauri setup or `run()` fails. We use `rfd`
+# rather than `tauri-plugin-dialog` because the plugin requires the Tauri
+# runtime to be live, which is exactly what we cannot assume on a startup
+# error. Default features (`xdg-portal`, `async-std`) are disabled - the
+# portal backend has no message-dialog API and we only need the synchronous
+# `MessageDialog::show()`. GTK3 is already a transitive Tauri 2 dep on Linux.
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 
 [dev-dependencies]
 wiremock = "0.6"
