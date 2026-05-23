@@ -1,0 +1,377 @@
+name: Prepare release
+
+# Manual-trigger first half of the release pipeline (ADR-0023). Operator
+# picks the bump kind (or an explicit version override) and the workflow:
+#
+#   1. Computes the next SemVer from the latest v* tag (or honours the
+#      explicit override).
+#   2. Runs `pnpm bump-version` to sync the three version files
+#      (package.json, src-tauri/Cargo.toml, src-tauri/tauri.conf.json).
+#   3. Runs `pnpm stamp-changelog` to promote [Unreleased] -> [vX.Y.Z].
+#   4. Composes release notes from squashed PR titles since the last tag,
+#      grouped by Conventional Commit type.
+#   5. Opens a `chore(release): vX.Y.Z` PR on a `release/vX.Y.Z` branch.
+#
+# The dry_run input short-circuits step 5: instead of opening a PR, the
+# composed notes are written to the workflow summary so the operator can
+# preview them. The version files + CHANGELOG.md are still edited on the
+# runner but never pushed.
+#
+# Downstream: merging the resulting PR trips `tag-on-release-merge.yml`,
+# which pushes the vX.Y.Z tag and (separately) wakes the build workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'SemVer bump kind. Ignored when version is set.'
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Explicit version override (X.Y.Z, no leading v). Wins over bump when set.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Preview the composed notes in the workflow summary instead of opening a PR.'
+        required: false
+        type: boolean
+        default: false
+
+run-name: >-
+  Prepare release
+  ${{ inputs.version != '' && format('v{0}', inputs.version) || format('({0} bump)', inputs.bump) }}
+  ${{ inputs.dry_run && '[dry run]' || '' }}
+
+# Tag pushes + PR creation both need write access to contents. GITHUB_TOKEN
+# is sufficient; no PAT.
+permissions:
+  contents: write
+  pull-requests: write
+
+# One release prep at a time. A second dispatch while the first is still
+# running would race the branch creation + push.
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release branch + PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@v6
+        with:
+          # Composing notes from `git log <last-tag>..HEAD` needs the full
+          # history; the default shallow fetch only has the tip commit.
+          fetch-depth: 0
+          # Persist the GITHUB_TOKEN credentials so the subsequent push +
+          # `gh pr create` step can talk to the API without re-auth.
+          persist-credentials: true
+
+      - name: Install pnpm
+        # `standalone: true` for the same Node-version reason as ci.yml:
+        # pnpm 11 needs Node >= 22.13 and the runner's default Node is 20.
+        uses: pnpm/action-setup@v4
+        with:
+          standalone: true
+          run_install: false
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install JS dependencies
+        # bump-version + stamp-changelog run via `node --experimental-strip-types`
+        # and have no runtime deps of their own, but pnpm install primes
+        # the lockfile-resolved tools (vue-tsc + co.) the wider pnpm
+        # surface expects and keeps the cache warm for follow-up steps.
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure git author
+        # Commits authored by the bot account so the release PR has a
+        # consistent author across runs and doesn't bind the maintainer.
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Compute next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Explicit override wins. Validate it before trusting downstream
+          # steps to format branch / PR titles around it.
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            if ! printf '%s' "$VERSION_OVERRIDE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version override '$VERSION_OVERRIDE' is not bare SemVer (X.Y.Z)"
+              exit 1
+            fi
+            NEXT="$VERSION_OVERRIDE"
+            BASE='override'
+          else
+            # Last v* tag, sorted by SemVer rules. No tag yet -> treat the
+            # previous version as 0.0.0 so the first patch yields 0.0.1,
+            # first minor 0.1.0, first major 1.0.0.
+            LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
+            if [ -z "$LAST_TAG" ]; then
+              PREV='0.0.0'
+              BASE='0.0.0 (no v* tag found)'
+            else
+              PREV="${LAST_TAG#v}"
+              BASE="$LAST_TAG"
+            fi
+
+            IFS='.' read -r MAJ MIN PAT < <(printf '%s\n' "$PREV")
+
+            case "$BUMP" in
+              patch) PAT=$((PAT + 1)) ;;
+              minor) MIN=$((MIN + 1)); PAT=0 ;;
+              major) MAJ=$((MAJ + 1)); MIN=0; PAT=0 ;;
+              *)
+                echo "::error::unknown bump kind '$BUMP'"
+                exit 1
+                ;;
+            esac
+            NEXT="${MAJ}.${MIN}.${PAT}"
+          fi
+
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "branch=release/v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Computed next version: v${NEXT} (base: ${BASE})"
+
+      - name: Refuse to overwrite an existing tag or branch
+        env:
+          NEXT_TAG: ${{ steps.version.outputs.tag }}
+          NEXT_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/${NEXT_TAG}" >/dev/null; then
+            echo "::error::tag ${NEXT_TAG} already exists; pick a higher version"
+            exit 1
+          fi
+
+          # Same guard for the prep branch on the remote. A stale
+          # `release/vX.Y.Z` from an abandoned prep attempt would otherwise
+          # collide with the `git push --set-upstream` later in the job.
+          if git ls-remote --exit-code --heads origin "$NEXT_BRANCH" >/dev/null 2>&1; then
+            echo "::error::branch ${NEXT_BRANCH} already exists on origin; delete it first or pick a higher version"
+            exit 1
+          fi
+
+      - name: Bump version files
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm bump-version "$NEXT_VERSION"
+
+      - name: Verify version-file agreement
+        # Cheap sanity check that bump-version actually wrote all three
+        # files. The CI drift check runs on PR review too, but failing
+        # here surfaces a malformed Cargo.toml / package.json before we
+        # commit and open a PR for it.
+        run: pnpm check-version
+
+      - name: Stamp CHANGELOG
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm stamp-changelog --version "$NEXT_VERSION"
+
+      - name: Compose release notes
+        id: notes
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
+          if [ -n "$LAST_TAG" ]; then
+            RANGE="${LAST_TAG}..HEAD"
+            HEADER_RANGE="since ${LAST_TAG}"
+          else
+            RANGE='HEAD'
+            HEADER_RANGE='all history (no prior v* tag)'
+          fi
+
+          # Pull squash-commit subjects in the range. `--no-merges` excludes
+          # any rogue merge commits; on a squash-merge repo there shouldn't
+          # be any, but it costs nothing to be strict.
+          mapfile -t SUBJECTS < <(git log --no-merges --pretty=format:'%s' "$RANGE" || true)
+
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "## v${NEXT_VERSION}"
+            echo ""
+            echo "_Changes ${HEADER_RANGE}._"
+            echo ""
+          } > "$NOTES_FILE"
+
+          if [ "${#SUBJECTS[@]}" -eq 0 ]; then
+            echo "_No PRs in range. The CHANGELOG.md has been stamped from the [Unreleased] section; the PR body covers the rest._" >> "$NOTES_FILE"
+          else
+            # Group by CC type. A subject with `!` after the type, or
+            # one that begins with literal `breaking:`, lands in
+            # BREAKING regardless of type.
+            BREAKING=()
+            ADDED=()
+            FIXED=()
+            CHANGED=()
+            DOCS=()
+            MISC=()
+
+            for s in "${SUBJECTS[@]}"; do
+              # Skip empty lines that can appear on git history quirks.
+              if [ -z "$s" ]; then continue; fi
+
+              lower="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')"
+
+              # Detect breaking via:
+              #   - the CC `<type>!:` / `<type>(scope)!:` form, which is
+              #     the canonical signal; or
+              #   - a literal `breaking:` type prefix at the start of the
+              #     subject (non-canonical but allowed by the task spec).
+              # Pattern runs against the lowercased subject so an
+              # uppercase-led `Feat(ui)!:` still trips it. Anchored so a
+              # subject like `fix(parser): handle "breaking:" literal`
+              # doesn't trip.
+              if printf '%s' "$lower" | grep -Eq '^[a-z]+(\([^)]+\))?!:'; then
+                BREAKING+=("$s")
+                continue
+              fi
+              if printf '%s' "$lower" | grep -Eq '^breaking:'; then
+                BREAKING+=("$s")
+                continue
+              fi
+
+              case "$lower" in
+                feat\(*\):*|feat:*)         ADDED+=("$s") ;;
+                fix\(*\):*|fix:*)           FIXED+=("$s") ;;
+                refactor\(*\):*|refactor:*) CHANGED+=("$s") ;;
+                perf\(*\):*|perf:*)         CHANGED+=("$s") ;;
+                docs\(*\):*|docs:*)         DOCS+=("$s") ;;
+                *)                          MISC+=("$s") ;;
+              esac
+            done
+
+            emit_group() {
+              local heading="$1"
+              shift
+              if [ "$#" -eq 0 ]; then return 0; fi
+              {
+                echo "### ${heading}"
+                echo ""
+                for item in "$@"; do
+                  echo "- ${item}"
+                done
+                echo ""
+              } >> "$NOTES_FILE"
+            }
+
+            # `${arr[@]+"${arr[@]}"}` guards against the empty-array-
+            # under-set-u footgun on older bashes; ubuntu-latest runs
+            # bash 5 where it's a no-op, but it costs nothing and keeps
+            # the script portable.
+            emit_group 'Breaking' ${BREAKING[@]+"${BREAKING[@]}"}
+            emit_group 'Added' ${ADDED[@]+"${ADDED[@]}"}
+            emit_group 'Fixed' ${FIXED[@]+"${FIXED[@]}"}
+            emit_group 'Changed' ${CHANGED[@]+"${CHANGED[@]}"}
+            emit_group 'Documentation' ${DOCS[@]+"${DOCS[@]}"}
+            emit_group 'Misc' ${MISC[@]+"${MISC[@]}"}
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "_Generated by \`.github/workflows/prepare-release.yml\` on \`${GITHUB_SHA}\`._"
+          } >> "$NOTES_FILE"
+
+          # Stash the path so the "Open release PR" step can pass the
+          # notes file straight to `gh pr create --body-file`.
+          echo "file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release notes preview"
+            echo ""
+            cat "$NOTES_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry-run summary (skip commit + PR)
+        if: ${{ inputs.dry_run }}
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+          NEXT_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          {
+            echo ""
+            echo "### Dry run"
+            echo ""
+            echo "No branch, no commit, no PR. Re-run with \`dry_run = false\` to land the release prep PR for **v${NEXT_VERSION}** on \`${NEXT_BRANCH}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit + push release branch
+        if: ${{ !inputs.dry_run }}
+        env:
+          NEXT_BRANCH: ${{ steps.version.outputs.branch }}
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git checkout -b "$NEXT_BRANCH"
+          git add CHANGELOG.md package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+          # If bump-version detected no drift (e.g. the operator hit "patch"
+          # twice in a row before merging the first), the commit is empty
+          # and we want a hard failure rather than a silent no-op PR.
+          git commit -m "chore(release): v${NEXT_VERSION}"
+          git push --set-upstream origin "$NEXT_BRANCH"
+
+      - name: Open release PR
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_BRANCH: ${{ steps.version.outputs.branch }}
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "## Release v${NEXT_VERSION}"
+            echo ""
+            echo "Generated by \`.github/workflows/prepare-release.yml\`. Merge to trip \`tag-on-release-merge.yml\`, which pushes the \`v${NEXT_VERSION}\` tag and wakes the build workflow."
+            echo ""
+            cat "$NOTES_FILE"
+            echo ""
+            echo "## Checklist"
+            echo ""
+            echo "- [ ] CHANGELOG section under \`[${NEXT_VERSION}]\` accurately reflects user-visible changes"
+            echo "- [ ] No \`[Unreleased]\` drift remaining for this cut"
+            echo "- [ ] Three version files agree (\`pnpm check-version\` runs in CI)"
+            echo ""
+            echo "Refs #303 (release pipeline issue)."
+          } > "$BODY_FILE"
+
+          # Assign to the workflow actor so the PR lands on their kanban
+          # immediately - the github-actions[bot] author can't be assigned.
+          gh pr create \
+            --base main \
+            --head "$NEXT_BRANCH" \
+            --title "chore(release): v${NEXT_VERSION}" \
+            --body-file "$BODY_FILE" \
+            --assignee "$GITHUB_ACTOR" \
+            --label 'type:chore' \
+            --label 'priority:p1'
