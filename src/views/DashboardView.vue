@@ -51,6 +51,14 @@ const isFetching = computed(
 );
 
 /**
+ * The sync worker is mid-cycle. The "no PRs yet" empty states swap to
+ * "syncing now" copy while this is true so a fresh first-run (or any
+ * later cycle that lands on an empty view) reads as "we're fetching"
+ * instead of "the next cycle will populate this list".
+ */
+const isSyncing = computed<boolean>(() => sync.aggregate === "syncing");
+
+/**
  * Shared lookup from account id to a render-ready marker. Computed once at
  * the view level so all rows can resolve `pullRequest.account_ids` without
  * each one wiring up the accounts store. See ADR 0016 ("Dashboard row shape
@@ -426,7 +434,7 @@ watch(() => route.meta?.dashboardView, () => {
     </div>
 
     <div
-      v-else-if="dashboard.loading && dashboard.pullRequests.length === 0"
+      v-else-if="dashboard.loading && dashboard.pullRequests.length === 0 && !isSyncing"
       class="dashboard__notice"
     >
       Loading pull requests...
@@ -466,16 +474,30 @@ watch(() => route.meta?.dashboardView, () => {
           Open Repositories settings
         </PRismButton>
       </div>
+      <div v-else-if="isTracked && isSyncing" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">Syncing your tracked repositories...</h2>
+        <p class="dashboard-empty__copy">
+          PRism is fetching pull requests from the repos you've opted in. Rows
+          will appear here as soon as the first cycle finishes.
+        </p>
+      </div>
       <div v-else-if="isTracked" class="dashboard-empty">
         <h2 class="dashboard-empty__title">No pull requests in your tracked repositories yet</h2>
         <p class="dashboard-empty__copy">
-          PRism is syncing the repos you've opted in. None currently have PRs
-          you're involved with. If you expected to see PRs here, double-check
-          you're an author, reviewer, or mentioned on the PR.
+          None of your tracked repos currently have PRs you're involved with.
+          If you expected to see PRs here, double-check you're an author,
+          reviewer, or mentioned on the PR.
         </p>
         <PRismButton to="/settings/repositories" variant="primary">
           Manage tracked repositories
         </PRismButton>
+      </div>
+      <div v-else-if="isSyncing" class="dashboard-empty">
+        <h2 class="dashboard-empty__title">Syncing your pull requests...</h2>
+        <p class="dashboard-empty__copy">
+          PRism is fetching the latest from GitHub. Rows will appear here as
+          soon as the first cycle finishes.
+        </p>
       </div>
       <div v-else class="dashboard-empty">
         <h2 class="dashboard-empty__title">No pull requests in this view yet</h2>
