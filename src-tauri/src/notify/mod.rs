@@ -63,7 +63,7 @@ mod tests {
 
     /// Test helper: open an in-memory DB with the v12 migration applied. The
     /// seeded `app_settings` row matches the production defaults
-    /// (master OFF, both triggers ON, permission Unprompted).
+    /// (master ON, both triggers ON, permission Unprompted).
     fn fresh_db() -> DbHandle {
         let mut conn = Connection::open_in_memory().expect("in-memory db");
         crate::db::migrate::run(&mut conn).expect("migrations");
@@ -167,7 +167,19 @@ mod tests {
     fn dispatch_skipped_when_master_switch_off() {
         // ADR 0017 decision 5: master OFF means no dispatch, no prompt, no
         // mutation of the permission state. The user hasn't opted in.
+        // The seeded master defaults to ON pre-v1, so we flip it OFF
+        // explicitly here to set up the scenario under test.
         let db = fresh_db();
+        write_settings(
+            &db,
+            &AppSettings {
+                notifications_enabled: false,
+                notify_on_needs_attention: true,
+                notify_on_mention: true,
+                notification_permission_state: NotificationPermissionState::Unprompted,
+                updated_at: 0,
+            },
+        );
         let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
 
         let dispatched = decide_dispatch(&db, &asker);
