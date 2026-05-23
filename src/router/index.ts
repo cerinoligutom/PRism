@@ -95,6 +95,11 @@ export const router = createRouter({
           component: () => import("@/views/settings/SyncSettings.vue"),
         },
         {
+          path: "updates",
+          name: "settings.updates",
+          component: () => import("@/views/settings/UpdatesSettings.vue"),
+        },
+        {
           path: "about",
           name: "settings.about",
           component: () => import("@/views/settings/AboutPanel.vue"),

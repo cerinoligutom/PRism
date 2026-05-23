@@ -45,6 +45,33 @@ pub struct AppSettings {
     pub notify_on_needs_attention: bool,
     pub notify_on_mention: bool,
     pub notification_permission_state: NotificationPermissionState,
+    /// Last app version the user dismissed the in-app "What's new" dialog
+    /// against. `None` means the cursor has never been written (fresh
+    /// install) - the launch hook records the current version silently and
+    /// suppresses the dialog so a first-time user isn't greeted with a
+    /// "what's new" they have no context for. Subsequent version transitions
+    /// open the dialog, which writes the new version on dismiss. See
+    /// ADR 0025 for the full design.
+    pub last_seen_version: Option<String>,
+    /// Auto-update toggle. Defaults to `false` per ADR-0024 (opt-in). When
+    /// `true`, the `update::worker` polls the manifest endpoint on the
+    /// configured interval; when `false`, no network calls happen for
+    /// updates.
+    pub auto_update_enabled: bool,
+    /// Auto-update poll cadence in seconds. Defaults to 21600 (6 hours) per
+    /// ADR-0024; v1.x ships this fixed value, the column is here so a
+    /// future configurable-cadence setting has the natural home.
+    pub auto_update_interval_seconds: i64,
+    /// Unix seconds of the last update check attempt (success or failure).
+    /// `None` means no check has ever run; the Settings panel renders
+    /// nothing in that case.
+    pub auto_update_last_check_at: Option<i64>,
+    /// Short human-readable error from the last failed check, or `None`
+    /// when the last check succeeded. The Settings panel surfaces
+    /// "Last check failed: <message>" iff this column is set; cleared on
+    /// the next successful check. ADR-0024's silent-failure policy: no
+    /// toast, no banner, just this line in the Settings panel.
+    pub auto_update_last_failure_message: Option<String>,
     /// Unix seconds. Updated by the writer command on every change so the
     /// frontend can show "Updated <relative>" affordances if needed.
     pub updated_at: i64,
@@ -60,6 +87,11 @@ impl AppSettings {
                     notify_on_needs_attention,
                     notify_on_mention,
                     notification_permission_state,
+                    last_seen_version,
+                    auto_update_enabled,
+                    auto_update_interval_seconds,
+                    auto_update_last_check_at,
+                    auto_update_last_failure_message,
                     updated_at
                FROM app_settings
               WHERE id = 1",
@@ -71,7 +103,12 @@ impl AppSettings {
                     notify_on_needs_attention: row.get::<_, i64>(1)? != 0,
                     notify_on_mention: row.get::<_, i64>(2)? != 0,
                     notification_permission_state: NotificationPermissionState::from_storage(&perm),
-                    updated_at: row.get(4)?,
+                    last_seen_version: row.get(4)?,
+                    auto_update_enabled: row.get::<_, i64>(5)? != 0,
+                    auto_update_interval_seconds: row.get(6)?,
+                    auto_update_last_check_at: row.get(7)?,
+                    auto_update_last_failure_message: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
         )
@@ -105,6 +142,20 @@ mod tests {
             NotificationPermissionState::Unprompted,
             "permission state starts unprompted"
         );
+        assert_eq!(
+            settings.last_seen_version, None,
+            "last_seen_version starts NULL so the first launch is the silent-record path (ADR 0025)"
+        );
+        assert!(
+            !settings.auto_update_enabled,
+            "auto-update defaults OFF (opt-in per ADR-0024)"
+        );
+        assert_eq!(
+            settings.auto_update_interval_seconds, 21600,
+            "auto-update interval defaults to 6h per ADR-0024"
+        );
+        assert_eq!(settings.auto_update_last_check_at, None);
+        assert_eq!(settings.auto_update_last_failure_message, None);
         assert!(settings.updated_at > 0, "updated_at seeded to now()");
     }
 

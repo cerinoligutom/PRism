@@ -159,6 +159,38 @@ git commit -m "sync from docs/wiki@${SHA}"
 git push
 ```
 
+## Updater manifest
+
+The Tauri updater consumes a `latest.json` manifest published on GitHub Pages. ADR-0024 owns the design; [`.github/workflows/update-manifest.yml`](.github/workflows/update-manifest.yml) regenerates the manifest whenever a draft Release is published (gate 3 of ADR-0023's review chain).
+
+### One-time setup
+
+After the workflow lands its first commit on the `gh-pages` branch (which it creates automatically on the first matching `release: published` event), set repo **Settings -> Pages -> Source** to "Deploy from a branch" with **Branch: `gh-pages` / Root (`/`)**. GitHub Pages then serves `latest.json` at `https://cerinoligutom.github.io/PRism/latest.json`. The updater plugin's `endpoints` value in `src-tauri/tauri.conf.json` (added by issue #308) points at that URL.
+
+No new secrets are needed: the workflow signs nothing of its own. It reads the `.sig` files that `release.yml` produced via `TAURI_SIGNING_PRIVATE_KEY` and copies the signatures into the manifest verbatim.
+
+### Updater signing key
+
+The Tauri updater verifies every downloaded artefact against a public key embedded in `src-tauri/tauri.conf.json`. The matching private key signs each release's `.app.tar.gz` / `.AppImage` / `.exe` via `release.yml`. Both are generated once by the maintainer:
+
+1. Generate the keypair locally with the Tauri CLI:
+
+   ```bash
+   pnpm tauri signer generate -w ~/.tauri/prism-updater.key
+   ```
+
+   The command prints the public key to stdout and writes the password-protected private key to the path passed via `-w`.
+
+2. Add the private key as the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (`Settings -> Secrets and variables -> Actions -> New repository secret`). Paste the file contents verbatim.
+
+3. Add the password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+4. Replace the `REPLACE_WITH_GENERATED_PUBLIC_KEY` placeholder in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) with the public key printed in step 1. Commit the change.
+
+5. Confirm the GH Pages source setting from the "Updater manifest" section above so the published `latest.json` is reachable at `https://cerinoligutom.github.io/PRism/latest.json`.
+
+The private key never leaves the maintainer's machine or the GitHub Actions secret store. Rotating it means re-running `tauri signer generate`, updating both secrets, and shipping a release whose `pubkey` matches the new private key.
+
 ## Issues
 
 - Pick the template that fits: bug, feature request, or chore.
