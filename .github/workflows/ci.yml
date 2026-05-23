@@ -15,6 +15,11 @@ name: CI
 
 on:
   pull_request:
+    # `edited` is in the trigger list so the PR title CC check re-runs when
+    # the title is changed via `gh pr edit` or the web UI - otherwise a
+    # title fix leaves the previous failed status stuck and required-check
+    # branch protection blocks the merge.
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
   push:
     branches: [main]
