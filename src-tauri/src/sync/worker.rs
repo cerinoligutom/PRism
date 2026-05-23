@@ -68,7 +68,7 @@ pub enum CycleOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
-    RateBudgetGuard { pct: u8 },
+    RateBudgetGuard { rate_remaining_pct: u8 },
     NoReposConfigured,
 }
 
@@ -552,7 +552,9 @@ pub async fn run_one_cycle(
             prs_visited: 0,
             requests_made: 0,
             outcome: CycleOutcome::Skipped {
-                reason: SkipReason::RateBudgetGuard { pct },
+                reason: SkipReason::RateBudgetGuard {
+                    rate_remaining_pct: pct,
+                },
             },
         };
     }
@@ -1264,14 +1266,14 @@ fn finalise_with_budget(
 fn emit_rate_limit(
     ctx: &WorkerContext,
     account: &Account,
-    pct: u8,
+    rate_remaining_pct: u8,
     limit: i64,
     reset_in: Option<Duration>,
     resource: Option<RateResource>,
 ) {
     let payload = SyncRateLimitPayload {
         account_id: account.id,
-        pct,
+        rate_remaining_pct,
         limit: if limit > 0 { Some(limit) } else { None },
         reset_in_seconds: reset_in.map(|d| d.as_secs()),
         resource: resource.map(|r| r.as_str().to_string()),

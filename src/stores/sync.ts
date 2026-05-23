@@ -51,7 +51,7 @@ export type RateLimitResource = "core" | "search" | "graphql";
 
 interface SyncRateLimitEvent {
   readonly account_id: number;
-  readonly pct: number;
+  readonly rate_remaining_pct: number;
   readonly limit: number | null;
   readonly reset_in_seconds: number | null;
   readonly resource?: RateLimitResource;
@@ -233,7 +233,7 @@ export const useSyncStore = defineStore("sync", () => {
           if (existing === undefined) return;
           upsertAccount({
             ...existing,
-            rate_remaining_pct: e.payload.pct,
+            rate_remaining_pct: e.payload.rate_remaining_pct,
             rate_limit: e.payload.limit ?? existing.rate_limit,
           });
         }),
