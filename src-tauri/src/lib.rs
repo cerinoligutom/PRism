@@ -12,6 +12,7 @@
 //! - `settings`: app-wide settings singleton (notification prefs, M6 foundation)
 //! - `notify`: OS notification dispatch sink (M6 plumbing; ADR 0017)
 //! - `startup`: graceful failure surface for setup-hook + `run()` errors (M7, issue #239)
+//! - `update`: auto-update subsystem (ADR-0024, issue #308)
 
 pub mod app_metadata;
 pub mod auth;
@@ -25,6 +26,7 @@ pub mod settings;
 pub mod startup;
 pub mod sync;
 pub mod triage;
+pub mod update;
 
 use std::sync::Arc;
 
@@ -37,6 +39,8 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(on_window_event)
         .setup(|app| {
             // Run the real setup inside a helper so we can intercept any `?`
@@ -69,6 +73,7 @@ pub fn run() {
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_tracked,
             settings::commands::get_app_settings,
+            settings::commands::record_update_check,
             settings::commands::set_last_seen_version,
             settings::commands::set_notification_permission_state,
             settings::commands::update_app_settings,
@@ -82,6 +87,9 @@ pub fn run() {
             triage::commands::mark_pr_read,
             triage::commands::mark_pr_unarchived,
             triage::commands::mark_pr_unread,
+            update::commands::check_for_update_now,
+            update::commands::install_update_now,
+            update::commands::install_update_on_quit,
         ])
         .run(tauri::generate_context!());
 
@@ -95,36 +103,57 @@ pub fn run() {
     }
 }
 
-/// Window-event handler: replays queued notification deep-link payloads on
-/// the next main-window focus, since `tauri-plugin-notification` v2.3.3 ships
-/// no per-toast click callback (issue #201).
+/// Window-event handler. Two responsibilities:
+///
+/// * On `Focused(true)` for the main window, replay queued notification
+///   deep-link payloads since `tauri-plugin-notification` v2.3.3 ships no
+///   per-toast click callback (issue #201). Toast clicks activate the
+///   originating app on every desktop OS, which surfaces as a focus
+///   event on the main window. The TTL inside
+///   `PendingPayloadQueue::drain_fresh` bounds the false positive when
+///   the user focuses the app for an unrelated reason (dock click,
+///   alt-tab) past the TTL.
+/// * On `CloseRequested` for the main window, if the updater state has
+///   `install_on_quit == true`, spawn a background download + install
+///   task that runs the standard plugin install path (ADR-0024, issue
+///   #308). The close proceeds normally; the install completes
+///   opportunistically and the next launch picks up the new binary.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
-    // Toast clicks activate the originating app on every desktop OS, which
-    // surfaces as `WindowEvent::Focused(true)` on the main window. The
-    // notification sink enqueued a payload before each toast fired; drain
-    // the queue and replay each as `notification://open-pr` so the
-    // frontend's `useNotificationRouter` composable can deep-link. The TTL
-    // inside `PendingPayloadQueue::drain_fresh` bounds the false positive
-    // when the user focuses the app for an unrelated reason (dock click,
-    // alt-tab) past the TTL.
-    //
-    // The desktop `tauri-plugin-notification` v2.3.3 surface ships no
-    // per-notification action callback and no global click hook (issue #201
-    // - see `notify::pending` for the constraint narrative); this
-    // focus-driven replay is the contract-faithful path that keeps the
-    // frontend listener unchanged.
-    let WindowEvent::Focused(true) = event else {
-        return;
-    };
     if window.label() != "main" {
         return;
     }
     let app = window.app_handle();
-    let queue = app.state::<notify::PendingPayloadQueueHandle>();
-    for payload in queue.drain_fresh() {
-        if let Err(err) = app.emit(NOTIFICATION_OPEN_PR_EVENT, &payload) {
-            eprintln!("notify: emit {NOTIFICATION_OPEN_PR_EVENT} failed: {err}");
+    match event {
+        WindowEvent::Focused(true) => {
+            let queue = app.state::<notify::PendingPayloadQueueHandle>();
+            for payload in queue.drain_fresh() {
+                if let Err(err) = app.emit(NOTIFICATION_OPEN_PR_EVENT, &payload) {
+                    eprintln!("notify: emit {NOTIFICATION_OPEN_PR_EVENT} failed: {err}");
+                }
+            }
         }
+        WindowEvent::CloseRequested { .. } => {
+            let state = app.state::<update::UpdateStateHandle>();
+            if !state.install_on_quit() {
+                return;
+            }
+            // Drop the flag right away so a second close event (multiple
+            // windows, programmatic close) doesn't kick off a second
+            // install task. The close itself is not blocked - the
+            // install runs concurrently and lands on the filesystem
+            // before the process exits; the next launch picks up the
+            // new binary.
+            state.set_install_on_quit(false);
+            let app_handle = app.clone();
+            let state_handle: update::UpdateStateHandle = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = update::worker::install_quietly(&app_handle, &state_handle).await
+                {
+                    eprintln!("update: install-on-quit failed: {err}");
+                }
+            });
+        }
+        _ => {}
     }
 }
 
@@ -206,5 +235,16 @@ fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let auth_state = app.state::<auth::commands::AuthState>();
     auth_state.set_listener(worker.clone() as Arc<dyn auth::commands::AccountChangeListener>);
     app.manage(worker);
+
+    // Auto-update subsystem (ADR-0024, issue #308). The state handle
+    // holds the pending-update slot the Settings panel + banner read,
+    // plus the install-on-quit flag the close-request hook consults.
+    // The worker spins regardless of the toggle so a flip from OFF to
+    // ON picks up on the next tick without needing a restart; the
+    // enabled check happens inside the loop.
+    let update_state = update::state::UpdateState::new();
+    app.manage::<update::state::UpdateStateHandle>(update_state.clone());
+    let update_worker = update::spawn_worker(app.handle().clone(), db_handle, update_state);
+    app.manage::<update::UpdateWorkerHandle>(update_worker);
     Ok(())
 }

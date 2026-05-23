@@ -126,6 +126,11 @@ async function persistAll(
         patch.notify_on_needs_attention ?? current.notify_on_needs_attention,
       notify_on_mention:
         patch.notify_on_mention ?? current.notify_on_mention,
+      // The notifications panel doesn't touch the auto-update fields;
+      // pass through the current values so the writer round-trips them
+      // unchanged.
+      auto_update_enabled: current.auto_update_enabled,
+      auto_update_interval_seconds: current.auto_update_interval_seconds,
     });
   } catch {
     // Store already reverted optimistic state and populated lastError.
