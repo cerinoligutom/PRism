@@ -37,6 +37,12 @@ import { RouterLink, RouterView } from "vue-router";
           </span>
           Repositories
         </RouterLink>
+        <RouterLink to="/settings/updates" class="nav-item" :class="{ active: $route.name === 'settings.updates' }">
+          <span class="nav-icon">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 019.5-2" /><path d="M12.5 3v3h-3" /><path d="M13 8a5 5 0 01-9.5 2" /><path d="M3.5 13v-3h3" /></svg>
+          </span>
+          Updates
+        </RouterLink>
         <RouterLink to="/settings/about" class="nav-item" :class="{ active: $route.name === 'settings.about' }">
           <span class="nav-icon">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6" /><path d="M8 7v4" /><circle cx="8" cy="5" r="0.5" fill="currentColor" stroke="none" /></svg>

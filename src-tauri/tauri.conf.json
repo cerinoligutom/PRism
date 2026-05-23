@@ -33,6 +33,7 @@
     "active": true,
     "category": "DeveloperTool",
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,5 +44,10 @@
     "shortDescription": "Cross-platform desktop dashboard for managing GitHub pull requests.",
     "longDescription": "PRism is a local-first desktop app that watches every pull request you care about across repos, orgs, and GitHub accounts. V1 is read-only: PRism observes and surfaces state; all writes happen on GitHub itself."
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_GENERATED_PUBLIC_KEY",
+      "endpoints": ["https://cerinoligutom.github.io/PRism/latest.json"]
+    }
+  }
 }

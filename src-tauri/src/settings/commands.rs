@@ -1,6 +1,6 @@
 //! Tauri command surface for the `app_settings` singleton.
 //!
-//! Two commands ship here:
+//! Commands shipping here:
 //!
 //! * [`get_app_settings`] - read the singleton row. The migration's CHECK +
 //!   seed INSERT guarantee exactly one row, so the read never has to handle
@@ -9,11 +9,18 @@
 //!   prefs payload, bump `updated_at`, and return the post-write state. The
 //!   Settings panel uses the round-trip to render "Updated <relative>"
 //!   affordances against the same struct it sent.
+//! * [`set_notification_permission_state`] - persist the OS-grant outcome
+//!   answered by the panel's explicit-ask path (ADR 0017 decision 5).
+//! * [`set_last_seen_version`] - persist the in-app "What's new" dialog's
+//!   version cursor (ADR 0025): written by the launch hook on first run, and
+//!   by the dialog dismiss handler on every subsequent version transition.
 //!
-//! `notification_permission_state` is intentionally _not_ rewritten by this
-//! command - the OS-grant lifecycle lives inside the notification sink (ADR
-//! 0017 decision 5), and letting the frontend overwrite it from a stale view
-//! would re-prompt the user on every panel save.
+//! `notification_permission_state`, `last_seen_version`, and the two
+//! `auto_update_last_*` columns are intentionally _not_ rewritten by
+//! `update_app_settings` - they are owned by non-Settings gestures (OS
+//! permission prompt, "What's new" dialog dismiss, updater worker), and
+//! letting the panel echo stale values back would either re-prompt the OS,
+//! re-suppress the dialog, or stomp on the latest check's bookkeeping.
 //!
 //! Errors are stringified for the renderer (matches the existing settings
 //! style; the type itself is internal so leaking the rusqlite message is
@@ -59,16 +66,63 @@ pub async fn update_app_settings(
             SET notifications_enabled = ?1,
                 notify_on_needs_attention = ?2,
                 notify_on_mention = ?3,
+                auto_update_enabled = ?4,
+                auto_update_interval_seconds = ?5,
                 updated_at = strftime('%s', 'now')
           WHERE id = 1",
         rusqlite::params![
             prefs.notifications_enabled as i64,
             prefs.notify_on_needs_attention as i64,
             prefs.notify_on_mention as i64,
+            prefs.auto_update_enabled as i64,
+            prefs.auto_update_interval_seconds,
         ],
     )
     .map_err(|e| format!("update app_settings: {e}"))?;
     AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+}
+
+/// Record the outcome of an updater check. Called by the updater worker
+/// after every poll (background or manual). On success, the failure column
+/// is cleared so the Settings panel's "Last check failed" line disappears
+/// on the next render. On failure, the message is truncated so a verbose
+/// error doesn't blow out the column.
+///
+/// Kept off `update_app_settings` for the same reason the notification
+/// permission state is: the column is owned by a non-Settings gesture (the
+/// worker), and letting the panel echo a stale value would corrupt the
+/// failure bookkeeping. Mirrors the ADR-0017 decision-5 pattern.
+#[tauri::command]
+pub async fn record_update_check(
+    db: State<'_, DbHandle>,
+    success: bool,
+    failure_message: Option<String>,
+) -> Result<AppSettings, String> {
+    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    let truncated = failure_message.as_ref().map(|s| truncate_failure(s));
+    let stored_failure: Option<&str> = if success { None } else { truncated.as_deref() };
+    conn.execute(
+        "UPDATE app_settings
+            SET auto_update_last_check_at = strftime('%s', 'now'),
+                auto_update_last_failure_message = ?1,
+                updated_at = strftime('%s', 'now')
+          WHERE id = 1",
+        rusqlite::params![stored_failure],
+    )
+    .map_err(|e| format!("record update check: {e}"))?;
+    AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+}
+
+/// Cap the persisted failure message so a verbose underlying error doesn't
+/// blow out the column. The Settings panel renders a single line, so any
+/// detail past the ellipsis would be off-screen anyway.
+fn truncate_failure(raw: &str) -> String {
+    const MAX: usize = 240;
+    if raw.len() <= MAX {
+        raw.to_string()
+    } else {
+        format!("{}...", &raw[..MAX])
+    }
 }
 
 /// Persist the OS-reported `notification_permission_state` answered by an
@@ -105,6 +159,39 @@ pub async fn set_notification_permission_state(
     AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
 }
 
+/// Persist the version cursor used by the in-app "What's new" dialog
+/// (ADR 0025).
+///
+/// Two call sites write here:
+///   * The launch hook on first run, when `last_seen_version` is `NULL`. It
+///     echoes the current `app_metadata.version` so the dialog suppresses
+///     itself on a fresh install and only fires on the next version
+///     transition.
+///   * The dialog's dismiss handler (close button, Esc, "Got it" CTA), which
+///     advances the cursor to the running version after the user has
+///     acknowledged the changelog.
+///
+/// Kept off `update_app_settings` for the same reason
+/// `notification_permission_state` is: the column is owned by a non-Settings
+/// gesture, and letting the Settings panel echo a stale cursor would
+/// silently re-suppress the dialog. Mirrors the ADR 0017 decision 5 pattern.
+#[tauri::command]
+pub async fn set_last_seen_version(
+    db: State<'_, DbHandle>,
+    version: String,
+) -> Result<AppSettings, String> {
+    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE app_settings
+            SET last_seen_version = ?1,
+                updated_at = strftime('%s', 'now')
+          WHERE id = 1",
+        rusqlite::params![version],
+    )
+    .map_err(|e| format!("update last_seen_version: {e}"))?;
+    AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,15 +221,40 @@ mod tests {
                 SET notifications_enabled = ?1,
                     notify_on_needs_attention = ?2,
                     notify_on_mention = ?3,
+                    auto_update_enabled = ?4,
+                    auto_update_interval_seconds = ?5,
                     updated_at = strftime('%s', 'now')
               WHERE id = 1",
             rusqlite::params![
                 prefs.notifications_enabled as i64,
                 prefs.notify_on_needs_attention as i64,
                 prefs.notify_on_mention as i64,
+                prefs.auto_update_enabled as i64,
+                prefs.auto_update_interval_seconds,
             ],
         )
         .map_err(|e| format!("update app_settings: {e}"))?;
+        AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+    }
+
+    /// Drive the record-update-check write path without going through `State<...>`.
+    /// Mirrors [`record_update_check`].
+    fn invoke_record_check(
+        db: &DbHandle,
+        success: bool,
+        failure_message: Option<&str>,
+    ) -> Result<AppSettings, String> {
+        let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let stored_failure: Option<&str> = if success { None } else { failure_message };
+        conn.execute(
+            "UPDATE app_settings
+                SET auto_update_last_check_at = strftime('%s', 'now'),
+                    auto_update_last_failure_message = ?1,
+                    updated_at = strftime('%s', 'now')
+              WHERE id = 1",
+            rusqlite::params![stored_failure],
+        )
+        .map_err(|e| format!("record update check: {e}"))?;
         AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
     }
 
@@ -157,6 +269,17 @@ mod tests {
             settings.notification_permission_state,
             NotificationPermissionState::Unprompted
         );
+        assert_eq!(
+            settings.last_seen_version, None,
+            "last_seen_version starts NULL on a fresh install (ADR 0025)"
+        );
+        assert!(
+            !settings.auto_update_enabled,
+            "auto-update defaults OFF on fresh install (ADR-0024)"
+        );
+        assert_eq!(settings.auto_update_interval_seconds, 21600);
+        assert_eq!(settings.auto_update_last_check_at, None);
+        assert_eq!(settings.auto_update_last_failure_message, None);
         assert!(settings.updated_at > 0);
     }
 
@@ -174,6 +297,13 @@ mod tests {
             // Permission state on the payload is ignored by the writer; we
             // pass an arbitrary value to confirm it doesn't leak back.
             notification_permission_state: NotificationPermissionState::Granted,
+            last_seen_version: Some("9.9.9".into()),
+            auto_update_enabled: true,
+            auto_update_interval_seconds: 21600,
+            // Last-check fields on the payload are ignored by the writer;
+            // arbitrary values here confirm they don't leak back.
+            auto_update_last_check_at: Some(42),
+            auto_update_last_failure_message: Some("stale failure".into()),
             updated_at: 0,
         };
         let after = invoke_update(&db, payload).expect("update app_settings");
@@ -184,6 +314,22 @@ mod tests {
             after.notification_permission_state,
             NotificationPermissionState::Unprompted,
             "writer must never echo a stale permission state from the payload"
+        );
+        assert_eq!(
+            after.last_seen_version, None,
+            "writer must never echo a stale last_seen_version from the payload (ADR 0025)"
+        );
+        assert!(
+            after.auto_update_enabled,
+            "auto-update toggle persists through the writer"
+        );
+        assert_eq!(
+            after.auto_update_last_check_at, None,
+            "writer must never echo a stale last-check timestamp"
+        );
+        assert_eq!(
+            after.auto_update_last_failure_message, None,
+            "writer must never echo a stale failure message"
         );
         assert!(
             after.updated_at > before.updated_at,
@@ -255,6 +401,11 @@ mod tests {
                 notify_on_needs_attention: false,
                 notify_on_mention: false,
                 notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
+                auto_update_enabled: false,
+                auto_update_interval_seconds: 21600,
+                auto_update_last_check_at: None,
+                auto_update_last_failure_message: None,
                 updated_at: 0,
             },
         )
@@ -262,5 +413,74 @@ mod tests {
         assert!(after.notifications_enabled);
         assert!(!after.notify_on_needs_attention);
         assert!(!after.notify_on_mention);
+    }
+
+    /// Drive the last-seen-version write path without going through `State<...>`.
+    /// Mirrors [`set_last_seen_version`].
+    fn invoke_set_last_seen(db: &DbHandle, version: &str) -> Result<AppSettings, String> {
+        let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        conn.execute(
+            "UPDATE app_settings
+                SET last_seen_version = ?1,
+                    updated_at = strftime('%s', 'now')
+              WHERE id = 1",
+            rusqlite::params![version],
+        )
+        .map_err(|e| format!("update last_seen_version: {e}"))?;
+        AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+    }
+
+    #[test]
+    fn set_last_seen_version_persists_initial_cursor() {
+        // First-launch path (ADR 0025): the launch hook detects
+        // `last_seen_version IS NULL` and silently writes the current binary
+        // version so the dialog stays suppressed until the next transition.
+        let db = fresh_db();
+        let after = invoke_set_last_seen(&db, "0.1.0").expect("set last_seen_version");
+        assert_eq!(after.last_seen_version, Some("0.1.0".into()));
+    }
+
+    #[test]
+    fn set_last_seen_version_advances_cursor_on_dismiss() {
+        // Dialog-dismiss path (ADR 0025): after the user acknowledges the
+        // concatenated changelog, the cursor advances to the running version
+        // so the next launch on the same binary doesn't re-show the dialog.
+        let db = fresh_db();
+        invoke_set_last_seen(&db, "0.1.0").expect("seed prior cursor");
+        let after = invoke_set_last_seen(&db, "0.4.0").expect("advance cursor");
+        assert_eq!(after.last_seen_version, Some("0.4.0".into()));
+    }
+
+    #[test]
+    fn record_update_check_success_clears_failure_message() {
+        // Worker happy path (ADR-0024): a successful check stamps the
+        // last-check timestamp and clears any prior failure message so the
+        // Settings panel's "Last check failed" line disappears on the next
+        // render.
+        let db = fresh_db();
+        invoke_record_check(&db, false, Some("network down")).expect("seed failure");
+        let after = invoke_record_check(&db, true, None).expect("record success");
+        assert!(
+            after.auto_update_last_check_at.is_some(),
+            "timestamp must advance on every check"
+        );
+        assert_eq!(
+            after.auto_update_last_failure_message, None,
+            "success must clear the failure message"
+        );
+    }
+
+    #[test]
+    fn record_update_check_failure_persists_message() {
+        // Worker failure path (ADR-0024): the message is the only signal the
+        // user sees, so it has to survive the round-trip. No toast, no
+        // banner.
+        let db = fresh_db();
+        let after = invoke_record_check(&db, false, Some("manifest 404")).expect("record failure");
+        assert!(after.auto_update_last_check_at.is_some());
+        assert_eq!(
+            after.auto_update_last_failure_message.as_deref(),
+            Some("manifest 404")
+        );
     }
 }
