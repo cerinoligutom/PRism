@@ -1,7 +1,9 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+
+import { useTauriListener } from "@/composables/useTauriListener";
 
 /**
  * Diagnostic activity feed (issue #122).
@@ -243,7 +245,7 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
    */
   const acknowledgedFailureId = ref<number | null>(null);
 
-  let listeners: UnlistenFn[] = [];
+  const listener = useTauriListener();
   const throttler = makeThrottler((next) => {
     tickerLabel.value = next;
   });
@@ -329,17 +331,17 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
   }
 
   async function bind(loginLookup: (accountId: number | null) => string | null): Promise<void> {
-    if (listeners.length > 0) return;
-    listeners = await Promise.all([
-      listen<ActivityEvent>(SYNC_ACTIVITY_EVENT, (e) => applyEvent(e.payload, loginLookup)),
-    ]);
+    await listener.bind(() =>
+      Promise.all([
+        listen<ActivityEvent>(SYNC_ACTIVITY_EVENT, (e) => applyEvent(e.payload, loginLookup)),
+      ]),
+    );
     await hydrate();
     recomputeTickerFromLatest(loginLookup);
   }
 
   function unbind(): void {
-    for (const off of listeners) off();
-    listeners = [];
+    listener.unbind();
     throttler.dispose();
   }
 

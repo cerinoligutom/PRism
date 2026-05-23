@@ -2,7 +2,9 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { useTimestamp } from "@vueuse/core";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+
+import { useTauriListener } from "@/composables/useTauriListener";
 
 export type SyncPhase =
   | "idle"
@@ -104,7 +106,7 @@ export const useSyncStore = defineStore("sync", () => {
    */
   const appliedAtMs = ref<Map<number, number>>(new Map());
 
-  let listeners: UnlistenFn[] = [];
+  const listener = useTauriListener();
 
   const aggregate = computed<SyncPhase>(() => aggregatePhase(accounts.value));
 
@@ -219,29 +221,29 @@ export const useSyncStore = defineStore("sync", () => {
   }
 
   async function bind(): Promise<void> {
-    if (listeners.length > 0) return;
-    listeners = await Promise.all([
-      listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (e) => applyStatus(e.payload)),
-      listen<SyncStatusEvent>(SYNC_ERROR_EVENT, (e) => applyStatus(e.payload)),
-      listen<SyncRateLimitEvent>(SYNC_RATE_LIMIT_EVENT, (e) => {
-        // The follow-up status event will carry the full state; here we just
-        // surface the warning message so the toast layer can react.
-        lastRateLimitResource.value = e.payload.resource ?? null;
-        const existing = accounts.value.find((a) => a.account_id === e.payload.account_id);
-        if (existing === undefined) return;
-        upsertAccount({
-          ...existing,
-          rate_remaining_pct: e.payload.pct,
-          rate_limit: e.payload.limit ?? existing.rate_limit,
-        });
-      }),
-    ]);
+    await listener.bind(() =>
+      Promise.all([
+        listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (e) => applyStatus(e.payload)),
+        listen<SyncStatusEvent>(SYNC_ERROR_EVENT, (e) => applyStatus(e.payload)),
+        listen<SyncRateLimitEvent>(SYNC_RATE_LIMIT_EVENT, (e) => {
+          // The follow-up status event will carry the full state; here we
+          // just surface the warning message so the toast layer can react.
+          lastRateLimitResource.value = e.payload.resource ?? null;
+          const existing = accounts.value.find((a) => a.account_id === e.payload.account_id);
+          if (existing === undefined) return;
+          upsertAccount({
+            ...existing,
+            rate_remaining_pct: e.payload.pct,
+            rate_limit: e.payload.limit ?? existing.rate_limit,
+          });
+        }),
+      ]),
+    );
     await refreshSnapshot();
   }
 
   function unbind(): void {
-    for (const off of listeners) off();
-    listeners = [];
+    listener.unbind();
   }
 
   async function refreshNow(accountId: number | null = null): Promise<number> {
