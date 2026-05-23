@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
+import { usePreferredDark } from "@vueuse/core";
 
 import type { PrDetailSurface } from "@/types/conversation";
 
@@ -61,11 +62,6 @@ function readPersisted(): PersistedState {
   }
 }
 
-function prefersDark(): boolean {
-  if (typeof window === "undefined") return true;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
 function clampHue(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_STATE.accent.h;
   const wrapped = ((value % 360) + 360) % 360;
@@ -79,8 +75,13 @@ export const useAppearanceStore = defineStore("appearance", () => {
   const prDetailSurface = ref<PrDetailSurface>(DEFAULT_STATE.prDetailSurface);
   const accountScope = ref<number | null>(DEFAULT_STATE.accountScope);
 
+  // VueUse manages the matchMedia listener (registration, removal, SSR
+  // guard) for us. The watcher below re-applies the document attributes
+  // when the OS preference flips while `mode === "system"`.
+  const osPrefersDark = usePreferredDark();
+
   function effectiveTheme(): "dark" | "light" {
-    if (mode.value === "system") return prefersDark() ? "dark" : "light";
+    if (mode.value === "system") return osPrefersDark.value ? "dark" : "light";
     return mode.value;
   }
 
@@ -124,22 +125,17 @@ export const useAppearanceStore = defineStore("appearance", () => {
         ? stored.accountScope
         : null;
     applyToDocument();
-
-    // Always-on OS theme listener so switching to "system" mid-session also
-    // picks up subsequent OS theme changes without requiring re-hydration.
-    if (typeof window !== "undefined") {
-      window
-        .matchMedia("(prefers-color-scheme: dark)")
-        .addEventListener("change", () => {
-          if (mode.value === "system") applyToDocument();
-        });
-    }
   }
 
   watch([mode, density, accent, prDetailSurface, accountScope], () => {
     applyToDocument();
     persist();
   }, { deep: true });
+
+  // Re-apply when the OS preference flips so "system" mode tracks live.
+  watch(osPrefersDark, () => {
+    if (mode.value === "system") applyToDocument();
+  });
 
   function setMode(next: ThemeMode): void {
     mode.value = next;
