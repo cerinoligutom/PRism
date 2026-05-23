@@ -1,6 +1,6 @@
 //! Tauri command surface for the `app_settings` singleton.
 //!
-//! Two commands ship here:
+//! Commands shipping here:
 //!
 //! * [`get_app_settings`] - read the singleton row. The migration's CHECK +
 //!   seed INSERT guarantee exactly one row, so the read never has to handle
@@ -9,11 +9,16 @@
 //!   prefs payload, bump `updated_at`, and return the post-write state. The
 //!   Settings panel uses the round-trip to render "Updated <relative>"
 //!   affordances against the same struct it sent.
+//! * [`set_notification_permission_state`] - persist the OS-grant outcome
+//!   answered by the panel's explicit-ask path (ADR 0017 decision 5).
+//! * [`set_last_seen_version`] - persist the in-app "What's new" dialog's
+//!   version cursor (ADR 0025): written by the launch hook on first run, and
+//!   by the dialog dismiss handler on every subsequent version transition.
 //!
-//! `notification_permission_state` is intentionally _not_ rewritten by this
-//! command - the OS-grant lifecycle lives inside the notification sink (ADR
-//! 0017 decision 5), and letting the frontend overwrite it from a stale view
-//! would re-prompt the user on every panel save.
+//! `notification_permission_state` and `last_seen_version` are intentionally
+//! _not_ rewritten by `update_app_settings` - both columns are owned by
+//! non-Settings gestures, and letting the panel echo stale values back would
+//! either re-prompt the OS or silently re-suppress the dialog.
 //!
 //! Errors are stringified for the renderer (matches the existing settings
 //! style; the type itself is internal so leaking the rusqlite message is
@@ -105,6 +110,39 @@ pub async fn set_notification_permission_state(
     AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
 }
 
+/// Persist the version cursor used by the in-app "What's new" dialog
+/// (ADR 0025).
+///
+/// Two call sites write here:
+///   * The launch hook on first run, when `last_seen_version` is `NULL`. It
+///     echoes the current `app_metadata.version` so the dialog suppresses
+///     itself on a fresh install and only fires on the next version
+///     transition.
+///   * The dialog's dismiss handler (close button, Esc, "Got it" CTA), which
+///     advances the cursor to the running version after the user has
+///     acknowledged the changelog.
+///
+/// Kept off `update_app_settings` for the same reason
+/// `notification_permission_state` is: the column is owned by a non-Settings
+/// gesture, and letting the Settings panel echo a stale cursor would
+/// silently re-suppress the dialog. Mirrors the ADR 0017 decision 5 pattern.
+#[tauri::command]
+pub async fn set_last_seen_version(
+    db: State<'_, DbHandle>,
+    version: String,
+) -> Result<AppSettings, String> {
+    let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE app_settings
+            SET last_seen_version = ?1,
+                updated_at = strftime('%s', 'now')
+          WHERE id = 1",
+        rusqlite::params![version],
+    )
+    .map_err(|e| format!("update last_seen_version: {e}"))?;
+    AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +195,10 @@ mod tests {
             settings.notification_permission_state,
             NotificationPermissionState::Unprompted
         );
+        assert_eq!(
+            settings.last_seen_version, None,
+            "last_seen_version starts NULL on a fresh install (ADR 0025)"
+        );
         assert!(settings.updated_at > 0);
     }
 
@@ -174,6 +216,7 @@ mod tests {
             // Permission state on the payload is ignored by the writer; we
             // pass an arbitrary value to confirm it doesn't leak back.
             notification_permission_state: NotificationPermissionState::Granted,
+            last_seen_version: Some("9.9.9".into()),
             updated_at: 0,
         };
         let after = invoke_update(&db, payload).expect("update app_settings");
@@ -184,6 +227,10 @@ mod tests {
             after.notification_permission_state,
             NotificationPermissionState::Unprompted,
             "writer must never echo a stale permission state from the payload"
+        );
+        assert_eq!(
+            after.last_seen_version, None,
+            "writer must never echo a stale last_seen_version from the payload (ADR 0025)"
         );
         assert!(
             after.updated_at > before.updated_at,
@@ -255,6 +302,7 @@ mod tests {
                 notify_on_needs_attention: false,
                 notify_on_mention: false,
                 notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
                 updated_at: 0,
             },
         )
@@ -262,5 +310,41 @@ mod tests {
         assert!(after.notifications_enabled);
         assert!(!after.notify_on_needs_attention);
         assert!(!after.notify_on_mention);
+    }
+
+    /// Drive the last-seen-version write path without going through `State<...>`.
+    /// Mirrors [`set_last_seen_version`].
+    fn invoke_set_last_seen(db: &DbHandle, version: &str) -> Result<AppSettings, String> {
+        let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        conn.execute(
+            "UPDATE app_settings
+                SET last_seen_version = ?1,
+                    updated_at = strftime('%s', 'now')
+              WHERE id = 1",
+            rusqlite::params![version],
+        )
+        .map_err(|e| format!("update last_seen_version: {e}"))?;
+        AppSettings::load(&conn).map_err(|e| format!("reload app_settings: {e}"))
+    }
+
+    #[test]
+    fn set_last_seen_version_persists_initial_cursor() {
+        // First-launch path (ADR 0025): the launch hook detects
+        // `last_seen_version IS NULL` and silently writes the current binary
+        // version so the dialog stays suppressed until the next transition.
+        let db = fresh_db();
+        let after = invoke_set_last_seen(&db, "0.1.0").expect("set last_seen_version");
+        assert_eq!(after.last_seen_version, Some("0.1.0".into()));
+    }
+
+    #[test]
+    fn set_last_seen_version_advances_cursor_on_dismiss() {
+        // Dialog-dismiss path (ADR 0025): after the user acknowledges the
+        // concatenated changelog, the cursor advances to the running version
+        // so the next launch on the same binary doesn't re-show the dialog.
+        let db = fresh_db();
+        invoke_set_last_seen(&db, "0.1.0").expect("seed prior cursor");
+        let after = invoke_set_last_seen(&db, "0.4.0").expect("advance cursor");
+        assert_eq!(after.last_seen_version, Some("0.4.0".into()));
     }
 }

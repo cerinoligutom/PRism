@@ -18,12 +18,21 @@ export type NotificationPermissionState = "unprompted" | "granted" | "denied";
  * Mirror of `crate::settings::types::AppSettings`. Read via `get_app_settings`
  * and written via `update_app_settings`. The permission state is read here but
  * written through `set_notification_permission_state` (ADR 0017 decision 5).
+ * The `last_seen_version` cursor follows the same shape, written through
+ * `set_last_seen_version` from the "What's new" dialog (ADR 0025).
  */
 export interface AppSettings {
   readonly notifications_enabled: boolean;
   readonly notify_on_needs_attention: boolean;
   readonly notify_on_mention: boolean;
   readonly notification_permission_state: NotificationPermissionState;
+  /**
+   * Last app version the user dismissed the in-app "What's new" dialog
+   * against. `null` means the cursor has never been written (fresh install).
+   * Written by the launch hook on first run, then by the dialog dismiss
+   * handler on every subsequent version transition. ADR 0025.
+   */
+  readonly last_seen_version: string | null;
   /** Unix seconds. Advanced server-side on every write. */
   readonly updated_at: number;
 }
@@ -37,6 +46,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   notify_on_needs_attention: true,
   notify_on_mention: true,
   notification_permission_state: "unprompted",
+  last_seen_version: null,
   updated_at: 0,
 };
 
@@ -61,6 +71,7 @@ export const useAppSettings = defineStore("app-settings", () => {
   );
   const notifyOnMention = computed(() => settings.value.notify_on_mention);
   const permissionState = computed(() => settings.value.notification_permission_state);
+  const lastSeenVersion = computed(() => settings.value.last_seen_version);
 
   async function load(): Promise<void> {
     loading.value = true;
@@ -90,16 +101,18 @@ export const useAppSettings = defineStore("app-settings", () => {
     lastError.value = null;
     try {
       // Echo the full `AppSettings` shape (including the current permission
-      // state) because the Rust command deserialises into the same struct.
-      // The writer ignores the permission column server-side; only the panel
-      // gesture's explicit-ask path writes it via
-      // `set_notification_permission_state`.
+      // state and last-seen-version cursor) because the Rust command
+      // deserialises into the same struct. The writer ignores both columns
+      // server-side; only their dedicated commands
+      // (`set_notification_permission_state`, `set_last_seen_version`) write
+      // them.
       settings.value = await invoke<AppSettings>("update_app_settings", {
         prefs: {
           notifications_enabled: prefs.notifications_enabled,
           notify_on_needs_attention: prefs.notify_on_needs_attention,
           notify_on_mention: prefs.notify_on_mention,
           notification_permission_state: previous.notification_permission_state,
+          last_seen_version: previous.last_seen_version,
           updated_at: 0,
         },
       });
@@ -130,6 +143,25 @@ export const useAppSettings = defineStore("app-settings", () => {
     }
   }
 
+  /**
+   * Advance the in-app "What's new" version cursor (ADR 0025). Called from
+   * two places: the launch hook on first run (so a fresh install records the
+   * current version silently and suppresses the dialog), and the dialog
+   * dismiss handler (so the next launch on the same binary doesn't re-show
+   * the changelog).
+   */
+  async function setLastSeenVersion(version: string): Promise<void> {
+    lastError.value = null;
+    try {
+      settings.value = await invoke<AppSettings>("set_last_seen_version", {
+        version,
+      });
+    } catch (err) {
+      lastError.value = formatError(err);
+      throw new Error(lastError.value);
+    }
+  }
+
   function clearError(): void {
     lastError.value = null;
   }
@@ -142,9 +174,11 @@ export const useAppSettings = defineStore("app-settings", () => {
     notifyOnNeedsAttention,
     notifyOnMention,
     permissionState,
+    lastSeenVersion,
     load,
     update,
     setPermissionState,
+    setLastSeenVersion,
     clearError,
   };
 });

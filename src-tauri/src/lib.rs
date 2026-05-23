@@ -69,6 +69,7 @@ pub fn run() {
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_tracked,
             settings::commands::get_app_settings,
+            settings::commands::set_last_seen_version,
             settings::commands::set_notification_permission_state,
             settings::commands::update_app_settings,
             sync::commands::get_sync_status,
