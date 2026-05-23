@@ -99,7 +99,12 @@ impl SyncStateMap {
         account_id: AccountId,
         update: F,
     ) -> AccountSyncState {
-        let mut guard = self.inner.lock().expect("sync state map poisoned");
+        let mut guard = self.inner.lock().unwrap_or_else(|poisoned| {
+            eprintln!(
+                "sync state map: recovered from poisoned mutex during update(account_id={account_id})"
+            );
+            poisoned.into_inner()
+        });
         let entry = guard
             .entry(account_id)
             .or_insert_with(|| AccountSyncState::new(account_id));
@@ -167,5 +172,33 @@ mod tests {
         assert_eq!(seconds_floor(Duration::from_millis(0)), 1);
         assert_eq!(seconds_floor(Duration::from_millis(500)), 1);
         assert_eq!(seconds_floor(Duration::from_secs(7)), 7);
+    }
+
+    #[test]
+    fn update_recovers_from_poisoned_mutex() {
+        let map = SyncStateMap::new();
+        map.update(7, |s| s.phase = SyncPhase::Synced);
+
+        // Poison the mutex by panicking in a thread that holds the lock.
+        // Silence the panic hook so the test output stays readable; the
+        // join() return value confirms the panic still propagated.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let inner = Arc::clone(&map.inner);
+        let join = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        std::panic::set_hook(prev_hook);
+
+        assert!(join.is_err(), "thread should have panicked");
+        assert!(map.inner.is_poisoned(), "mutex should be poisoned");
+
+        // The fix: update() recovers the poisoned guard, leaves prior data
+        // intact, and applies the closure normally.
+        let state = map.update(7, |s| s.phase = SyncPhase::Syncing);
+        assert_eq!(state.account_id, 7);
+        assert_eq!(state.phase, SyncPhase::Syncing);
     }
 }
