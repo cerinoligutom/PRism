@@ -3820,7 +3820,7 @@ mod tests {
             .execute(
                 "INSERT INTO pull_request_viewer_relations
                     (account_id, pull_request_id, is_authored, is_review_requested,
-                     is_involved, last_seen_at, mentioned_count_unread,
+                     is_involved, relation_observed_at, mentioned_count_unread,
                      mention_scan_watermark_at, needs_attention)
                     VALUES (?1, ?2, 0, 0, 0, 0, 0, 0, 0)",
                 params![account_id, pr_id],

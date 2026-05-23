@@ -229,7 +229,7 @@ fn seed_viewer_relation(db: &DbHandle, account_id: i64, read_at: Option<i64>) {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
-            (account_id, pull_request_id, last_seen_at, read_at)
+            (account_id, pull_request_id, relation_observed_at, read_at)
          VALUES (?1, ?2, 0, ?3)",
         params![account_id, PR_ID, read_at],
     )

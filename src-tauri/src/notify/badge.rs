@@ -210,7 +210,7 @@ mod tests {
                 VALUES ({pr_id}, 10, {pr_id}, 't', '{state}', 0, 'bob',
                         0, {updated_at}, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at,
+                (account_id, pull_request_id, relation_observed_at,
                  read_at, read_pr_updated_at, archived_at)
                 VALUES (1, {pr_id}, 0,
                         {read_at_sql}, {read_pr_updated_at_sql}, {archived_sql});"
@@ -288,10 +288,10 @@ mod tests {
                 VALUES (100, 10, 1, 't', 'open', 0, 'bob',
                         0, 1000, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at, read_at)
+                (account_id, pull_request_id, relation_observed_at, read_at)
                 VALUES (1, 100, 0, NULL);
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at, read_at)
+                (account_id, pull_request_id, relation_observed_at, read_at)
                 VALUES (2, 100, 0, NULL);",
         )
         .unwrap();

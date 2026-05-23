@@ -1544,7 +1544,7 @@ mod tests {
                 (100, 10, 1, 'x', 'open', 'alice', 0, 100, 'main', 'feat');
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at) VALUES
+                 is_involved, relation_observed_at) VALUES
                 (1, 100, 1, 0, 1, 0);
             INSERT INTO review_threads
                 (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES

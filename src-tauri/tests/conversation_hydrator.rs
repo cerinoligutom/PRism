@@ -99,7 +99,7 @@ async fn hydrator_auto_marks_pr_read_after_persisting() {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, mentioned_count_unread)
+                 is_involved, relation_observed_at, mentioned_count_unread)
                 VALUES (1, 100, 1, 0, 0, 0, 7)",
             [],
         )

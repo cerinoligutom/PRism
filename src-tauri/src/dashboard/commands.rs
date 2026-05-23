@@ -227,7 +227,7 @@ mod tests {
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, archived_at)
+                 is_involved, relation_observed_at, archived_at)
                 VALUES (1, ?1, ?2, ?3, ?4, 0, ?5)",
             params![
                 pr_id,

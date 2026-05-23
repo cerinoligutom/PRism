@@ -53,7 +53,7 @@ pub fn mark_read(
         .optional()?;
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
-            (account_id, pull_request_id, last_seen_at,
+            (account_id, pull_request_id, relation_observed_at,
              read_at, read_pr_updated_at, mentioned_count_unread,
              mention_scan_watermark_at)
             VALUES (?1, ?2, strftime('%s','now'),
@@ -105,7 +105,7 @@ pub fn mark_archived(
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
-            (account_id, pull_request_id, last_seen_at, archived_at)
+            (account_id, pull_request_id, relation_observed_at, archived_at)
             VALUES (?1, ?2, strftime('%s','now'), strftime('%s','now'))
          ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
             archived_at = strftime('%s','now')",
@@ -127,7 +127,7 @@ pub fn mark_unarchived(
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
-            (account_id, pull_request_id, last_seen_at, archived_at)
+            (account_id, pull_request_id, relation_observed_at, archived_at)
             VALUES (?1, ?2, strftime('%s','now'), NULL)
          ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
             archived_at = NULL",
@@ -653,7 +653,7 @@ mod tests {
                         {review_decision_sql});
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (1, 100, 0, 0, 0, 0);",
             review_decision_sql = match review_decision {
                 Some(s) => format!("'{s}'"),
@@ -968,7 +968,7 @@ mod tests {
 
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention) VALUES
+                 is_involved, relation_observed_at, needs_attention) VALUES
                 (1, 600, 0, 0, 1, 0, 0),
                 (1, 601, 0, 0, 1, 0, 0),
                 (1, 602, 0, 0, 1, 0, 0),
@@ -1002,7 +1002,7 @@ mod tests {
              -- PR 400: in a tracked repo, no direct flags
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at) VALUES
+                 is_involved, relation_observed_at) VALUES
                 (1, 100, 1, 0, 0, 0),
                 (1, 200, 0, 1, 0, 0),
                 (1, 300, 0, 0, 1, 0),
@@ -1067,7 +1067,7 @@ mod tests {
 
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at) VALUES
+                 is_involved, relation_observed_at) VALUES
                 (1, 700, 0, 0, 1, 0),
                 (1, 701, 0, 0, 1, 0),
                 (1, 702, 0, 0, 1, 0);
@@ -1102,7 +1102,7 @@ mod tests {
 
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at) VALUES
+                 is_involved, relation_observed_at) VALUES
                 (1, 800, 0, 0, 1, 0),
                 (2, 801, 0, 0, 1, 0);
             "#,
@@ -1137,7 +1137,7 @@ mod tests {
             -- needs_attention precomputed on the relation row for alice.
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention) VALUES
+                 is_involved, relation_observed_at, needs_attention) VALUES
                 (1, 900, 0, 0, 0, 0, 1);
             "#,
         )
@@ -1179,7 +1179,7 @@ mod tests {
 
             INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention) VALUES
+                 is_involved, relation_observed_at, needs_attention) VALUES
                 (1, 100, 1, 0, 0, 0, 1),
                 (2, 100, 0, 1, 0, 0, 1);
             "#,
@@ -1390,7 +1390,7 @@ mod tests {
                 VALUES (2, 'b', 'github.com', 'bob', 0);
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention)
+                 is_involved, relation_observed_at, needs_attention)
                 VALUES (2, 100, 1, 0, 0, 0, 1),
                        (2, 200, 1, 0, 0, 0, 1);",
         )
@@ -1443,7 +1443,7 @@ mod tests {
                 VALUES (500, 30, 1, 'e', 'open', 0, 'bob', 0, 1, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention)
+                 is_involved, relation_observed_at, needs_attention)
                 VALUES (1, 500, 0, 0, 1, 0, 1);",
         )
         .unwrap();
@@ -1537,7 +1537,7 @@ mod tests {
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, read_at, mentioned_count_unread,
+                 is_involved, relation_observed_at, read_at, mentioned_count_unread,
                  needs_attention)
                 VALUES (1, 100, 1, 0, 0, 12345, 99999, 3, 1)",
             [],
@@ -1619,7 +1619,7 @@ mod tests {
         seed_pr_for_archive(&conn, 100, "closed", 1);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
+                (account_id, pull_request_id, relation_observed_at)
                 VALUES (1, 100, 0)",
             [],
         )
@@ -1636,7 +1636,7 @@ mod tests {
         seed_pr_for_archive(&conn, 100, "merged", 1);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
+                (account_id, pull_request_id, relation_observed_at)
                 VALUES (1, 100, 0)",
             [],
         )
@@ -1654,7 +1654,7 @@ mod tests {
         seed_pr_for_archive(&conn, 100, "open", 60);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
+                (account_id, pull_request_id, relation_observed_at)
                 VALUES (1, 100, 0)",
             [],
         )
@@ -1671,7 +1671,7 @@ mod tests {
         seed_pr_for_archive(&conn, 100, "closed", 31);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
+                (account_id, pull_request_id, relation_observed_at)
                 VALUES (1, 100, 0)",
             [],
         )
@@ -1704,7 +1704,7 @@ mod tests {
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (2, 'b', 'github.com', 'bob', 0);
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at)
+                (account_id, pull_request_id, relation_observed_at)
                 VALUES (1, 100, 0), (2, 100, 0);",
         )
         .unwrap();
@@ -1873,7 +1873,7 @@ mod tests {
                 VALUES ({pr_id}, 10, {pr_id}, 't', 'merged', 0, 'bob',
                         0, 0, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at, archived_at)
+                (account_id, pull_request_id, relation_observed_at, archived_at)
                 VALUES (1, {pr_id}, 0, {archived_sql});"
         ))
         .unwrap();
@@ -1933,7 +1933,7 @@ mod tests {
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (2, 'b', 'github.com', 'bob', 0);
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at, archived_at)
+                (account_id, pull_request_id, relation_observed_at, archived_at)
                 VALUES (2, 100, 0, NULL);",
         )
         .unwrap();
@@ -1952,7 +1952,7 @@ mod tests {
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (2, 'b', 'github.com', 'bob', 0);
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, last_seen_at, archived_at)
+                (account_id, pull_request_id, relation_observed_at, archived_at)
                 VALUES (2, 100, 0, strftime('%s','now','-30 days'));",
         )
         .unwrap();
