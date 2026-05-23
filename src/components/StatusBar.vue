@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
+import { RouterLink } from "vue-router";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
 import { useSyncActivityStore } from "@/stores/syncActivity";
 import { usePlatformModifier } from "@/composables/usePlatformModifier";
+import { useAppMetadata } from "@/composables/useAppMetadata";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import SyncActivityPanel from "./StatusBar/SyncActivityPanel.vue";
 import { formatDuration } from "@/lib/format";
 
@@ -156,6 +159,26 @@ const budgetLabel = computed<string | null>(() => {
 
 // Refresh-shortcut glyph matches the binding installed by `useKeyboardShortcuts`.
 const refreshGlyph = usePlatformModifier();
+
+const { metadata } = useAppMetadata();
+
+/**
+ * Pill copy. Release builds get the compact `v0.1.0`; dev builds tack on the
+ * SHA so console screenshots from local builds aren't ambiguous about which
+ * commit they came from.
+ */
+const versionLabel = computed<string | null>(() => {
+  const m = metadata.value;
+  if (m === null) return null;
+  if (m.profile === "release") return `v${m.version}`;
+  return `v${m.version} · ${m.commit_sha}`;
+});
+
+const versionTooltip = computed<string>(() => {
+  const m = metadata.value;
+  if (m === null) return "Loading build info";
+  return `Build ${m.commit_sha} · ${m.build_date} (${m.profile})`;
+});
 </script>
 
 <template>
@@ -194,6 +217,12 @@ const refreshGlyph = usePlatformModifier();
       :class="{ 'status-bar__item--hint-disabled': summary.phase === 'syncing' }"
     ><kbd>{{ refreshGlyph }}</kbd><kbd>R</kbd> Refresh</span>
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span> -->
+
+    <PRismTooltip v-if="versionLabel !== null" :text="versionTooltip" side="top" align="end" as-child>
+      <RouterLink to="/settings/about" class="status-bar__item status-bar__version" aria-label="Open About panel">
+        {{ versionLabel }}
+      </RouterLink>
+    </PRismTooltip>
 
     <Teleport to="body">
       <SyncActivityPanel :open="panelOpen" :anchor-rect-snapshot="anchorRectSnapshot" @close="closePanel" />
@@ -265,5 +294,24 @@ const refreshGlyph = usePlatformModifier();
   .status-bar__item--hint {
     display: none;
   }
+}
+
+.status-bar__version {
+  text-decoration: none;
+  color: inherit;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border-radius: var(--r-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-bar__version:hover {
+  background: color-mix(in oklch, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.status-bar__version:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 </style>

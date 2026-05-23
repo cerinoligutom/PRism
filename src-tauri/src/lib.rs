@@ -13,6 +13,7 @@
 //! - `notify`: OS notification dispatch sink (M6 plumbing; ADR 0017)
 //! - `startup`: graceful failure surface for setup-hook + `run()` errors (M7, issue #239)
 
+pub mod app_metadata;
 pub mod auth;
 pub mod conversation;
 pub mod dashboard;
@@ -51,6 +52,7 @@ pub fn run() {
             result
         })
         .invoke_handler(tauri::generate_handler![
+            app_metadata::get_app_metadata,
             auth::commands::add_account,
             auth::commands::list_accounts,
             auth::commands::remove_account,

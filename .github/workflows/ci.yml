@@ -111,6 +111,12 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Version drift check
+        # Fails when package.json, src-tauri/Cargo.toml, and
+        # src-tauri/tauri.conf.json don't agree on the SemVer. ADR-0022
+        # documents the sync mechanism + bump script.
+        run: pnpm check-version
+
       - name: Typecheck
         run: pnpm typecheck
 
