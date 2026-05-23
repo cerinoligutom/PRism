@@ -56,8 +56,8 @@ pub struct SyncErrorPayload {
     pub message: String,
 }
 
-/// Rate-limit warning payload. `pct` is the budget remaining as 0-100; the
-/// guard fires when this falls below 20.
+/// Rate-limit warning payload. `rate_remaining_pct` is the budget remaining
+/// as 0-100; the guard fires when this falls below 20.
 ///
 /// `resource` carries the GitHub bucket whose budget tripped the guard
 /// (`core`, `search`, or `graphql`). The status-bar surface uses it to render
@@ -67,7 +67,7 @@ pub struct SyncErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncRateLimitPayload {
     pub account_id: AccountId,
-    pub pct: u8,
+    pub rate_remaining_pct: u8,
     pub limit: Option<i64>,
     pub reset_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

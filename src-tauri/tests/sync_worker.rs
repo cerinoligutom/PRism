@@ -595,9 +595,12 @@ async fn cycle_skips_below_rate_budget_guard() {
 
     match &report.outcome {
         CycleOutcome::Skipped {
-            reason: SkipReason::RateBudgetGuard { pct },
+            reason: SkipReason::RateBudgetGuard { rate_remaining_pct },
         } => {
-            assert!(*pct < 20, "pct {pct} should be below guard");
+            assert!(
+                *rate_remaining_pct < 20,
+                "rate_remaining_pct {rate_remaining_pct} should be below guard"
+            );
         }
         other => panic!("expected RateBudgetGuard, got {other:?}"),
     }
