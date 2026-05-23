@@ -320,34 +320,11 @@ onMounted(() => {
   font-size: var(--fs-12);
 }
 
-/* `set-row` mirrors the AppearanceSettings primitive so settings panels stay
- * visually consistent. The `--muted` modifier dims the secondary toggles
- * while the master is OFF; the underlying switch is also `disabled` so the
- * dim is reinforced by the switch primitive's own disabled state. */
-.set-row {
-  background: var(--bg-2);
-  padding: 14px 18px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--s-4);
-  align-items: center;
-}
-
+/* `.set-row` base styles live in primitives.css. `--muted` is the panel-
+ * specific modifier that dims the secondary toggles while the master is OFF;
+ * the underlying switch is also `disabled` so the dim is reinforced by the
+ * switch primitive's own disabled state. */
 .set-row--muted {
   opacity: 0.55;
-}
-
-.set-row__name {
-  font-size: var(--fs-13);
-  color: var(--text);
-  font-weight: 500;
-}
-
-.set-row__desc {
-  font-size: var(--fs-12);
-  color: var(--text-mute);
-  margin-top: 2px;
-  line-height: 1.45;
-  max-width: 540px;
 }
 </style>

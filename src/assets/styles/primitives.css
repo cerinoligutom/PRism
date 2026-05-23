@@ -361,6 +361,33 @@ kbd {
 .segmented .ico { color: var(--text-faint); display: inline-flex; }
 .segmented button.active .ico { color: var(--text); }
 
+/* ────── Settings rows ──────
+ * Two-column label/value primitive shared by every Settings panel
+ * (Appearance / Notifications / About). The `.set-row__name` is the
+ * primary label; `.set-row__desc` is the secondary one-liner under it.
+ * Panel-specific modifiers (e.g. `.set-row--muted` for the cascading
+ * disabled state when a master toggle is OFF) stay in the consumer. */
+.set-row {
+  background: var(--bg-2);
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--s-4);
+  align-items: center;
+}
+.set-row__name {
+  font-size: var(--fs-13);
+  color: var(--text);
+  font-weight: 500;
+}
+.set-row__desc {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  margin-top: 2px;
+  line-height: 1.45;
+  max-width: 540px;
+}
+
 /* ────── In-app scrollbars ────── */
 .scroll::-webkit-scrollbar { width: 10px; height: 10px; }
 .scroll::-webkit-scrollbar-thumb {
