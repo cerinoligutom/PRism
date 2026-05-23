@@ -45,6 +45,14 @@ pub struct AppSettings {
     pub notify_on_needs_attention: bool,
     pub notify_on_mention: bool,
     pub notification_permission_state: NotificationPermissionState,
+    /// Last app version the user dismissed the in-app "What's new" dialog
+    /// against. `None` means the cursor has never been written (fresh
+    /// install) - the launch hook records the current version silently and
+    /// suppresses the dialog so a first-time user isn't greeted with a
+    /// "what's new" they have no context for. Subsequent version transitions
+    /// open the dialog, which writes the new version on dismiss. See
+    /// ADR 0025 for the full design.
+    pub last_seen_version: Option<String>,
     /// Unix seconds. Updated by the writer command on every change so the
     /// frontend can show "Updated <relative>" affordances if needed.
     pub updated_at: i64,
@@ -60,6 +68,7 @@ impl AppSettings {
                     notify_on_needs_attention,
                     notify_on_mention,
                     notification_permission_state,
+                    last_seen_version,
                     updated_at
                FROM app_settings
               WHERE id = 1",
@@ -71,7 +80,8 @@ impl AppSettings {
                     notify_on_needs_attention: row.get::<_, i64>(1)? != 0,
                     notify_on_mention: row.get::<_, i64>(2)? != 0,
                     notification_permission_state: NotificationPermissionState::from_storage(&perm),
-                    updated_at: row.get(4)?,
+                    last_seen_version: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         )
@@ -104,6 +114,10 @@ mod tests {
             settings.notification_permission_state,
             NotificationPermissionState::Unprompted,
             "permission state starts unprompted"
+        );
+        assert_eq!(
+            settings.last_seen_version, None,
+            "last_seen_version starts NULL so the first launch is the silent-record path (ADR 0025)"
         );
         assert!(settings.updated_at > 0, "updated_at seeded to now()");
     }

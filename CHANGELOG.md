@@ -10,6 +10,8 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 
 ### Added
 
+- In-app "What's new" dialog (#305).
+
 ### Changed
 
 ### Deprecated

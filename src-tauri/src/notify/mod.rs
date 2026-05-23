@@ -177,6 +177,7 @@ mod tests {
                 notify_on_needs_attention: true,
                 notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
                 updated_at: 0,
             },
         );
@@ -209,6 +210,7 @@ mod tests {
                 notify_on_needs_attention: true,
                 notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
                 updated_at: 0,
             },
         );
@@ -238,6 +240,7 @@ mod tests {
                 notify_on_needs_attention: true,
                 notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
                 updated_at: 0,
             },
         );
@@ -266,6 +269,7 @@ mod tests {
                 notify_on_needs_attention: true,
                 notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Denied,
+                last_seen_version: None,
                 updated_at: 0,
             },
         );
@@ -298,6 +302,7 @@ mod tests {
                 notify_on_needs_attention: true,
                 notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Granted,
+                last_seen_version: None,
                 updated_at: 0,
             },
         );
