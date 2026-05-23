@@ -64,7 +64,8 @@ jobs:
             chore
             revert
           # Mirrors CONTRIBUTING.md → "Scopes". Optional — PRs that don't
-          # cleanly map to a scope can omit it.
+          # cleanly map to a scope can omit it. `release` is reserved for
+          # the `chore(release): vX.Y.Z` PR opened by prepare-release.yml.
           scopes: |
             ui
             sync
@@ -78,6 +79,7 @@ jobs:
             ci
             adr
             repo
+            release
           requireScope: false
           # No subjectPattern: Conventional Commits doesn't restrict case, and
           # CONTRIBUTING.md's own examples include uppercase-led subjects

@@ -40,7 +40,7 @@ We follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1
 
 ### Scopes (optional but encouraged)
 
-`ui`, `sync`, `db`, `auth`, `tauri`, `github`, `notif`, `settings`, `docs`, `ci`. Use the scope that maps to the issue label and the area of code being touched. If a change spans many areas, omit the scope.
+`ui`, `sync`, `db`, `auth`, `tauri`, `github`, `notif`, `settings`, `docs`, `ci`, `adr`, `repo`, `release`. Use the scope that maps to the issue label and the area of code being touched. If a change spans many areas, omit the scope. `release` is reserved for the `chore(release): vX.Y.Z` PR opened by `.github/workflows/prepare-release.yml`.
 
 ### Breaking changes
 
@@ -108,6 +108,15 @@ Why at creation time and not after: applying labels post-create can fire project
 ## Changelog
 
 PRism keeps a [Keep-a-Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) file at [`CHANGELOG.md`](CHANGELOG.md). If your PR introduces a user-facing change (new functionality, a behaviour change, a bug fix worth surfacing, a deprecation, a removed surface, or a security-relevant fix), append a one-line bullet to the matching subheading under `[Unreleased]` in the same PR. Internal refactors, build / CI plumbing, and docs-only changes don't need an entry. Releases promote `[Unreleased]` to a dated version block via `pnpm stamp-changelog --version X.Y.Z`; don't add dated version headings by hand.
+
+## Release pipeline
+
+Releases are cut by two coupled workflows in [`.github/workflows/`](.github/workflows/) (see ADR-0023 for the design):
+
+1. **`prepare-release.yml`** runs on manual `workflow_dispatch`. Pick the SemVer bump (`patch` / `minor` / `major`) or supply an explicit `version` override; an optional `dry_run` boolean previews the composed notes in the workflow summary without opening a PR. On a real run the workflow bumps the three version files via `pnpm bump-version`, promotes `[Unreleased]` via `pnpm stamp-changelog`, composes release notes from squashed PR titles since the last `v*` tag (grouped by Conventional Commit type), and opens a `chore(release): vX.Y.Z` PR on a `release/vX.Y.Z` branch.
+2. **`tag-on-release-merge.yml`** watches `push: main` for the shape `prepare-release.yml` produces (subject `chore(release): vX.Y.Z (#NNN)` + diff touching `CHANGELOG.md` + `package.json` + `src-tauri/Cargo.toml`). On match it reads the version from `package.json` and pushes a matching `vX.Y.Z` tag at the merge commit. Ordinary `chore(deps): ...` commits and one-file CHANGELOG nudges are filtered out by the subject regex + the touched-files check.
+
+The tag push downstream trips the cross-platform build workflow (a separate file, tracked in #304). Re-running `prepare-release.yml` for the same version is blocked by the "refuse to overwrite an existing tag" guard.
 
 ## ADR process
 
