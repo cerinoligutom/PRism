@@ -368,7 +368,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref, review_decision)
                 VALUES (100, 10, 1, 't', 'open', 0, '{author_login}',
                         0, {pr_updated_at}, 'main', 'feat',
@@ -519,7 +519,7 @@ mod tests {
                  INSERT INTO repos (id, account_id, owner, name, visibility)
                     VALUES (10, 1, 'owner', 'repo', 'public');
                  INSERT INTO pull_requests
-                    (id, repo_id, number, title, state, draft, author_login,
+                    (id, repo_id, number, title, state, is_draft, author_login,
                      created_at, updated_at, base_ref, head_ref)
                     VALUES (100, 10, 1, 't', 'open', 0, 'bob',
                             0, 1_700_000_000, 'main', 'feat');",
@@ -689,7 +689,7 @@ mod tests {
                  INSERT INTO repos (id, account_id, owner, name, visibility)
                     VALUES (10, 1, 'owner', 'repo', 'public');
                  INSERT INTO pull_requests
-                    (id, repo_id, number, title, state, draft, author_login,
+                    (id, repo_id, number, title, state, is_draft, author_login,
                      created_at, updated_at, base_ref, head_ref)
                     VALUES (100, 10, 1, 't', 'open', 0, 'bob',
                             0, 1_700_000_000, 'main', 'feat');",

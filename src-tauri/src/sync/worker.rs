@@ -1608,7 +1608,7 @@ pub fn write_pr_updates(
         let ci = compute_ci_rollup(d);
         tx.execute(
             "INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref,
                  mergeable, review_decision, additions, deletions, changed_files,
                  ci_state, ci_total, ci_passing)
@@ -1617,7 +1617,7 @@ pub fn write_pr_updates(
              ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 state = excluded.state,
-                draft = excluded.draft,
+                is_draft = excluded.is_draft,
                 author_login = excluded.author_login,
                 updated_at = excluded.updated_at,
                 base_ref = excluded.base_ref,
@@ -2721,7 +2721,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (100, 10, 42, 'placeholder', 'open', 0, '', 0, 0, 'main', 'feat');",
         )

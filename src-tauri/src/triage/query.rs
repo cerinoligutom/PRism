@@ -366,7 +366,7 @@ pub fn chip_predicate(chip: ChipKey) -> &'static str {
         }
         ChipKey::CiFailing => "pr.ci_state IN ('FAILURE', 'ERROR')",
         ChipKey::Stale => "(strftime('%s','now') - pr.updated_at) > 604800",
-        ChipKey::Drafts => "pr.draft = 1",
+        ChipKey::Drafts => "pr.is_draft = 1",
     }
 }
 
@@ -646,7 +646,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref, review_decision)
                 VALUES (100, 10, 1, 't', 'open', 0, '{author_login}',
                         0, 0, 'main', 'feat',
@@ -799,7 +799,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (100, 10, 1, 't', 'open', 0, 'alice', 0, 0, 'main', 'feat');",
         )
@@ -955,7 +955,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public');
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref, ci_state) VALUES
                 (600, 10, 1, 'd',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', NULL),
                 (601, 10, 2, 'ci', 'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 'FAILURE'),
@@ -990,7 +990,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public', 0),
                 (20, 1, 'alice', 'api', 'public', 1);
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref) VALUES
                 (100, 10, 1, 'a', 'open', 0, 'alice', 0, 1, 'main', 'feat'),
                 (200, 10, 2, 'b', 'open', 0, 'bob',   0, 1, 'main', 'feat'),
@@ -1059,7 +1059,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public');
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref, ci_state) VALUES
                 (700, 10, 1, 'd+ci',  'open', 1, 'bob', 0, strftime('%s','now'), 'main', 'a', 'FAILURE'),
                 (701, 10, 2, 'ci',    'open', 0, 'bob', 0, strftime('%s','now'), 'main', 'b', 'FAILURE'),
@@ -1095,7 +1095,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public');
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref) VALUES
                 (800, 10, 1, 'alice-pr', 'open', 1, 'x', 0, strftime('%s','now'), 'main', 'a'),
                 (801, 10, 2, 'bob-pr',   'open', 1, 'y', 0, strftime('%s','now'), 'main', 'b');
@@ -1130,7 +1130,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public', 1);
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref, ci_state) VALUES
                 (900, 10, 1, 't', 'open', 1, 'x', 0, strftime('%s','now'), 'main', 'a', 'FAILURE');
 
@@ -1172,7 +1172,7 @@ mod tests {
                 (10, 1, 'alice', 'web', 'public');
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref) VALUES
                 (100, 10, 1, 'shared', 'open', 0, 'someone-else',
                  0, strftime('%s','now'), 'main', 'feat-a');
@@ -1287,7 +1287,7 @@ mod tests {
         // LEFT JOIN multiplies rows; the COUNT DISTINCT collapses them.
         let conn = fresh_db();
         seed_two_account_shared_pr_attention_fixture(&conn);
-        conn.execute("UPDATE pull_requests SET draft = 1 WHERE id = 100", [])
+        conn.execute("UPDATE pull_requests SET is_draft = 1 WHERE id = 100", [])
             .unwrap();
 
         let counts = list_filter_chip_counts(&conn, DashboardView::Authored, None).unwrap();
@@ -1314,7 +1314,7 @@ mod tests {
                 (20, 2, 'bob',   'cli', 'public', 1);
 
             INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref) VALUES
                 (100, 10, 1, 'alice-tracked', 'open', 1, 'someone-else',
                  0, strftime('%s','now'), 'main', 'feat-a'),
@@ -1438,7 +1438,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked)
                 VALUES (30, 2, 'bob', 'cli', 'public', 1);
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (500, 30, 1, 'e', 'open', 0, 'bob', 0, 1, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
@@ -1468,7 +1468,7 @@ mod tests {
              INSERT OR IGNORE INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES ({pr_id}, 10, {pr_id}, 't', '{state}', 0, 'bob',
                         0, strftime('%s','now','-{days_inactive} days'),
@@ -1868,7 +1868,7 @@ mod tests {
         };
         conn.execute_batch(&format!(
             "INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES ({pr_id}, 10, {pr_id}, 't', 'merged', 0, 'bob',
                         0, 0, 'main', 'feat');
@@ -1972,7 +1972,7 @@ mod tests {
              INSERT OR IGNORE INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (100, 10, 1, 't', 'merged', 0, 'bob',
                         0, 0, 'main', 'feat');",

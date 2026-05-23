@@ -25,6 +25,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0013_rename_team_tracked.sql"),
     include_str!("../../migrations/0014_diff_hunk.sql"),
     include_str!("../../migrations/0015_index_review_comments_author_login.sql"),
+    include_str!("../../migrations/0016_rename_pull_requests_draft.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -428,6 +429,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tracked, 1, "opt-in must survive the column rename");
+    }
+
+    /// Migration 0016 renames `pull_requests.draft` to `pull_requests.is_draft`.
+    /// SQLite's `ALTER TABLE ... RENAME COLUMN` is in-place, so any PR row
+    /// marked draft before the rename must keep the flag under the new name.
+    #[test]
+    fn rename_draft_to_is_draft_preserves_row_data() {
+        // 0016 sits at zero-index 15 (NNNN numbers start at 0001), so
+        // `take(15)` lands every migration up through 0015 and stops before
+        // the rename.
+        const PRE_RENAME_PREFIX: usize = 15;
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_rename = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(PRE_RENAME_PREFIX)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_rename.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 1, 'me', 0, 0, 'main', 'feat');",
+        )
+        .unwrap();
+        migrations().to_latest(&mut conn).unwrap();
+        let is_draft: i64 = conn
+            .query_row(
+                "SELECT is_draft FROM pull_requests WHERE id = 100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(is_draft, 1, "draft flag must survive the column rename");
     }
 
     /// Migration 0015 adds an index over `review_comments.author_login`. It

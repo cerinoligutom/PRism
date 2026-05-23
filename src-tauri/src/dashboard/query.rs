@@ -73,7 +73,7 @@ const PR_PROJECTION_COLUMNS: &str = "
     pr.number,
     pr.title,
     pr.state,
-    pr.draft,
+    pr.is_draft,
     pr.mergeable,
     pr.review_decision,
     pr.author_login,
@@ -122,7 +122,7 @@ const PR_PROJECTION_COLUMNS_UNION: &str = "
     pr.number,
     pr.title,
     pr.state,
-    pr.draft,
+    pr.is_draft,
     pr.mergeable,
     pr.review_decision,
     pr.author_login,
@@ -1431,7 +1431,7 @@ mod tests {
     fn chip_where_clause_and_composes_active_chips() {
         let clause = chip_where_clause(&[ChipKey::Drafts, ChipKey::CiFailing]);
         assert!(
-            clause.contains("AND (pr.draft = 1)"),
+            clause.contains("AND (pr.is_draft = 1)"),
             "missing drafts: {clause}"
         );
         assert!(
@@ -1449,7 +1449,7 @@ mod tests {
             &[ChipKey::Drafts],
         );
         assert!(
-            sql.contains("AND (pr.draft = 1)"),
+            sql.contains("AND (pr.is_draft = 1)"),
             "chip predicate missing; SQL: {sql}"
         );
     }

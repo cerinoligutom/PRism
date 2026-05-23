@@ -255,7 +255,7 @@ fn seed_repo_with_pr(
     .unwrap();
     conn.execute(
         "INSERT OR IGNORE INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (?1, ?2, ?3, 'placeholder', 'open', 0, '', 0, 0, 'main', 'feature')",
         params![pr_id, repo_id, number],
@@ -1065,7 +1065,7 @@ async fn end_of_cycle_runs_auto_archive_sweep() {
         // PR 888: open, 90 days inactive - sweep must skip.
         conn.execute(
             "INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (999, 200, 1, 'closed-old', 'closed', 0, 'bob',
                         0, strftime('%s','now','-60 days'), 'main', 'feat'),

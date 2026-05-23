@@ -322,13 +322,13 @@ fn upsert_pull_request(
     // constraint guards against a row collision on re-seed.
     conn.execute(
         "INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             state = excluded.state,
-            draft = excluded.draft,
+            is_draft = excluded.is_draft,
             author_login = excluded.author_login,
             updated_at = excluded.updated_at,
             base_ref = excluded.base_ref,

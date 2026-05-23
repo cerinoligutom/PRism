@@ -64,7 +64,7 @@ fn seed_fixture(conn: &Connection) {
             (30, 2, 'bob',   'cli', 'public', 1);
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref,
              mergeable, review_decision, additions, deletions, changed_files,
              ci_state, ci_total, ci_passing) VALUES
@@ -754,7 +754,7 @@ fn reviewer_hydration_deduplicates_multiple_reviews_per_login() {
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref,
              mergeable, review_decision, additions, deletions, changed_files,
              ci_state, ci_total, ci_passing) VALUES
@@ -813,7 +813,7 @@ fn reviewer_hydration_state_priority_tiebreak_on_equal_submitted_at() {
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref,
              mergeable, review_decision, additions, deletions, changed_files,
              ci_state, ci_total, ci_passing) VALUES
@@ -861,7 +861,7 @@ fn reviewer_hydration_drops_login_whose_only_state_is_dismissed_even_when_reques
             (10, 1, 'alice', 'web', 'public', 0);
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref,
              mergeable, review_decision, additions, deletions, changed_files,
              ci_state, ci_total, ci_passing) VALUES
@@ -954,7 +954,7 @@ fn seed_stale_fixture(conn: &Connection) {
         -- updated_at varied: PR 101 oldest, PR 103 newest. The Stale sort is
         -- ASC, so the row order must be 101, 102, 103.
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref) VALUES
             (101, 10, 1, 'old',    'open', 0, 'bob', 0, 100, 'main', 'a'),
             (102, 10, 2, 'middle', 'open', 0, 'bob', 0, 500, 'main', 'b'),
@@ -1004,7 +1004,7 @@ fn seed_needs_me_fixture(conn: &Connection) {
             (10, 1, 'alice', 'web', 'public');
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
             (200, 10, 1, 'attn',     'open', 0, 'bob', 0, 100, 100,  'main', 'a'),
             (201, 10, 2, 'no-attn1', 'open', 0, 'bob', 0, 200, 200,  'main', 'b'),
@@ -1062,7 +1062,7 @@ fn seed_chip_fixture(conn: &Connection) {
         -- PR 304: needs_attention precomputed on the relation row.
         -- PR 305: nothing - control row, matches no chip.
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref, ci_state) VALUES
             (300, 10, 1, 'draft',   'open', 1, 'bob', 0, {fresh_updated_at}, 'main', 'a', NULL),
             (301, 10, 2, 'ci',      'open', 0, 'bob', 0, {fresh_updated_at}, 'main', 'b', 'FAILURE'),
@@ -1180,7 +1180,7 @@ fn two_active_chips_intersect_via_and_composition() {
     conn.execute_batch(
         r#"
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref, ci_state) VALUES
             (306, 10, 7, 'draft+ci', 'open', 1, 'bob', 0,
              strftime('%s','now'), 'main', 'g', 'ERROR');
@@ -1466,7 +1466,7 @@ fn seed_cross_host_login_collision_fixture(conn: &Connection) {
             (10, 1, 'ada', 'web', 'public');
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
             (100, 10, 1, 'web/#1', 'open', 0, 'someone-else', 0, 1000, 1000,
              'main', 'feat-a');
@@ -1564,7 +1564,7 @@ fn seed_two_account_shared_pr_fixture(conn: &Connection) {
             (10, 1, 'alice', 'web', 'public');
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
             (100, 10, 1, 'shared', 'open', 0, 'someone-else', 0, 1000, 1000,
              'main', 'feat-a');
@@ -1824,7 +1824,7 @@ fn union_url_uses_repo_owning_account_host_not_first_relation_owner() {
             (10, 1, 'alice', 'web', 'public');
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
             (100, 10, 1, 'cross-host', 'open', 0, 'someone-else', 0, 1000, 1000,
              'main', 'feat-a');
@@ -2207,7 +2207,7 @@ fn archive_view_ignores_view_split_predicates() {
 
         -- Four PRs covering each view-split flag exactly once.
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref) VALUES
             (501, 10, 1, 'auth',     'open', 0, 'alice', 0, 100, 'main', 'a'),
             (502, 10, 2, 'review',   'open', 0, 'bob',   0, 200, 'main', 'b'),
