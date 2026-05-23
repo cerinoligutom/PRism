@@ -82,7 +82,7 @@ fn seed_fixture(conn: &Connection) {
         -- Relations: alice authored PR 100; bob review-requested on PR 100.
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 1, 0),
             (2, 100, 0, 1, 0, 0),
             (1, 200, 0, 0, 1, 0),
@@ -427,7 +427,7 @@ fn account_filter_excludes_other_accounts_in_authored_view() {
             VALUES (3, 'c', 'github.com', 'carol', 0);
          INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at)
+             is_involved, relation_observed_at)
             VALUES (3, 500, 1, 0, 0, 0);",
     )
     .unwrap();
@@ -763,7 +763,7 @@ fn reviewer_hydration_deduplicates_multiple_reviews_per_login() {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 1, 0);
 
         -- bob submits three reviews on PR 100 at ascending timestamps.
@@ -822,7 +822,7 @@ fn reviewer_hydration_state_priority_tiebreak_on_equal_submitted_at() {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 1, 0);
 
         -- Same login + same submitted_at; APPROVED inserted before
@@ -870,7 +870,7 @@ fn reviewer_hydration_drops_login_whose_only_state_is_dismissed_even_when_reques
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 1, 0);
 
         INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
@@ -962,7 +962,7 @@ fn seed_stale_fixture(conn: &Connection) {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 101, 0, 0, 1, 0),
             (1, 102, 0, 0, 1, 0),
             (1, 103, 0, 0, 1, 0);
@@ -1012,7 +1012,7 @@ fn seed_needs_me_fixture(conn: &Connection) {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at, needs_attention) VALUES
+             is_involved, relation_observed_at, needs_attention) VALUES
             (1, 200, 0, 0, 1, 0, 1),
             (1, 201, 0, 0, 1, 0, 0),
             (1, 202, 0, 0, 1, 0, 0);
@@ -1076,7 +1076,7 @@ fn seed_chip_fixture(conn: &Connection) {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at, needs_attention) VALUES
+             is_involved, relation_observed_at, needs_attention) VALUES
             (1, 300, 0, 0, 1, 0, 0),
             (1, 301, 0, 0, 1, 0, 0),
             (1, 302, 0, 0, 1, 0, 0),
@@ -1186,7 +1186,7 @@ fn two_active_chips_intersect_via_and_composition() {
              strftime('%s','now'), 'main', 'g', 'ERROR');
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 306, 0, 0, 1, 0);
         "#,
     )
@@ -1473,7 +1473,7 @@ fn seed_cross_host_login_collision_fixture(conn: &Connection) {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 0, 0, 1, 0),
             (2, 100, 0, 0, 1, 0);
 
@@ -1571,7 +1571,7 @@ fn seed_two_account_shared_pr_fixture(conn: &Connection) {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 0, 0),
             (2, 100, 0, 1, 0, 0);
         "#,
@@ -1831,7 +1831,7 @@ fn union_url_uses_repo_owning_account_host_not_first_relation_owner() {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at) VALUES
+             is_involved, relation_observed_at) VALUES
             (1, 100, 1, 0, 0, 0),
             (2, 100, 1, 0, 0, 0);
         "#,
@@ -2216,7 +2216,7 @@ fn archive_view_ignores_view_split_predicates() {
 
         INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at, archived_at) VALUES
+             is_involved, relation_observed_at, archived_at) VALUES
             (1, 501, 1, 0, 0, 0, 1000),
             (1, 502, 0, 1, 0, 0, 2000),
             (1, 503, 0, 0, 1, 0, 3000),

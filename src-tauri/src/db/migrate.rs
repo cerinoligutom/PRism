@@ -26,6 +26,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0014_diff_hunk.sql"),
     include_str!("../../migrations/0015_index_review_comments_author_login.sql"),
     include_str!("../../migrations/0016_rename_pull_requests_draft.sql"),
+    include_str!("../../migrations/0017_rename_relation_last_seen_at.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -472,6 +473,51 @@ mod tests {
         assert_eq!(is_draft, 1, "draft flag must survive the column rename");
     }
 
+    /// Migration 0017 renames `pull_request_viewer_relations.last_seen_at`
+    /// to `relation_observed_at`. Replays migrations up through 0016,
+    /// seeds a relation with the old column name, runs 0017, and reads
+    /// back via the new name to prove the timestamp survived.
+    #[test]
+    fn rename_relation_last_seen_at_preserves_row_data() {
+        // 0017 sits at zero-index 16 (NNNN numbers start at 0001).
+        const PRE_RENAME_PREFIX: usize = 16;
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_rename = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(PRE_RENAME_PREFIX)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_rename.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, last_seen_at)
+                VALUES (1, 100, 1, 0, 0, 12345);",
+        )
+        .unwrap();
+        migrations().to_latest(&mut conn).unwrap();
+        let observed_at: i64 = conn
+            .query_row(
+                "SELECT relation_observed_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(observed_at, 12345, "timestamp must survive the rename");
+    }
+
     /// Migration 0015 adds an index over `review_comments.author_login`. It
     /// must apply cleanly on top of an existing post-M6 schema that already
     /// holds review_comments rows (the same shape every installed binary
@@ -573,7 +619,7 @@ mod tests {
                 VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (1, 100, 1, 0, 1, 0);",
         )
         .unwrap();

@@ -6,7 +6,7 @@
 //! enrichment phase then consumes the union of newly-discovered PRs alongside
 //! anything still present in the relations table.
 //!
-//! Pruning is the cycle's final phase: any relation whose `last_seen_at`
+//! Pruning is the cycle's final phase: any relation whose `relation_observed_at`
 //! predates the cycle start is dropped, so revoked relationships (an unassigned
 //! review, a removed mention) disappear within one cycle.
 
@@ -136,7 +136,7 @@ impl<'a> DiscoveryAccumulator<'a> {
     /// Body-hash cache hit path (issue #234). The page response matched the
     /// previous cycle's body byte-for-byte, so the relations the per-node
     /// ingest path would have rewritten are already in the DB from last cycle.
-    /// All we need is to lift `last_seen_at` on the matching relation rows so
+    /// All we need is to lift `relation_observed_at` on the matching relation rows so
     /// the prune phase doesn't drop them as stale; the heavy upserts are
     /// elided entirely. The relation flag itself doesn't need re-OR'ing —
     /// an unchanged response means the same flag set as last cycle, which is
@@ -149,7 +149,7 @@ impl<'a> DiscoveryAccumulator<'a> {
         let conn = self.db.lock().expect("db poisoned");
         let mut stmt = conn.prepare(
             "UPDATE pull_request_viewer_relations
-                SET last_seen_at = ?1
+                SET relation_observed_at = ?1
               WHERE account_id = ?2 AND pull_request_id = ?3",
         )?;
         for pr in prs {
@@ -176,7 +176,7 @@ impl<'a> DiscoveryAccumulator<'a> {
 /// Run all three discovery queries for one account and persist the results.
 ///
 /// `cycle_start` is the unix-seconds timestamp the cycle began; it's written
-/// as `last_seen_at` on every confirmed relation row so the pruning phase can
+/// as `relation_observed_at` on every confirmed relation row so the pruning phase can
 /// identify stale entries with a single `<` comparison.
 ///
 /// `viewer_login` keys the GraphQL body-hash cache (ADR 0004, issue #234) so
@@ -237,9 +237,9 @@ async fn run_relation_query(
         let cache_hit = client.graphql_body_unchanged(&cache_key, &body);
 
         if cache_hit {
-            // Body matched last cycle. Lift `last_seen_at` on the relations
+            // Body matched last cycle. Lift `relation_observed_at` on the relations
             // the cached page would have re-stamped, then skip the heavy
-            // per-node upserts. The prune phase keys off `last_seen_at`, so
+            // per-node upserts. The prune phase keys off `relation_observed_at`, so
             // bumping it is what keeps these rows alive across this cycle.
             let prs: Vec<&DiscoveryPullRequest> = data
                 .search
@@ -408,7 +408,7 @@ fn upsert_viewer_relation(
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, is_authored, is_review_requested,
-             is_involved, last_seen_at)
+             is_involved, relation_observed_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
             is_authored = pull_request_viewer_relations.is_authored
@@ -417,7 +417,7 @@ fn upsert_viewer_relation(
                                   | excluded.is_review_requested,
             is_involved = pull_request_viewer_relations.is_involved
                           | excluded.is_involved,
-            last_seen_at = excluded.last_seen_at",
+            relation_observed_at = excluded.relation_observed_at",
         params![
             account_id as i64,
             pr_id,
@@ -431,7 +431,7 @@ fn upsert_viewer_relation(
     Ok(())
 }
 
-/// Drop stale relations for one account whose `last_seen_at` predates
+/// Drop stale relations for one account whose `relation_observed_at` predates
 /// `cycle_start`. Returns the number of rows removed.
 ///
 /// Per-account scoping matters because each account's cycle runs on its own
@@ -445,7 +445,7 @@ pub fn prune_stale_relations_for_account(
     let conn = crate::db::lock_db(db)?;
     let removed = conn.execute(
         "DELETE FROM pull_request_viewer_relations
-            WHERE account_id = ?1 AND last_seen_at < ?2",
+            WHERE account_id = ?1 AND relation_observed_at < ?2",
         params![account_id as i64, cycle_start],
     )?;
     Ok(removed)
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn upsert_viewer_relation_or_combines_flags_across_relations() {
         // A single PR appearing in two queries (authored + involves) yields one
-        // relation row with both flag bits set, plus the latest `last_seen_at`.
+        // relation row with both flag bits set, plus the latest `relation_observed_at`.
         let (_dir, db) = fresh_db();
         let pr = make_pr(300, 7, 70, "owner");
         upsert_repo(&db, 1, &pr).unwrap();
@@ -628,7 +628,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT read_at, read_pr_updated_at, mentioned_count_unread,
-                        mention_scan_watermark_at, needs_attention, last_seen_at
+                        mention_scan_watermark_at, needs_attention, relation_observed_at
                    FROM pull_request_viewer_relations
                   WHERE account_id = 1 AND pull_request_id = ?1",
                 params![pr_id],
@@ -649,12 +649,12 @@ mod tests {
         assert_eq!(mentioned, 3, "mentioned_count_unread preserved");
         assert_eq!(watermark, 1_500, "mention_scan_watermark_at preserved");
         assert_eq!(attention, 1, "needs_attention preserved");
-        assert_eq!(last_seen, 2000, "last_seen_at advanced as expected");
+        assert_eq!(last_seen, 2000, "relation_observed_at advanced as expected");
     }
 
     #[test]
-    fn upsert_viewer_relation_refreshes_last_seen_at() {
-        // Calling the upsert twice with different timestamps lifts `last_seen_at`
+    fn upsert_viewer_relation_refreshes_relation_observed_at() {
+        // Calling the upsert twice with different timestamps lifts `relation_observed_at`
         // to the latest value (the pruning phase keys off this column).
         let (_dir, db) = fresh_db();
         let pr = make_pr(400, 1, 80, "owner");
@@ -668,7 +668,7 @@ mod tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT last_seen_at FROM pull_request_viewer_relations
+                "SELECT relation_observed_at FROM pull_request_viewer_relations
                   WHERE account_id = 1 AND pull_request_id = ?1",
                 params![pr_id],
                 |row| row.get(0),

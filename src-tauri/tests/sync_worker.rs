@@ -972,7 +972,7 @@ async fn discovery_upserts_repo_pr_and_relation_then_runs_enrichment() {
 
 #[tokio::test]
 async fn end_of_cycle_pruning_drops_stale_relations() {
-    // Seed a stale relation row (last_seen_at far in the past). The next
+    // Seed a stale relation row (relation_observed_at far in the past). The next
     // cycle must prune it once enrichment finishes, since discovery didn't
     // re-stamp it.
     let server = MockServer::start().await;
@@ -988,7 +988,7 @@ async fn end_of_cycle_pruning_drops_stale_relations() {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (1, 999, 1, 0, 0, 1)",
             [],
         )
@@ -1077,7 +1077,7 @@ async fn end_of_cycle_runs_auto_archive_sweep() {
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (2, 999, 0, 0, 1, strftime('%s','now')),
                        (2, 888, 0, 0, 1, strftime('%s','now'))",
             [],
@@ -1140,7 +1140,7 @@ async fn discovery_failure_returns_failed_and_skips_pruning() {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (1, 999, 1, 0, 0, 1)",
             [],
         )
@@ -1889,7 +1889,7 @@ async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention)
+                 is_involved, relation_observed_at, needs_attention)
                 VALUES (1, 999, 0, 1, 0, strftime('%s','now'), 0)",
             [],
         )
@@ -1953,7 +1953,7 @@ async fn cycle_dispatches_no_triggers_when_no_transitions_happen() {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at, needs_attention)
+                 is_involved, relation_observed_at, needs_attention)
                 VALUES (1, 999, 0, 0, 1, strftime('%s','now'), 0)",
             [],
         )
@@ -1999,7 +1999,7 @@ async fn cycle_dispatches_no_triggers_when_no_transitions_happen() {
 //   1. Discovery body cache: an authored PR appears in cycle 1. The same
 //      fixture replays on cycle 2; the PR row's `updated_at` does not move
 //      because discovery's per-node upserts are short-circuited. The relation
-//      row's `last_seen_at` advances to the new cycle's start so the prune
+//      row's `relation_observed_at` advances to the new cycle's start so the prune
 //      phase keeps it.
 //   2. Detail body cache: the PR detail call on cycle 2 hashes to the cached
 //      slot, so the detail-driven columns (`title`, `mergeable`, CI rollup)
@@ -2061,7 +2061,7 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
     let after_cycle1 = {
         let conn = harness.db.lock().unwrap();
         conn.query_row(
-            "SELECT updated_at, title, mergeable, last_seen_at
+            "SELECT updated_at, title, mergeable, relation_observed_at
                FROM pull_requests p
                JOIN pull_request_viewer_relations r ON r.pull_request_id = p.id
               WHERE p.id = 999 AND r.account_id = 1",
@@ -2107,7 +2107,7 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
     let after_cycle2 = {
         let conn = harness.db.lock().unwrap();
         conn.query_row(
-            "SELECT updated_at, title, mergeable, last_seen_at
+            "SELECT updated_at, title, mergeable, relation_observed_at
                FROM pull_requests p
                JOIN pull_request_viewer_relations r ON r.pull_request_id = p.id
               WHERE p.id = 999 AND r.account_id = 1",
@@ -2139,17 +2139,17 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
         after_cycle2.2, after_cycle1.2,
         "detail-driven mergeable must not be rewritten on a cached cycle"
     );
-    // `last_seen_at` advances on the skip path so the prune phase doesn't
+    // `relation_observed_at` advances on the skip path so the prune phase doesn't
     // drop the relation row.
     assert!(
         after_cycle2.3 >= cycle2_start,
-        "last_seen_at must advance to the new cycle start (got {}, cycle started at {})",
+        "relation_observed_at must advance to the new cycle start (got {}, cycle started at {})",
         after_cycle2.3,
         cycle2_start,
     );
 
     // The relation row survives - the prune phase respected the bumped
-    // `last_seen_at`.
+    // `relation_observed_at`.
     let relation_count: i64 = harness
         .db
         .lock()
@@ -2163,7 +2163,7 @@ async fn byte_identical_discovery_skips_per_node_writes_across_two_cycles() {
         .unwrap();
     assert_eq!(
         relation_count, 1,
-        "the relation row survives the prune because last_seen_at was lifted"
+        "the relation row survives the prune because relation_observed_at was lifted"
     );
 
     // Activity feed surfaces a non-zero `cache_skips` payload on cycle 2's

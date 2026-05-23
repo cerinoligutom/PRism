@@ -375,7 +375,7 @@ mod tests {
                         {review_decision_sql});
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, last_seen_at)
+                 is_involved, relation_observed_at)
                 VALUES (1, 100, 0, 0, 0, 0);",
             review_decision_sql = match review_decision {
                 Some(s) => format!("'{s}'"),
