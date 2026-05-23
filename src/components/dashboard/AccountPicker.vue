@@ -13,7 +13,7 @@ import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import type { Account } from "@/stores/accounts";
 
 /**
- * Dashboard account-scope picker. Drives `dashboard.accountFilter` and
+ * Dashboard account-scope picker. Drives `dashboard.accountScope` and
  * persists the choice in `appearance.accountScope` (ADR 0016, "Account
  * picker - option 1"). Renders the unified "All accounts" entry at the
  * top followed by one row per tracked account.

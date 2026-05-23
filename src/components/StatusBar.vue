@@ -18,12 +18,12 @@ function loginForAccount(accountId: number | null): string | null {
 }
 
 const chipRef = ref<HTMLButtonElement | null>(null);
-const anchorRect = ref<DOMRect | null>(null);
+const anchorRectSnapshot = ref<DOMRect | null>(null);
 const panelOpen = ref(false);
 
 function refreshAnchor(): void {
   if (chipRef.value === null) return;
-  anchorRect.value = chipRef.value.getBoundingClientRect();
+  anchorRectSnapshot.value = chipRef.value.getBoundingClientRect();
 }
 
 function openPanel(): void {
@@ -196,7 +196,7 @@ const refreshGlyph = usePlatformModifier();
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>,</kbd> Settings</span> -->
 
     <Teleport to="body">
-      <SyncActivityPanel :open="panelOpen" :anchor-rect="anchorRect" @close="closePanel" />
+      <SyncActivityPanel :open="panelOpen" :anchor-rect-snapshot="anchorRectSnapshot" @close="closePanel" />
     </Teleport>
   </footer>
 </template>
