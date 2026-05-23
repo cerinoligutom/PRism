@@ -26,10 +26,12 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0016](0016-unified-multi-account-dashboard.md) | Unified multi-account dashboard: dedupe-and-merge, query-time threads rollup, per-account failure isolation | Accepted | [#163](https://github.com/cerinoligutom/PRism/issues/163) |
 | [0017](0017-desktop-notifications.md) | Desktop notifications: triggers, app-wide preferences, macOS-only dock badge, deferred permission prompt | Accepted | [#188](https://github.com/cerinoligutom/PRism/issues/188) |
 | [0018](0018-archive-and-ttl.md) | Archive bucket: per-(account, PR) `archived_at`, 30-day inactivity TTL, manual + auto, reversible | Accepted | [#189](https://github.com/cerinoligutom/PRism/issues/189) |
+| [0019](0019-error-handling-and-reauth-flow.md) | Error handling: per-store `lastError`, no toast for failures, self-healing reauth | Accepted | [#287](https://github.com/cerinoligutom/PRism/issues/287) |
 | [0020](0020-settings-persistence-boundary.md) | Settings persistence: SQLite for worker-visible state, localStorage for device-local UI prefs | Accepted | [#287](https://github.com/cerinoligutom/PRism/issues/287) |
 | [0021](0021-rust-to-typescript-type-bindings.md) | Rust to TypeScript type bindings: stay manual through v1 | Accepted | [#293](https://github.com/cerinoligutom/PRism/issues/293) |
 | [0022](0022-versioning-and-build-metadata.md) | Versioning scheme and build-metadata pipeline | Accepted | [#295](https://github.com/cerinoligutom/PRism/issues/295) |
 | [0023](0023-release-pipeline.md) | Release pipeline: two-workflow split, draft GitHub Release, unsigned at OS level | Accepted | [#297](https://github.com/cerinoligutom/PRism/issues/297) |
+| [0024](0024-auto-update-mechanism.md) | Auto-update mechanism: `tauri-plugin-updater`, opt-in default, GH Pages manifest, silent failure | Accepted | [#301](https://github.com/cerinoligutom/PRism/issues/301) |
 
 ## Statuses
 
