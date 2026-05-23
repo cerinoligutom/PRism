@@ -46,12 +46,19 @@ export function useNotificationRouter(): void {
   let unlisten: UnlistenFn | null = null;
 
   onMounted(async () => {
-    unlisten = await listen<NotificationOpenPrPayload>(
-      NOTIFICATION_OPEN_PR_EVENT,
-      (event) => {
-        void handleOpenPr(event.payload);
-      },
-    );
+    try {
+      unlisten = await listen<NotificationOpenPrPayload>(
+        NOTIFICATION_OPEN_PR_EVENT,
+        (event) => {
+          void handleOpenPr(event.payload);
+        },
+      );
+    } catch (err) {
+      console.warn(
+        `${NOTIFICATION_OPEN_PR_EVENT}: failed to attach listener`,
+        err,
+      );
+    }
   });
 
   onBeforeUnmount(() => {

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { ref, watch } from "vue";
+import { useEventListener, useTimeoutFn } from "@vueuse/core";
+
+import { usePlatformModifier } from "@/composables/usePlatformModifier";
 
 interface Props {
   modelValue: string;
@@ -21,46 +23,37 @@ const inputRef = ref<HTMLInputElement | null>(null);
 const local = ref<string>(props.modelValue);
 
 const DEBOUNCE_MS = 150;
-let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
-function flush(): void {
-  if (pendingTimer !== null) {
-    clearTimeout(pendingTimer);
-    pendingTimer = null;
-  }
-}
-
-function schedule(value: string): void {
-  flush();
-  pendingTimer = setTimeout(() => {
-    pendingTimer = null;
-    emit("update:modelValue", value);
-  }, DEBOUNCE_MS);
-}
+let pendingValue = props.modelValue;
+const { start: scheduleEmit, stop: cancelEmit } = useTimeoutFn(
+  () => emit("update:modelValue", pendingValue),
+  DEBOUNCE_MS,
+  { immediate: false },
+);
 
 function onInput(event: Event): void {
   const target = event.target as HTMLInputElement;
   local.value = target.value;
-  schedule(target.value);
+  pendingValue = target.value;
+  scheduleEmit();
 }
 
 /** Keep the local value in sync when the parent rewrites `modelValue`
- * (e.g. view change clearing the query). Skip when the parent's update is
- * already what we hold, otherwise we'd cancel an in-flight debounce. */
+ * (e.g. view change clearing the query). Cancel any pending emit so the
+ * parent's value isn't trampled by a stale keystroke. Skip when the
+ * parent's value already matches what we hold. */
 watch(
   () => props.modelValue,
   (next) => {
     if (next === local.value) return;
     local.value = next;
-    flush();
+    cancelEmit();
   },
 );
 
 /**
  * `cmd+K` on macOS, `ctrl+K` everywhere else. Bound to `window` via
  * `useEventListener` so the focus call lands no matter where focus currently
- * sits inside the dashboard. `useEventListener` cleans itself up on unmount;
- * the explicit `onBeforeUnmount` below only handles the pending debounce.
+ * sits inside the dashboard. `useEventListener` cleans itself up on unmount.
  */
 useEventListener(window, "keydown", (event: KeyboardEvent) => {
   if (event.key !== "k" && event.key !== "K") return;
@@ -76,16 +69,7 @@ function focus(): void {
   inputRef.value?.focus();
 }
 
-/**
- * Surface the platform-appropriate modifier glyph. The artboard shows the
- * Apple Command symbol; on Windows / Linux we render "Ctrl" so the hint
- * matches the binding the `keydown` listener actually responds to.
- */
-const cmdGlyph = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
-
-onBeforeUnmount(() => {
-  flush();
-});
+const cmdGlyph = usePlatformModifier();
 
 defineExpose({ focus });
 </script>

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useEventListener, useResizeObserver } from "@vueuse/core";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
 import { useSyncActivityStore } from "@/stores/syncActivity";
+import { usePlatformModifier } from "@/composables/usePlatformModifier";
 import SyncActivityPanel from "./StatusBar/SyncActivityPanel.vue";
 import { formatDuration } from "@/lib/format";
 
@@ -18,7 +20,6 @@ function loginForAccount(accountId: number | null): string | null {
 const chipRef = ref<HTMLButtonElement | null>(null);
 const anchorRect = ref<DOMRect | null>(null);
 const panelOpen = ref(false);
-let resizeObserver: ResizeObserver | null = null;
 
 function refreshAnchor(): void {
   if (chipRef.value === null) return;
@@ -53,22 +54,18 @@ function onChipHover(): void {
   openPanel();
 }
 
+useResizeObserver(chipRef, refreshAnchor);
+useEventListener(window, "resize", refreshAnchor);
+
 onMounted(async () => {
   await sync.bind();
   await syncActivity.bind(loginForAccount);
   refreshAnchor();
-  window.addEventListener("resize", refreshAnchor);
-  if (chipRef.value && typeof ResizeObserver !== "undefined") {
-    resizeObserver = new ResizeObserver(refreshAnchor);
-    resizeObserver.observe(chipRef.value);
-  }
 });
 
 onBeforeUnmount(() => {
   sync.unbind();
   syncActivity.unbind();
-  window.removeEventListener("resize", refreshAnchor);
-  resizeObserver?.disconnect();
 });
 
 interface SummaryLine {
@@ -157,11 +154,8 @@ const budgetLabel = computed<string | null>(() => {
   return limit === null ? `API budget · ${used}%` : `API budget · ${used}% / ${limit}/hr`;
 });
 
-/**
- * Refresh hint glyph. Matches the binding installed by `useKeyboardShortcuts`:
- * Cmd on macOS, Ctrl elsewhere. Mirrors the pattern in `DashboardSearch.vue`.
- */
-const refreshGlyph = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+// Refresh-shortcut glyph matches the binding installed by `useKeyboardShortcuts`.
+const refreshGlyph = usePlatformModifier();
 </script>
 
 <template>
