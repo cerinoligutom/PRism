@@ -32,6 +32,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0022](0022-versioning-and-build-metadata.md) | Versioning scheme and build-metadata pipeline | Accepted | [#295](https://github.com/cerinoligutom/PRism/issues/295) |
 | [0023](0023-release-pipeline.md) | Release pipeline: two-workflow split, draft GitHub Release, unsigned at OS level | Accepted | [#297](https://github.com/cerinoligutom/PRism/issues/297) |
 | [0024](0024-auto-update-mechanism.md) | Auto-update mechanism: `tauri-plugin-updater`, opt-in default, GH Pages manifest, silent failure | Accepted | [#301](https://github.com/cerinoligutom/PRism/issues/301) |
+| [0025](0025-in-app-changelog.md) | In-app changelog: bundled `CHANGELOG.md`, last-seen version gate, single concatenated dialog | Accepted | [#302](https://github.com/cerinoligutom/PRism/issues/302) |
 
 ## Statuses
 
