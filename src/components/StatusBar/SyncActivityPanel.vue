@@ -22,8 +22,9 @@ import { formatDuration } from "@/lib/format";
 
 interface Props {
   open: boolean;
-  /** Bounding rect of the chip the panel anchors to. */
-  anchorRect: DOMRect | null;
+  /** Snapshot of the chip's bounding rect at the moment the panel opened.
+   * Not live - the parent refreshes it explicitly. */
+  anchorRectSnapshot: DOMRect | null;
 }
 
 const props = defineProps<Props>();
@@ -152,7 +153,7 @@ const filtered = computed<ActivityEvent[]>(() => {
 });
 
 const positionStyle = computed<Record<string, string>>(() => {
-  const rect = props.anchorRect;
+  const rect = props.anchorRectSnapshot;
   if (rect === null) {
     return { bottom: "32px", left: "8px" };
   }
@@ -245,10 +246,10 @@ watch(
   async (next, _prev) => {
     if (next) {
       await nextTick();
-      // Mark the current failure as seen as soon as the user opens the panel.
-      // The auto-open behaviour in StatusBar.vue keys off `hasUnseenFailure`,
-      // so this clears the next-hover loop.
-      activity.acknowledgeFailure();
+      // Mark the current failure as dismissed as soon as the user opens the
+      // panel. The auto-open behaviour in StatusBar.vue keys off
+      // `hasUnseenFailure`, so this clears the next-hover loop.
+      activity.dismissFailure();
       document.addEventListener("mousedown", onOutsideClick, true);
       document.addEventListener("keydown", onKeydown);
     } else {

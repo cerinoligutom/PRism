@@ -80,7 +80,7 @@ const emit = defineEmits<{
 
 const toastStore = useToastStore();
 
-type RowStrip =
+type RowStripClass =
   | "row-strip-needs"
   | "row-strip-changes"
   | "row-strip-approved"
@@ -105,7 +105,7 @@ const nowSeconds = useNowSeconds();
  * Stale is detected from `updated_at` because M2 doesn't track per-account
  * read state yet; M4 will refine `needs-attention` and recompute the strip.
  */
-const stripClass = computed<RowStrip>(() => {
+const stripClass = computed<RowStripClass>(() => {
   const pr = props.pullRequest;
   if (pr.is_draft) return "row-strip-draft";
   if (pr.review_decision === "CHANGES_REQUESTED") return "row-strip-changes";

@@ -206,7 +206,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const searchQuery = ref<string>("");
   const chipCounts = ref<FilterChipCounts | null>(null);
   const density = ref<Density>(appearance.density);
-  const accountFilter = ref<number | null>(null);
+  const accountScope = ref<number | null>(null);
 
   const pullRequests = ref<DashboardPullRequest[]>([]);
   // IDs that have been optimistically flipped out of the current view by an
@@ -214,7 +214,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // before the reload arrives; the next `load()` reconciles by reading the
   // canonical state. Cleared on every `load()` so a stale optimistic flip
   // can't survive a sync re-render.
-  const pendingArchiveIds = ref<Set<number>>(new Set());
+  const optimisticallyArchivedIds = ref<Set<number>>(new Set());
   // Most-recent batch of per-account failures from an archive / unarchive
   // fan-out. `null` when there are no outstanding failures; the dashboard
   // view renders an inline callout off this value and clears it on user
@@ -276,7 +276,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // match per the contract's "Search semantics".
   const filteredPullRequests = computed<DashboardPullRequest[]>(() => {
     const q = searchQuery.value.toLowerCase().trim();
-    const pending = pendingArchiveIds.value;
+    const pending = optimisticallyArchivedIds.value;
     const dropArchive = (pr: DashboardPullRequest): boolean => !pending.has(pr.id);
     const visible = pending.size === 0
       ? pullRequests.value
@@ -339,7 +339,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     return await invoke<DashboardPullRequest[]>("list_dashboard_pull_requests", {
       view: target,
       sort: sort.value,
-      accountId: accountFilter.value,
+      accountId: accountScope.value,
       activeChips: null,
     });
   }
@@ -355,7 +355,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     return await invoke<DashboardPullRequest[]>("list_dashboard_pull_requests", {
       view: target,
       sort: sort.value,
-      accountId: accountFilter.value,
+      accountId: accountScope.value,
       activeChips: Array.from(activeChips.value),
     });
   }
@@ -367,7 +367,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * Called on view / account / sync-status changes; the result is `null` on
    * failure so the bar gracefully degrades to label-only chips.
    *
-   * `accountFilter = null` (the ADR 0016 unified default) fans the count
+   * `accountScope = null` (the ADR 0016 unified default) fans the count
    * across every tracked account and dedupes by PR id so a PR matched via
    * two accounts contributes one to each chip it triggers.
    */
@@ -375,7 +375,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     try {
       chipCounts.value = await invoke<FilterChipCounts>(
         "list_filter_chip_counts",
-        { view: view.value, accountId: accountFilter.value },
+        { view: view.value, accountId: accountScope.value },
       );
     } catch {
       chipCounts.value = null;
@@ -391,7 +391,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function fetchViewCounts(): Promise<DashboardViewCountsPayload> {
     return await invoke<DashboardViewCountsPayload>(
       "list_dashboard_view_counts",
-      { accountId: accountFilter.value },
+      { accountId: accountScope.value },
     );
   }
 
@@ -414,8 +414,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // Clear pending optimistic flips before the fetch lands. The canonical
     // state from SQL drives the next paint; any row that should still hide
     // does so via its `archived_at` predicate in the dashboard query.
-    if (pendingArchiveIds.value.size > 0) {
-      pendingArchiveIds.value = new Set();
+    if (optimisticallyArchivedIds.value.size > 0) {
+      optimisticallyArchivedIds.value = new Set();
     }
     const active = view.value;
     const skipChipsForArchive = active === "archive";
@@ -478,9 +478,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     appearance.setDensity(next);
   }
 
-  function setAccountFilter(next: number | null): void {
-    if (accountFilter.value === next) return;
-    accountFilter.value = next;
+  function setAccountScope(next: number | null): void {
+    if (accountScope.value === next) return;
+    accountScope.value = next;
     void load();
   }
 
@@ -550,7 +550,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * one parallel invoke per relation owner mirrors the Rust mark-read multi
    * shape (ADR 0016) and keeps partial-failure isolation client-side.
    *
-   * Optimistic UI: the row is added to `pendingArchiveIds` so it disappears
+   * Optimistic UI: the row is added to `optimisticallyArchivedIds` so it disappears
    * from the active default view's list before the first write resolves. The
    * `dashboard://refresh` event fired by each successful command kicks a
    * reload; the set is cleared inside `load()` so the canonical state from
@@ -631,17 +631,17 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   function markRowArchivedOptimistically(pullRequestId: number): void {
-    if (pendingArchiveIds.value.has(pullRequestId)) return;
-    const next = new Set(pendingArchiveIds.value);
+    if (optimisticallyArchivedIds.value.has(pullRequestId)) return;
+    const next = new Set(optimisticallyArchivedIds.value);
     next.add(pullRequestId);
-    pendingArchiveIds.value = next;
+    optimisticallyArchivedIds.value = next;
   }
 
   function revertOptimisticArchive(pullRequestId: number): void {
-    if (!pendingArchiveIds.value.has(pullRequestId)) return;
-    const next = new Set(pendingArchiveIds.value);
+    if (!optimisticallyArchivedIds.value.has(pullRequestId)) return;
+    const next = new Set(optimisticallyArchivedIds.value);
     next.delete(pullRequestId);
-    pendingArchiveIds.value = next;
+    optimisticallyArchivedIds.value = next;
   }
 
   function markRowUnreadOptimistically(pullRequestId: number): void {
@@ -738,7 +738,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     searchQuery,
     chipCounts,
     density,
-    accountFilter,
+    accountScope,
     pullRequests,
     filteredPullRequests,
     loading,
@@ -754,7 +754,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setGroup,
     setSort,
     setDensity,
-    setAccountFilter,
+    setAccountScope,
     toggleChip,
     clearChips,
     setSearchQuery,

@@ -73,10 +73,10 @@ export function useNotificationRouter(): void {
   ): Promise<void> {
     // Scope the dashboard to the originating account before the route push
     // so the back-navigation lands on a list that contains the deep-linked
-    // row. `setAccountFilter` is a no-op when the filter already matches and
+    // row. `setAccountScope` is a no-op when the scope already matches and
     // triggers a single `load()` otherwise; the load can race the route
     // push, which is fine - the detail view runs its own onMounted load.
-    dashboard.setAccountFilter(payload.account_id);
+    dashboard.setAccountScope(payload.account_id);
 
     const meta = await resolveMetadata(payload);
     if (meta === null) return;

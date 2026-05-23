@@ -243,7 +243,7 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
    * a panel open. Used to suppress the auto-open-on-hover behaviour for
    * failures the user has already seen.
    */
-  const acknowledgedFailureId = ref<number | null>(null);
+  const dismissedFailureId = ref<number | null>(null);
 
   const listener = useTauriListener();
   const throttler = makeThrottler((next) => {
@@ -345,10 +345,10 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
     throttler.dispose();
   }
 
-  function acknowledgeFailure(): void {
+  function dismissFailure(): void {
     const failure = latestFailure.value;
     if (failure === null) return;
-    acknowledgedFailureId.value = failure.id;
+    dismissedFailureId.value = failure.id;
   }
 
   /**
@@ -358,7 +358,7 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
   const hasUnseenFailure = computed<boolean>(() => {
     const failure = latestFailure.value;
     if (failure === null) return false;
-    return acknowledgedFailureId.value !== failure.id;
+    return dismissedFailureId.value !== failure.id;
   });
 
   return {
@@ -369,7 +369,7 @@ export const useSyncActivityStore = defineStore("syncActivity", () => {
     hasUnseenFailure,
     bind,
     unbind,
-    acknowledgeFailure,
+    dismissFailure,
     hydrate,
   };
 });

@@ -66,15 +66,15 @@ const hasAttention = computed<Partial<Record<DashboardView, boolean>>>(() => ({
 }));
 
 async function refreshAttention(): Promise<void> {
-  // Account scope mirrors the dashboard's `accountFilter`. `null` (the union
-  // case) sums across every tracked account so the badge stays accurate
-  // before the user has narrowed to one. The Rust command is per-account so
-  // we fan out and accumulate client-side.
-  const filter = dashboard.accountFilter;
+  // Mirror the dashboard's `accountScope`. `null` (the union case) sums
+  // across every tracked account so the badge stays accurate before the
+  // user has narrowed to one. The Rust command is per-account so we fan
+  // out and accumulate client-side.
+  const scope = dashboard.accountScope;
   const ids =
-    filter === null
+    scope === null
       ? accountsStore.accounts.map((a) => a.id)
-      : [filter];
+      : [scope];
   if (ids.length === 0) {
     attention.value = { authored: 0, assigned: 0, watching: 0, tracked: 0 };
     return;
@@ -104,7 +104,7 @@ async function refreshAttention(): Promise<void> {
 }
 
 watch(() => dashboard.view, () => void refreshAttention());
-watch(() => dashboard.accountFilter, () => void refreshAttention());
+watch(() => dashboard.accountScope, () => void refreshAttention());
 watch(
   () => accountsStore.accounts.length,
   () => void refreshAttention(),

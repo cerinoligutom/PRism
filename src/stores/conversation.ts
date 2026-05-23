@@ -22,16 +22,16 @@ export const useConversationStore = defineStore("conversation", () => {
   const loading = ref<Set<number>>(new Set());
   const errors = ref<Map<number, string>>(new Map());
 
-  // In-flight promise per PR id so concurrent callers wait on the same fetch
-  // rather than firing duplicate Tauri invocations.
-  const inflight = new Map<number, Promise<HydratedConversation>>();
+  // Per-PR fetch promise so concurrent callers wait on the same Tauri
+  // invocation. Persists for the session's lifetime, keyed by PR id.
+  const pendingLoads = new Map<number, Promise<HydratedConversation>>();
 
   async function load(pullRequestId: number): Promise<HydratedConversation> {
     const cached = cache.value.get(pullRequestId);
     if (cached !== undefined) return cached;
 
-    const pending = inflight.get(pullRequestId);
-    if (pending !== undefined) return pending;
+    const existing = pendingLoads.get(pullRequestId);
+    if (existing !== undefined) return existing;
 
     loading.value.add(pullRequestId);
     errors.value.delete(pullRequestId);
@@ -49,10 +49,10 @@ export const useConversationStore = defineStore("conversation", () => {
       })
       .finally(() => {
         loading.value.delete(pullRequestId);
-        inflight.delete(pullRequestId);
+        pendingLoads.delete(pullRequestId);
       });
 
-    inflight.set(pullRequestId, promise);
+    pendingLoads.set(pullRequestId, promise);
     return promise;
   }
 

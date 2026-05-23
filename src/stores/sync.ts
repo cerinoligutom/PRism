@@ -195,7 +195,7 @@ export const useSyncStore = defineStore("sync", () => {
     appliedAtMs.value = next;
   }
 
-  function applyStatus(event: SyncStatusEvent): void {
+  function upsertSyncStatus(event: SyncStatusEvent): void {
     upsertAccount({
       account_id: event.account_id,
       phase: event.phase,
@@ -223,8 +223,8 @@ export const useSyncStore = defineStore("sync", () => {
   async function bind(): Promise<void> {
     await listener.bind(() =>
       Promise.all([
-        listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (e) => applyStatus(e.payload)),
-        listen<SyncStatusEvent>(SYNC_ERROR_EVENT, (e) => applyStatus(e.payload)),
+        listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (e) => upsertSyncStatus(e.payload)),
+        listen<SyncStatusEvent>(SYNC_ERROR_EVENT, (e) => upsertSyncStatus(e.payload)),
         listen<SyncRateLimitEvent>(SYNC_RATE_LIMIT_EVENT, (e) => {
           // The follow-up status event will carry the full state; here we
           // just surface the warning message so the toast layer can react.

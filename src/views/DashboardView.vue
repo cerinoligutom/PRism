@@ -78,7 +78,7 @@ const accountMarkersById = computed<ReadonlyMap<number, AccountMarker>>(() => {
  * scope with 2+ accounts renders the marker per ADR 0016.
  */
 const isSingleAccountScope = computed<boolean>(
-  () => dashboard.accountFilter !== null || accounts.accounts.length < 2,
+  () => dashboard.accountScope !== null || accounts.accounts.length < 2,
 );
 
 // Counter semantics per the contract: the first segment reflects the
@@ -248,11 +248,11 @@ function archiveErrorAccountLabel(id: number): string {
 
 function onAccountScopeUpdate(value: number | null): void {
   // Mirror the choice into the persisted appearance store, then drive the
-  // dashboard's reactive filter. `setAccountFilter` is a no-op when unchanged
+  // dashboard's reactive scope. `setAccountScope` is a no-op when unchanged
   // and triggers `load()` otherwise, so chip counts + rows reload off the
   // existing watch chain.
   appearance.setAccountScope(value);
-  dashboard.setAccountFilter(value);
+  dashboard.setAccountScope(value);
 }
 
 /**
@@ -265,18 +265,18 @@ function onAccountScopeUpdate(value: number | null): void {
 function restorePersistedScope(): void {
   const persisted = appearance.accountScope;
   if (persisted === null) {
-    dashboard.accountFilter = null;
+    dashboard.accountScope = null;
     return;
   }
   const stillExists = accounts.accounts.some((a) => a.id === persisted);
   if (stillExists) {
-    dashboard.accountFilter = persisted;
+    dashboard.accountScope = persisted;
     return;
   }
   // Reconcile a stale persisted id - clear it so the next persist cycle
   // doesn't carry the dangling reference forward.
   appearance.setAccountScope(null);
-  dashboard.accountFilter = null;
+  dashboard.accountScope = null;
 }
 
 /**
@@ -361,7 +361,7 @@ watch(() => route.meta?.dashboardView, () => {
           <span class="dashboard__chips-label">SCOPE</span>
           <AccountPicker
             :accounts="accounts.accounts"
-            :model-value="dashboard.accountFilter"
+            :model-value="dashboard.accountScope"
             @update:model-value="onAccountScopeUpdate"
           />
           <span class="dashboard__chips-sep" aria-hidden="true" />
