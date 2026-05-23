@@ -1,0 +1,202 @@
+name: Release
+
+run-name: Release ${{ github.ref_name }}
+
+# Triggered only on `vX.Y.Z` tag push. The tag is produced by the
+# prepare-release.yml flow (see ADR-0023): a maintainer merges the
+# "release: vX.Y.Z" PR to main, the post-merge step pushes the tag,
+# and this workflow builds the cross-platform matrix and uploads each
+# bundle to a single DRAFT GitHub Release at `${{ github.ref_name }}`.
+# The maintainer reviews the draft and clicks Publish manually.
+#
+# Signing posture (ADR-0023):
+# - No Apple Developer ID, no Windows EV cert, no SignPath.
+# - macOS bundles are ad-hoc signed by Tauri's bundler (default when
+#   `signingIdentity` is unset). Gatekeeper warns on first launch.
+# - Windows .msi is unsigned. SmartScreen click-through is documented
+#   in the README.
+# - Every installer is signed by the Tauri updater key
+#   (TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+#   so the OTA updater can verify downloads. Independent of any OS
+#   code-signing cert.
+#
+# `fail-fast: false` keeps partial draft uploads available for review
+# when one platform leg trips on a transient infra issue. The
+# maintainer can re-run only the failed leg or rebuild the tag.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# `contents: write` is the only elevated permission needed: the action
+# creates / updates the draft GitHub Release and attaches artefacts.
+# `actions: read` lets the workflow query its own run metadata.
+permissions:
+  contents: write
+  actions: read
+
+# One release run per tag at a time. Concurrent runs against the same
+# tag would race on the draft release upload; queueing keeps the draft
+# coherent.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  release-notes:
+    name: Compose release notes from CHANGELOG.md
+    runs-on: ubuntu-latest
+    # Extracts the `[X.Y.Z]` block matching the tag's version. Falls
+    # back to `[Unreleased]` when the tag's version block isn't
+    # stamped yet (e.g. a `v0.0.0-test` smoke-test tag pushed before
+    # prepare-release.yml ran). Either way, the body comes from the
+    # single CHANGELOG.md source of truth - no regeneration.
+    outputs:
+      body: ${{ steps.extract.outputs.body }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Extract release notes
+        id: extract
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Strip the leading 'v' from the tag to match CHANGELOG headings.
+          version="${REF_NAME#v}"
+          # awk extracts the block from `## [<version>]` to the next
+          # `## [` heading (exclusive). Falls back to `[Unreleased]` if
+          # the version block is missing.
+          body=$(awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md)
+          if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+            echo "::notice::No [$version] section in CHANGELOG.md, falling back to [Unreleased]."
+            body=$(awk '
+              /^## \[Unreleased\]/ { capture = 1; next }
+              capture && /^## \[/ { exit }
+              capture { print }
+            ' CHANGELOG.md)
+          fi
+          # Trim leading / trailing blank lines.
+          body=$(printf '%s' "$body" | awk '
+            NF { found = 1 }
+            found { lines[++n] = $0 }
+            END {
+              # Trim trailing blanks.
+              while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
+              for (i = 1; i <= n; i++) print lines[i]
+            }
+          ')
+          # Multi-line output via heredoc delimiter (random EOF token).
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delim"
+            echo "$body"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: release-notes
+    # `fail-fast: false` so one platform tripping doesn't abort the
+    # others - partial drafts are still a useful review surface.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Intel
+            runner: macos-13
+            rust-targets: x86_64-apple-darwin
+            tauri-args: '--target x86_64-apple-darwin'
+          - label: macOS Apple Silicon
+            runner: macos-14
+            rust-targets: aarch64-apple-darwin
+            tauri-args: '--target aarch64-apple-darwin'
+          - label: Windows x64
+            runner: windows-latest
+            rust-targets: ''
+            tauri-args: ''
+          - label: Linux x64
+            runner: ubuntu-22.04
+            rust-targets: ''
+            tauri-args: ''
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tauri Linux build deps
+        # Mirrors ci.yml plus patchelf - patchelf is required for the
+        # AppImage bundler but CI doesn't bundle so it's omitted there.
+        # libsoup-3.0 and libgtk-3 come in transitively via
+        # libwebkit2gtk-4.1-dev. Skipped on macOS / Windows because
+        # those runners ship the equivalent system frameworks.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install pnpm
+        # `standalone: true` mirrors ci.yml - downloads pnpm's prebuilt
+        # binary directly so the runner's default Node doesn't trip
+        # pnpm 11's Node >= 22.13 engine check. Version still tracked
+        # via package.json's `packageManager` field.
+        uses: pnpm/action-setup@v4
+        with:
+          standalone: true
+          run_install: false
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache cargo registry + target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          # Per-runner cache key so the four legs don't thrash a shared
+          # entry (different target triples produce different artefacts).
+          shared-key: release-${{ matrix.runner }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and upload to draft Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Tauri updater key signs every installer across every
+          # platform. ADR-0023 locks these as the only two release
+          # secrets; missing them fails the build with a clear error.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Release ${{ github.ref_name }}
+          releaseBody: ${{ needs.release-notes.outputs.body }}
+          # DRAFT release - the maintainer reviews artefacts in the
+          # GitHub UI and clicks Publish manually. ADR-0023 gate 2 / 3.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.tauri-args }}
