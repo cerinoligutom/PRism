@@ -286,8 +286,8 @@ async function openCommentOnGitHub(
           </span>
         </PRismTooltip>
 
-        <div class="thread-card__body">
-          <div class="thread-card__file">
+        <div class="thread-card__file">
+          <div class="thread-card__file-line">
             <span v-if="thread.path !== null" class="thread-card__path">{{ thread.path }}</span>
             <span v-else class="thread-card__path thread-card__path--missing">No file path</span>
             <span v-if="lineSuffix(thread) !== ''" class="thread-card__line">{{ lineSuffix(thread) }}</span>
@@ -301,6 +301,46 @@ async function openCommentOnGitHub(
             >OUTDATED</span>
           </div>
 
+          <div
+            v-if="participantsFor(thread).length > 0 || thread.reply_count > 0"
+            class="thread-card__file-people"
+          >
+            <PRismTooltip
+              v-if="participantsFor(thread).length > 0"
+              :as-child="true"
+            >
+              <div class="thread-card__participants">
+                <PRismAvatarStack
+                  :users="participantsFor(thread)"
+                  size="sm"
+                  layout="overlap"
+                />
+              </div>
+              <template #content>
+                <ul class="thread-card__participants-tooltip">
+                  <li
+                    v-for="p in participantsFor(thread)"
+                    :key="p.login"
+                    class="thread-card__participants-tooltip-row"
+                  >
+                    <PRismAvatar
+                      :login="p.login"
+                      :avatar-url="p.avatar_url"
+                      size="sm"
+                      :title="null"
+                    />
+                    <span class="thread-card__participants-tooltip-login">{{ p.login }}</span>
+                  </li>
+                </ul>
+              </template>
+            </PRismTooltip>
+            <div v-if="thread.reply_count > 0" class="thread-card__replies">
+              {{ thread.reply_count }} {{ thread.reply_count === 1 ? "reply" : "replies" }}
+            </div>
+          </div>
+        </div>
+
+        <div class="thread-card__body">
           <!-- The wrapping div carries `@click.stop` so a click on the
                diff-hunk block (e.g. selecting text) doesn't bubble up to
                the row-level expand toggle. -->
@@ -398,38 +438,6 @@ async function openCommentOnGitHub(
         </div>
 
         <div class="thread-card__meta">
-          <PRismTooltip
-            v-if="participantsFor(thread).length > 0"
-            :as-child="true"
-          >
-            <div class="thread-card__participants">
-              <PRismAvatarStack
-                :users="participantsFor(thread)"
-                size="sm"
-                layout="overlap"
-              />
-            </div>
-            <template #content>
-              <ul class="thread-card__participants-tooltip">
-                <li
-                  v-for="p in participantsFor(thread)"
-                  :key="p.login"
-                  class="thread-card__participants-tooltip-row"
-                >
-                  <PRismAvatar
-                    :login="p.login"
-                    :avatar-url="p.avatar_url"
-                    size="sm"
-                    :title="null"
-                  />
-                  <span class="thread-card__participants-tooltip-login">{{ p.login }}</span>
-                </li>
-              </ul>
-            </template>
-          </PRismTooltip>
-          <div v-if="thread.reply_count > 0" class="thread-card__replies">
-            {{ thread.reply_count }} {{ thread.reply_count === 1 ? "reply" : "replies" }}
-          </div>
           <div class="thread-card__opened">
             <template v-if="thread.created_at !== null">
               opened <PRismRelativeTime :value="thread.created_at" />
@@ -504,6 +512,7 @@ async function openCommentOnGitHub(
             </PRismTooltip>
           </div>
         </div>
+
       </article>
     </div>
   </div>
@@ -536,12 +545,33 @@ async function openCommentOnGitHub(
 .thread-card {
   display: grid;
   grid-template-columns: 22px 1fr auto;
-  gap: var(--s-3);
+  grid-template-rows: auto auto;
+  column-gap: var(--s-3);
+  row-gap: var(--s-2);
   padding: var(--s-4);
   border: 1px solid var(--border-1);
   border-radius: var(--r-2);
   background: var(--bg-1);
   transition: background 0.12s;
+}
+
+.thread-card__file {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  min-width: 0;
+}
+
+.thread-card__meta {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
+}
+
+.thread-card__body {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  min-width: 0;
 }
 
 .thread-card:hover {
@@ -622,14 +652,38 @@ async function openCommentOnGitHub(
   font-size: var(--fs-10);
   color: var(--text-mute);
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.thread-card__file-line {
+  display: flex;
   align-items: center;
   gap: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.thread-card__file-people {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-faint);
 }
 
 .thread-card__path {
   color: var(--text-mute);
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.thread-card__line {
+  flex-shrink: 0;
+  color: var(--text-faint);
 }
 
 .thread-card__path--missing {
@@ -637,9 +691,6 @@ async function openCommentOnGitHub(
   font-style: italic;
 }
 
-.thread-card__line {
-  color: var(--text-faint);
-}
 
 .thread-card__chip {
   margin-left: 4px;
@@ -648,6 +699,7 @@ async function openCommentOnGitHub(
   padding: 1px 5px;
   border-radius: 2px;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
 
 .thread-card__chip--mine {
@@ -743,8 +795,6 @@ async function openCommentOnGitHub(
 .thread-card__participants {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  margin-bottom: var(--s-1);
 }
 
 .thread-card__replies-list {
@@ -842,7 +892,6 @@ async function openCommentOnGitHub(
 
 .thread-card__replies {
   color: var(--text-mute);
-  margin-bottom: 2px;
 }
 
 .thread-card--stale .thread-card__activity {

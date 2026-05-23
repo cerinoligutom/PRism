@@ -164,11 +164,11 @@ const titleLine = computed<string>(() => row.value?.title ?? "Pull request");
 
 .pr-drawer__title {
   margin: 0;
-  font-size: var(--fs-14);
+  font-size: var(--fs-16);
   font-weight: 600;
   color: var(--text-strong);
-  letter-spacing: -0.2px;
-  line-height: 1.35;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;

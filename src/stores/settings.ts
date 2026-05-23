@@ -33,7 +33,7 @@ export interface AppSettings {
  * Vite dev server in a plain browser). Matches the migration's seeded row.
  */
 const DEFAULT_SETTINGS: AppSettings = {
-  notifications_enabled: false,
+  notifications_enabled: true,
   notify_on_needs_attention: true,
   notify_on_mention: true,
   notification_permission_state: "unprompted",

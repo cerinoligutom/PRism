@@ -39,8 +39,8 @@ pub use events::{
     SYNC_ERROR_EVENT, SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
 };
 pub use scheduler::{
-    SchedulerConfig, DEFAULT_INTERVAL_SECS, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS,
-    RATE_BUDGET_GUARD_PCT,
+    read_persisted_interval, write_persisted_interval, SchedulerConfig, DEFAULT_INTERVAL_SECS,
+    MAX_INTERVAL_SECS, MIN_INTERVAL_SECS, RATE_BUDGET_GUARD_PCT,
 };
 pub use state::{AccountSyncState, SyncPhase, SyncStateMap};
 pub use status_timeline::{

@@ -226,12 +226,12 @@
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 30px;
-  padding: 0 10px;
+  gap: 12px;
+  height: 36px;
+  padding: 0 12px;
   border-radius: var(--r-2);
   color: var(--text-mute);
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -251,7 +251,7 @@
 .nav-item .count {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-11);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }

@@ -27,6 +27,7 @@
     "lint": "echo 'lint wiring lands in a follow-up PR' && exit 0"
   },
   "dependencies": {
+    "@fontsource/mona-sans": "^5.2.8",
     "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-notification": "2.3.3",
     "@tauri-apps/plugin-opener": "2.5.4",
@@ -39,8 +40,6 @@
     "vue-router": "5.0.7"
   },
   "devDependencies": {
-    "@fontsource/geist": "5.2.9",
-    "@fontsource/jetbrains-mono": "5.2.8",
     "@tailwindcss/vite": "4.3.0",
     "@tauri-apps/cli": "2.11.2",
     "@types/node": "24.12.4",

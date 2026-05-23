@@ -432,17 +432,31 @@ function onUnarchive(): void {
             size="sm"
             class="pr-row__author-avatar"
           />
-          {{ pullRequest.author_login }}
+          <span class="pr-row__author-login">{{ pullRequest.author_login }}</span>
         </span>
         <template v-if="linesAdditions !== null && linesDeletions !== null">
           <span class="pr-row__sep" aria-hidden="true">·</span>
-          <span class="pr-row__lines">
-            <span class="pr-row__lines-add">+{{ linesAdditions }}</span>
-            <span class="pr-row__lines-del">&minus;{{ linesDeletions }}</span>
-            <span v-if="changedFiles !== null" class="pr-row__lines-files">
-              · {{ changedFiles }} {{ changedFiles === 1 ? "file" : "files" }}
+          <PRismTooltip :as-child="true">
+            <span class="pr-row__lines">
+              <span class="pr-row__lines-add">+{{ linesAdditions }}</span>
+              <span class="pr-row__lines-del">&minus;{{ linesDeletions }}</span>
+              <span v-if="changedFiles !== null" class="pr-row__lines-files">
+                · {{ changedFiles }} {{ changedFiles === 1 ? "file" : "files" }}
+              </span>
             </span>
-          </span>
+            <template #content>
+              <div class="pr-row__lines-tooltip">
+                <span class="pr-row__lines-tooltip-count pr-row__lines-tooltip-count--add">+{{ linesAdditions }}</span>
+                <span class="pr-row__lines-tooltip-label">additions</span>
+                <span class="pr-row__lines-tooltip-count pr-row__lines-tooltip-count--del">&minus;{{ linesDeletions }}</span>
+                <span class="pr-row__lines-tooltip-label">deletions</span>
+                <template v-if="changedFiles !== null">
+                  <span class="pr-row__lines-tooltip-count">{{ changedFiles }}</span>
+                  <span class="pr-row__lines-tooltip-label">{{ changedFiles === 1 ? "file" : "files" }} changed</span>
+                </template>
+              </div>
+            </template>
+          </PRismTooltip>
         </template>
       </div>
     </div>
@@ -778,6 +792,22 @@ function onUnarchive(): void {
 
 .pr-row__title-col {
   min-width: 0;
+  container-type: inline-size;
+  container-name: pr-row-title;
+}
+
+/* Narrow rows: drop the branch chip + its separator + the "N files" suffix.
+ * The combined-tooltip on the +/- cluster still surfaces the file count, and
+ * the author login keeps its ellipsis. Threshold tuned to the breakpoint
+ * where the avatar + branch icon start crowding the +/- numbers. */
+@container pr-row-title (max-width: 300px) {
+  .pr-row__branch,
+  .pr-row__branch + .pr-row__sep {
+    display: none;
+  }
+  .pr-row__lines-files {
+    display: none;
+  }
 }
 
 .pr-row__title-row {
@@ -874,11 +904,14 @@ function onUnarchive(): void {
 .pr-row__meta-row {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   margin-top: 2px;
   font-family: var(--font-mono);
   font-size: var(--fs-10);
   color: var(--text-faint);
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* Tight density drops the meta row so the row can sit at 36px. */
@@ -892,6 +925,11 @@ function onUnarchive(): void {
   align-items: center;
   gap: 3px;
   min-width: 0;
+  flex: 0 1 auto;
+}
+
+.pr-row__branch > svg {
+  flex-shrink: 0;
 }
 
 .pr-row__branch-name {
@@ -903,6 +941,7 @@ function onUnarchive(): void {
 
 .pr-row__sep {
   color: var(--text-disabled);
+  flex-shrink: 0;
 }
 
 .pr-row__author {
@@ -910,17 +949,29 @@ function onUnarchive(): void {
   align-items: center;
   gap: 4px;
   color: var(--text-mute);
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
 }
 
 .pr-row__author-avatar {
   width: 14px;
   height: 14px;
   font-size: 7px;
+  flex-shrink: 0;
+}
+
+.pr-row__author-login {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .pr-row__lines {
   display: inline-flex;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .pr-row__lines-add {
@@ -1077,7 +1128,7 @@ function onUnarchive(): void {
   column-gap: 8px;
   height: 28px;
   padding: 0 10px;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   border-radius: var(--r-1);
   cursor: pointer;
@@ -1119,7 +1170,7 @@ function onUnarchive(): void {
 }
 
 .pr-row__menu-item-label {
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: inherit;
   line-height: 1.2;
 }
@@ -1129,12 +1180,46 @@ function onUnarchive(): void {
 }
 
 .pr-row__menu-item-hint {
-  font-size: var(--fs-10);
+  font-size: var(--fs-11);
   color: var(--text-mute);
   line-height: 1.35;
 }
 
 .pr-row__menu-item--stacked[data-highlighted] .pr-row__menu-item-hint {
   color: var(--text);
+}
+
+/* Combined +/- / files tooltip. Lives in the unscoped block because Reka's
+ * TooltipPortal teleports the content node to <body> and scoped data-v-*
+ * selectors don't follow across the portal. Two-column grid mirrors the
+ * reviewer-stack breakdown: signed count column right-aligns, labels read
+ * flush left, tabular numerals so the digits stack. */
+.pr-row__lines-tooltip {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  min-width: 140px;
+}
+
+.pr-row__lines-tooltip-count {
+  justify-self: end;
+  color: var(--text-strong);
+}
+
+.pr-row__lines-tooltip-count--add {
+  color: var(--success);
+}
+
+.pr-row__lines-tooltip-count--del {
+  color: var(--danger);
+}
+
+.pr-row__lines-tooltip-label {
+  color: var(--text-mute);
 }
 </style>

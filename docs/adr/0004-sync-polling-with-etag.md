@@ -7,7 +7,7 @@
 
 ## Context
 
-PRism needs to keep the local cache fresh against GitHub's API. PRD §8.2 sets the rate-limit budget at under 20% of the 5000 req/hr per authenticated account; §8.3 sets the 95th-percentile freshness target at under 2 minutes stale at the default 60s sync interval; §6 explicitly excludes a hosted backend in v1, which rules out webhook-driven push updates (they need a public callback URL).
+PRism needs to keep the local cache fresh against GitHub's API. PRD §8.2 sets the rate-limit budget at under 20% of the 5000 req/hr per authenticated account; §8.3 sets the 95th-percentile freshness target at under 2 minutes stale at the original 60s default. The pre-v1 launch bumped the default to 5 minutes (see "Default interval" below) so the relaxed freshness expectation is now roughly the interval itself; users who need tighter freshness can dial down to 30s. §6 explicitly excludes a hosted backend in v1, which rules out webhook-driven push updates (they need a public callback URL).
 
 The cache lives in SQLite (ADR 0003) and the storage layer can hold per-resource ETags / `Last-Modified` values.
 
@@ -28,11 +28,21 @@ The cache lives in SQLite (ADR 0003) and the storage layer can hold per-resource
 
 ## Decision
 
-We will use **polling with ETag / `If-Modified-Since` conditional requests**, run from a Rust worker on a configurable interval (default 60s, range 30s–10min). Per-resource ETag and last-modified values are stored in SQLite alongside the cached data. The worker is per-account isolated: one account's failure or rate-limit hit does not stall others.
+We will use **polling with ETag / `If-Modified-Since` conditional requests**, run from a Rust worker on a configurable interval (default 5min, range 30s–10min). Per-resource ETag and last-modified values are stored in SQLite alongside the cached data. The worker is per-account isolated: one account's failure or rate-limit hit does not stall others.
 
-The "Team / org-wide" view (PRD §5.2) is per-repo opt-in to keep the budget under control for users in large orgs.
+The "Tracked" view (PRD §5.2, renamed from "Team" pre-v1) is per-repo opt-in to keep the budget under control for users in large orgs.
+
+The interval itself persists on the `app_settings` singleton (column `sync_interval_seconds`) so the user's chosen cadence survives a relaunch. The worker reads this on startup before spawning per-account loops, falling back to the default if the column read fails. The `set_sync_interval` Tauri command writes the clamped value back after applying it in-memory.
 
 Rationale: this is the only option that meets the v1 constraints. ETag 304 responses are cheap enough that the budget stays comfortably under 20% even at 30s intervals for typical accounts.
+
+### Default interval
+
+The original ADR shipped a 60s default. Pre-v1 we bumped this to 5 minutes (300s) because:
+
+- Most users don't need sub-minute freshness for review dashboards. Mentions and "needs your attention" transitions surface via notifications (ADR 0017) so the dashboard reload cadence is for *background* refreshes, not critical alerts.
+- 60s polling on a multi-account user with many tracked repos eats into the rate budget faster than the 20% guard alone is comfortable with.
+- The slider in Settings → Sync still offers 30s through 10min, so power users who want fast refresh just pick a tighter value.
 
 ## Consequences
 
@@ -44,7 +54,7 @@ Rationale: this is the only option that meets the v1 constraints. ETag 304 respo
 
 ### Negative
 
-- Up to 60s latency vs. GitHub's native UI at default settings. We surface this with a "last synced N ago" indicator (PRD §5.7) rather than pretending stale data is fresh.
+- Up to 5 minutes latency vs. GitHub's native UI at default settings (or 30s if the user dials the interval all the way down). We surface this with a "last synced N ago" indicator (PRD §5.7) rather than pretending stale data is fresh.
 - No real-time notifications without webhooks (deferred to post-v1).
 
 ### Neutral / follow-ups

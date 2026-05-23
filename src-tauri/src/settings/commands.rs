@@ -150,7 +150,7 @@ mod tests {
     fn get_returns_seeded_defaults_on_fresh_db() {
         let db = fresh_db();
         let settings = invoke_get(&db).expect("get app_settings");
-        assert!(!settings.notifications_enabled, "master defaults OFF");
+        assert!(settings.notifications_enabled, "master defaults ON");
         assert!(settings.notify_on_needs_attention);
         assert!(settings.notify_on_mention);
         assert_eq!(

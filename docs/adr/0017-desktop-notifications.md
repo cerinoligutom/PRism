@@ -87,7 +87,7 @@ Rationale: the in-app badge is the always-on signal, so the toast carries spike-
 ```sql
 CREATE TABLE app_settings (
     id                              INTEGER PRIMARY KEY CHECK (id = 1),
-    notifications_enabled           INTEGER NOT NULL DEFAULT 0,
+    notifications_enabled           INTEGER NOT NULL DEFAULT 1,
     notify_on_needs_attention       INTEGER NOT NULL DEFAULT 1,
     notify_on_mention               INTEGER NOT NULL DEFAULT 1,
     notification_permission_state   TEXT    NOT NULL DEFAULT 'unprompted',
@@ -96,7 +96,9 @@ CREATE TABLE app_settings (
 INSERT INTO app_settings (id) VALUES (1);
 ```
 
-App-wide (not per-account). The two trigger toggles default to ON; the master switch (`notifications_enabled`) defaults to OFF and flips ON when the user accepts the permission prompt or explicitly enables in Settings. `notification_permission_state` stores `unprompted` / `granted` / `denied` so the UI can show the right call-to-action without re-asking the OS every time.
+App-wide (not per-account). The master switch (`notifications_enabled`) defaults to ON alongside the two trigger toggles — the assumption is that a user who's added an account wants to know when PRs need them. The OS permission prompt fires the first time PRism actually dispatches a toast; `notification_permission_state` (`unprompted` / `granted` / `denied`) records the outcome so the UI can show the right call-to-action without re-asking the OS every time. A user who genuinely doesn't want notifications turns the master OFF in Settings; the deny path is one click away on first launch.
+
+The original ADR shipped the master defaulting to OFF; the bump to ON happened pre-v1 launch after the in-app sidebar dots proved more than sufficient as a "noticed it without a toast" signal and the master-OFF default left first-time users wondering why nothing happened.
 
 Rationale: the v1 surface is two boolean toggles plus a master switch. A JSON blob would buy forward-compat at the cost of typed reads from Rust; a new column is one migration. Per-account adds a settings matrix that we have no reason to ask v1 users to navigate.
 

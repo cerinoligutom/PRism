@@ -43,7 +43,7 @@ interface PersistedState {
 }
 
 const DEFAULT_STATE: PersistedState = {
-  mode: "dark",
+  mode: "system",
   density: "comfortable",
   accent: ACCENT_PRESETS.magenta!,
   prDetailSurface: "drawer",

@@ -237,7 +237,7 @@ const reviewsBreakdown = computed(() => props.stats.reviews_summary);
 }
 
 .stat-tile__label {
-  font-size: var(--fs-10);
+  font-size: var(--fs-13);
   color: var(--text-mute);
   margin-top: var(--s-2);
   line-height: var(--lh-body);
