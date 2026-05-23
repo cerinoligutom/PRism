@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import type { Router } from "vue-router";
 
 import { useAppearanceStore, type Density } from "@/stores/appearance";
+import { useTauriListener } from "@/composables/useTauriListener";
 import type { ChipKey, FilterChipCounts } from "@/types/dashboard";
 
 /**
@@ -250,8 +251,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     collapsedGroups.value = next;
   }
 
-  let statusUnlisten: UnlistenFn | null = null;
-  let refreshUnlisten: UnlistenFn | null = null;
+  const listener = useTauriListener();
   // Bumped while the store owns an archive / unarchive fan-out so the
   // `dashboard://refresh` listener skips the backend's per-call emits during
   // a fan-out the store will already settle with a single coalesced reload.
@@ -699,38 +699,31 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   async function bind(): Promise<void> {
-    if (statusUnlisten === null) {
-      // Refresh on each completed cycle so the dashboard reflects the latest
-      // sync without the user clicking through. The worker emits `synced`
-      // once it has finished writing rows for the cycle.
-      statusUnlisten = await listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
-        if (event.payload.phase === "synced") {
+    await listener.bind(() =>
+      Promise.all([
+        // Refresh on each completed cycle so the dashboard reflects the
+        // latest sync without the user clicking through. The worker emits
+        // `synced` once it has finished writing rows for the cycle.
+        listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
+          if (event.payload.phase === "synced") {
+            void load();
+          }
+        }),
+        // Triage writes (ADR 0018: archive / unarchive) emit this so the
+        // active view reloads without waiting for the next sync tick. The
+        // store's own `archive` / `unarchive` actions already trigger a
+        // single coalesced reload after their fan-out completes; this
+        // listener catches writes from other windows or future surfaces.
+        listen(DASHBOARD_REFRESH_EVENT, () => {
+          if (inFlightArchiveBatches > 0) return;
           void load();
-        }
-      });
-    }
-    if (refreshUnlisten === null) {
-      // Triage writes (ADR 0018: archive / unarchive) emit this so the active
-      // view reloads without waiting for the next sync tick. The store's own
-      // `archive` / `unarchive` actions already trigger a single coalesced
-      // reload after their fan-out completes; this listener catches writes
-      // that originate outside the store (other windows, future surfaces).
-      refreshUnlisten = await listen(DASHBOARD_REFRESH_EVENT, () => {
-        if (inFlightArchiveBatches > 0) return;
-        void load();
-      });
-    }
+        }),
+      ]),
+    );
   }
 
   function unbind(): void {
-    if (statusUnlisten !== null) {
-      statusUnlisten();
-      statusUnlisten = null;
-    }
-    if (refreshUnlisten !== null) {
-      refreshUnlisten();
-      refreshUnlisten = null;
-    }
+    listener.unbind();
   }
 
   function clearError(): void {
