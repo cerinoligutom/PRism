@@ -93,8 +93,13 @@ function tokenStatus(account: Account): {
 }
 
 async function handleRemove(account: Account): Promise<void> {
+  // The schema cascades on `accounts.id` deletion (init.sql, 0002), so the
+  // user's per-account read / archive state in `pull_request_viewer_relations`
+  // is dropped alongside the PAT. Re-adding the same identity later starts
+  // from a clean slate; flag that explicitly so the click isn't surprising.
   const confirmed = window.confirm(
-    `Remove "${account.label}"? The PAT will be deleted from the OS keychain.`,
+    `Remove "${account.label}"? The PAT will be deleted from the OS keychain, `
+      + `and unread / archive state stored locally for this account will be cleared.`,
   );
   if (!confirmed) return;
   try {

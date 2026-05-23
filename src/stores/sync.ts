@@ -261,6 +261,24 @@ export const useSyncStore = defineStore("sync", () => {
     return result.applied_seconds;
   }
 
+  /**
+   * Drop the cached per-account state for `accountId`. The Tauri worker calls
+   * `state.forget(account_id)` server-side on `remove_account`, but it doesn't
+   * emit a follow-up status event, so the frontend has no other signal to
+   * prune its mirror. Called from the accounts store's `removeAccount`
+   * action; without it, removing the last account leaves the status-bar dot
+   * stuck on the dead account's last phase instead of falling through to
+   * "Idle - no accounts".
+   */
+  function forgetAccount(accountId: number): void {
+    accounts.value = accounts.value.filter((a) => a.account_id !== accountId);
+    if (appliedAtMs.value.has(accountId)) {
+      const next = new Map(appliedAtMs.value);
+      next.delete(accountId);
+      appliedAtMs.value = next;
+    }
+  }
+
   return {
     accounts,
     intervalSeconds,
@@ -279,5 +297,6 @@ export const useSyncStore = defineStore("sync", () => {
     refreshSnapshot,
     refreshNow,
     setIntervalSeconds,
+    forgetAccount,
   };
 });
