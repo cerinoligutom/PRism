@@ -27,6 +27,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0015_index_review_comments_author_login.sql"),
     include_str!("../../migrations/0016_rename_pull_requests_draft.sql"),
     include_str!("../../migrations/0017_rename_relation_last_seen_at.sql"),
+    include_str!("../../migrations/0018_last_seen_version.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
