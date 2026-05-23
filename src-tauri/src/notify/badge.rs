@@ -205,7 +205,7 @@ mod tests {
         let read_pr_updated_at_sql = read_pr_updated_at.map_or("NULL".into(), |v| v.to_string());
         conn.execute_batch(&format!(
             "INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES ({pr_id}, 10, {pr_id}, 't', '{state}', 0, 'bob',
                         0, {updated_at}, 'main', 'feat');
@@ -283,7 +283,7 @@ mod tests {
              INSERT INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'repo', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES (100, 10, 1, 't', 'open', 0, 'bob',
                         0, 1000, 'main', 'feat');

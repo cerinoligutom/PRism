@@ -208,7 +208,7 @@ mod tests {
              INSERT OR IGNORE INTO repos (id, account_id, owner, name, visibility)
                 VALUES (10, 1, 'owner', 'web', 'public');
              INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES ({pr_id}, 10, {number}, 't', 'open', 0, 'bob',
                         0, 0, 'main', 'feat');"

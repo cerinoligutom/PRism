@@ -51,7 +51,7 @@ fn seed_fixture(db: &DbHandle) {
             (10, 1, 'alice', 'web', 'public');
 
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref,
              issue_comments_count,
              threads_total,
@@ -447,7 +447,7 @@ fn stats_comment_breakdown_review_uses_reply_count_without_review_comments() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref,
              issue_comments_count)
             VALUES (600, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat', 0);
@@ -488,7 +488,7 @@ fn stats_zero_threads_returns_baseline() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'owner', 'repo', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (200, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');",
     )
@@ -530,7 +530,7 @@ fn stats_participants_dedupes_repeat_authors() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (700, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO review_threads
@@ -564,7 +564,7 @@ fn stats_participants_excludes_pending_reviewers() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (701, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO reviews
@@ -603,7 +603,7 @@ fn stats_reviews_summary_excludes_pending() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (800, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO reviews
@@ -662,7 +662,7 @@ fn stats_last_activity_none_when_no_activity() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (900, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');",
     )
@@ -681,7 +681,7 @@ fn stats_all_resolved_yields_resolution_rate_one() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (300, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO review_threads
@@ -711,7 +711,7 @@ fn stats_resolved_includes_resolved_and_outdated_intersection() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (400, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          -- 7 threads total: 3 strict-active resolved + 4 resolved-and-outdated.
@@ -751,7 +751,7 @@ fn stats_all_outdated_unresolved_count_normally() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (400, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO review_threads
@@ -782,7 +782,7 @@ fn stats_single_comment_threads_contribute_no_response_gap() {
          INSERT INTO repos (id, account_id, owner, name, visibility)
             VALUES (10, 1, 'a', 'r', 'public');
          INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref)
             VALUES (500, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
          INSERT INTO review_threads
@@ -1114,7 +1114,7 @@ fn parameterised_pr_id_isolates_queries_across_prs() {
         let conn = db.lock().unwrap();
         conn.execute_batch(
             "INSERT INTO pull_requests
-                (id, repo_id, number, title, state, draft, author_login,
+                (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref,
                  issue_comments_count)
                 VALUES
@@ -1143,7 +1143,7 @@ fn seed_timeline_events(db: &DbHandle) {
         r#"
         -- Sibling PR so the isolation row below clears the FK constraint.
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref,
              issue_comments_count)
             VALUES

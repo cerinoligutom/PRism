@@ -33,7 +33,7 @@ fn seed_pr_with_thread(db: &DbHandle) {
         INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
             (10, 1, 'owner', 'repo', 'public');
         INSERT INTO pull_requests
-            (id, repo_id, number, title, state, draft, author_login,
+            (id, repo_id, number, title, state, is_draft, author_login,
              created_at, updated_at, base_ref, head_ref,
              issue_comments_count)
             VALUES
