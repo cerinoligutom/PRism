@@ -26,7 +26,8 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "echo 'lint wiring lands in a follow-up PR' && exit 0",
     "bump-version": "node --experimental-strip-types scripts/bump-version.ts",
-    "check-version": "node --experimental-strip-types scripts/bump-version.ts --check"
+    "check-version": "node --experimental-strip-types scripts/bump-version.ts --check",
+    "stamp-changelog": "node --experimental-strip-types scripts/stamp-changelog.ts"
   },
   "dependencies": {
     "@fontsource/mona-sans": "^5.2.8",
