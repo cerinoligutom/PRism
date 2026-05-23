@@ -144,6 +144,19 @@ export const useReposStore = defineStore("repos", () => {
     lastError.value = null;
   }
 
+  /**
+   * Drop the cached repo list for `accountId`. Called from the accounts
+   * store's `removeAccount` action so the per-account slice in `byAccount`
+   * doesn't dangle after the account row (and its FK-cascaded repos) is
+   * gone from SQL.
+   */
+  function forgetAccount(accountId: number): void {
+    if (!(accountId in byAccount.value)) return;
+    const next = { ...byAccount.value };
+    delete next[accountId];
+    byAccount.value = next;
+  }
+
   return {
     byAccount,
     lastError,
@@ -157,5 +170,6 @@ export const useReposStore = defineStore("repos", () => {
     refresh,
     setTracked,
     clearError,
+    forgetAccount,
   };
 });

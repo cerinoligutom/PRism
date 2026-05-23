@@ -2,6 +2,11 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
+import { useAppearanceStore } from "@/stores/appearance";
+import { useDashboardStore } from "@/stores/dashboard";
+import { useReposStore } from "@/stores/repos";
+import { useSyncStore } from "@/stores/sync";
+
 export interface Account {
   readonly id: number;
   readonly label: string;
@@ -143,6 +148,20 @@ export const useAccountsStore = defineStore("accounts", () => {
     try {
       await invoke<void>("remove_account", { id });
       accounts.value = accounts.value.filter((a) => a.id !== id);
+      // The Rust worker prunes its per-account sync map in `on_removed` but
+      // doesn't emit a follow-up status event, so the frontend's mirror has
+      // no other signal to drop the dead account. Without these cleanups the
+      // status bar reads its phase from a stale entry (e.g. green "Live"
+      // after the last account is gone) and the persisted dashboard scope
+      // can dangle until `DashboardView` remounts.
+      const sync = useSyncStore();
+      const repos = useReposStore();
+      const appearance = useAppearanceStore();
+      const dashboard = useDashboardStore();
+      sync.forgetAccount(id);
+      repos.forgetAccount(id);
+      if (appearance.accountScope === id) appearance.setAccountScope(null);
+      if (dashboard.accountScope === id) dashboard.accountScope = null;
     } catch (err) {
       lastError.value = formatAuthError(err);
       throw new Error(lastError.value);
