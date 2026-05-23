@@ -264,30 +264,6 @@ function onHueInput(event: Event): void {
   overflow: hidden;
 }
 
-/* ────── set-row BEM block (settings row) ────── */
-.set-row {
-  background: var(--bg-2);
-  padding: 14px 18px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--s-4);
-  align-items: center;
-}
-
-.set-row__name {
-  font-size: var(--fs-13);
-  color: var(--text);
-  font-weight: 500;
-}
-
-.set-row__desc {
-  font-size: var(--fs-12);
-  color: var(--text-mute);
-  margin-top: 2px;
-  line-height: 1.45;
-  max-width: 540px;
-}
-
 /* ────── theme-card BEM block ────── */
 .theme-row {
   display: grid;

@@ -94,6 +94,11 @@ export const router = createRouter({
           name: "settings.sync",
           component: () => import("@/views/settings/SyncSettings.vue"),
         },
+        {
+          path: "about",
+          name: "settings.about",
+          component: () => import("@/views/settings/AboutPanel.vue"),
+        },
       ],
     },
   ],

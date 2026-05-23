@@ -105,6 +105,10 @@ gh pr create --assignee @me \
 
 Why at creation time and not after: applying labels post-create can fire project-board workflows out of order (the "Item added to project" workflow sees an unlabelled item first), and assignees drive the board's "My items" view from the moment the PR exists.
 
+## Changelog
+
+PRism keeps a [Keep-a-Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) file at [`CHANGELOG.md`](CHANGELOG.md). If your PR introduces a user-facing change (new functionality, a behaviour change, a bug fix worth surfacing, a deprecation, a removed surface, or a security-relevant fix), append a one-line bullet to the matching subheading under `[Unreleased]` in the same PR. Internal refactors, build / CI plumbing, and docs-only changes don't need an entry. Releases promote `[Unreleased]` to a dated version block via `pnpm stamp-changelog --version X.Y.Z`; don't add dated version headings by hand.
+
 ## ADR process
 
 Anything that changes the shape of the system gets an ADR. Stack choice, storage engine, sync model, security model, API protocol — all ADR-worthy. Library upgrades, bug fixes, and routine refactors are not.
