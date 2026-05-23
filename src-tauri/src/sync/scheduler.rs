@@ -1,14 +1,21 @@
 //! Sync polling scheduler configuration.
 //!
-//! Default interval and clamping live here (ADR 0004: 60s default, range
+//! Default interval and clamping live here (ADR 0004: 300s default, range
 //! 30s-10min). The worker reads `SchedulerConfig` once per cycle so settings
 //! changes pick up on the next tick without restarting the task.
+//!
+//! The current interval is persisted on the `app_settings` singleton so the
+//! user's chosen cadence survives an app restart. Helpers below read/write
+//! the column; the worker init in `lib.rs` reads on startup, the
+//! `set_sync_interval` command writes on every change.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const DEFAULT_INTERVAL_SECS: u64 = 60;
+use crate::db::{lock_db, DbHandle};
+
+pub const DEFAULT_INTERVAL_SECS: u64 = 300;
 pub const MIN_INTERVAL_SECS: u64 = 30;
 pub const MAX_INTERVAL_SECS: u64 = 600;
 
@@ -59,12 +66,53 @@ fn clamp_interval(secs: u64) -> u64 {
     secs.clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS)
 }
 
+/// Read the persisted poll interval from `app_settings`. Returns `None` if
+/// the column read fails (DB locked, migration mid-flight, transient I/O);
+/// the caller should fall back to `DEFAULT_INTERVAL_SECS`. The value is
+/// re-clamped on read since the column default could in theory drift from
+/// the [`MIN_INTERVAL_SECS`, `MAX_INTERVAL_SECS`] range across migrations.
+pub fn read_persisted_interval(db: &DbHandle) -> Option<u64> {
+    let conn = match lock_db(db) {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("sync: read persisted interval — db lock failed: {err}");
+            return None;
+        }
+    };
+    match conn.query_row(
+        "SELECT sync_interval_seconds FROM app_settings WHERE id = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(secs) if secs > 0 => Some(clamp_interval(secs as u64)),
+        Ok(_) => None,
+        Err(err) => {
+            eprintln!("sync: read persisted interval — query failed: {err}");
+            None
+        }
+    }
+}
+
+/// Write the (clamped) poll interval back to `app_settings`. Called from
+/// the `set_sync_interval` Tauri command after the in-memory atomic has
+/// been updated, so a write failure doesn't desync the runtime — the
+/// runtime change still applies; only the persisted value is missed.
+pub fn write_persisted_interval(db: &DbHandle, secs: u64) -> Result<(), rusqlite::Error> {
+    let conn = lock_db(db)?;
+    let clamped = clamp_interval(secs) as i64;
+    conn.execute(
+        "UPDATE app_settings SET sync_interval_seconds = ?1, updated_at = strftime('%s', 'now') WHERE id = 1",
+        [clamped],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_interval_is_60_seconds() {
+    fn default_interval_matches_constant() {
         let cfg = SchedulerConfig::default();
         assert_eq!(cfg.interval_secs(), DEFAULT_INTERVAL_SECS);
     }

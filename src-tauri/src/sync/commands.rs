@@ -77,15 +77,23 @@ pub struct SetIntervalResult {
 }
 
 /// Update the poll interval. Out-of-range values clamp to the nearest bound;
-/// the result echoes the value actually applied.
+/// the result echoes the value actually applied. The clamped value is also
+/// persisted to `app_settings.sync_interval_seconds` so the choice survives
+/// an app restart. A persistence error is logged but doesn't fail the
+/// command - the in-memory runtime change still applies.
 #[tauri::command]
 pub fn set_sync_interval(
     worker: State<'_, Arc<WorkerHandle>>,
+    db: State<'_, crate::db::DbHandle>,
     input: SetIntervalInput,
 ) -> SetIntervalResult {
     worker.config().set_interval(input.seconds);
+    let applied = worker.config().interval_secs();
+    if let Err(err) = crate::sync::write_persisted_interval(&db, applied) {
+        eprintln!("sync: persist interval failed: {err}");
+    }
     SetIntervalResult {
-        applied_seconds: worker.config().interval_secs(),
+        applied_seconds: applied,
     }
 }
 

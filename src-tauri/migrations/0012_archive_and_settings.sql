@@ -39,21 +39,24 @@ CREATE INDEX idx_relations_archived_at
 -- row can never be inserted by accident; the migration also seeds the
 -- canonical row so reads never need to handle the empty case. Per ADR
 -- 0017:
---   - `notifications_enabled` is the master switch (default OFF; flips
---     ON when the user accepts the OS permission prompt or explicitly
---     enables in Settings).
+--   - `notifications_enabled` is the master switch (default ON; the OS
+--     permission prompt fires the first time PRism tries to dispatch a
+--     toast, and `notification_permission_state` records the outcome).
 --   - `notify_on_needs_attention` / `notify_on_mention` are per-trigger
---     toggles, gated behind the master switch in the panel (default ON
---     once master is ON).
+--     toggles, gated behind the master switch in the panel.
 --   - `notification_permission_state` tracks the OS-level grant
 --     (`unprompted`, `granted`, `denied`) so the Settings panel renders
 --     the right call-to-action without re-asking the OS every time.
+--   - `sync_interval_seconds` persists the poll cadence so the user's
+--     chosen interval survives an app restart. Clamped at write time to
+--     `[MIN_INTERVAL_SECS, MAX_INTERVAL_SECS]` (see sync/scheduler.rs).
 CREATE TABLE app_settings (
     id                              INTEGER PRIMARY KEY CHECK (id = 1),
-    notifications_enabled           INTEGER NOT NULL DEFAULT 0,
+    notifications_enabled           INTEGER NOT NULL DEFAULT 1,
     notify_on_needs_attention       INTEGER NOT NULL DEFAULT 1,
     notify_on_mention               INTEGER NOT NULL DEFAULT 1,
     notification_permission_state   TEXT    NOT NULL DEFAULT 'unprompted',
+    sync_interval_seconds           INTEGER NOT NULL DEFAULT 300,
     updated_at                      INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 

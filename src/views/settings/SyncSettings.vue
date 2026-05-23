@@ -158,7 +158,7 @@ onMounted(async () => {
 
 .sync-panel__section-title {
   margin: 0;
-  font-size: var(--fs-14);
+  font-size: var(--fs-16);
   font-weight: 600;
   color: var(--text-strong);
 }

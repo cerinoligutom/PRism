@@ -94,7 +94,7 @@ mod tests {
     fn defaults_match_migration_seed() {
         let conn = fresh();
         let settings = AppSettings::load(&conn).expect("load settings");
-        assert!(!settings.notifications_enabled, "master defaults OFF");
+        assert!(settings.notifications_enabled, "master defaults ON");
         assert!(
             settings.notify_on_needs_attention,
             "needs-attention trigger defaults ON"

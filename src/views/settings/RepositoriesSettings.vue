@@ -13,10 +13,18 @@ const reposStore = useReposStore();
 const toastStore = useToastStore();
 
 const search = ref("");
+const showTrackedOnly = ref(false);
 
-// Per-org collapsed state, keyed by `${accountId}:${owner}`. A Set in a ref so
-// toggling triggers reactivity via reassignment.
-const collapsedOrgs = ref<Set<string>>(new Set());
+// Per-org expanded state, keyed by `${accountId}:${owner}`. Default is empty,
+// meaning every org starts collapsed - so a 200-repo account stays scannable
+// at a glance. Expanding is opt-in via the chevron, search, or the
+// Tracked-only filter (both temporarily expand-all so matches surface).
+const expandedOrgs = ref<Set<string>>(new Set());
+
+// Snapshot of the user's manual expand state taken when search / filter
+// flips ON; restored when both go OFF so the user's deliberate state isn't
+// wiped by a transient search.
+const expandedOrgsSnapshot = ref<Set<string> | null>(null);
 
 const totalTracked = computed(() => {
   let count = 0;
@@ -52,63 +60,98 @@ function initials(account: Account): string {
 
 interface OrgGroup {
   readonly owner: string;
+  /** Repos visible after search / Tracked-only filter (what we render). */
   readonly repos: readonly RepoSummary[];
+  /** Every repo in this org, regardless of filter. Drives the counter and
+   * the "All / Mixed / None" track state so they reflect reality, not the
+   * filtered slice. */
+  readonly allRepos: readonly RepoSummary[];
   readonly trackedCount: number;
+  readonly totalCount: number;
 }
 
 type OrgTrackState = "all" | "none" | "mixed";
 
 function groupForAccount(accountId: number): OrgGroup[] {
   const all = reposStore.getRepos(accountId);
-  const q = search.value.trim().toLowerCase();
-  const filtered = q.length === 0
-    ? all
-    : all.filter(
-        (r) =>
-          r.owner.toLowerCase().includes(q) ||
-          r.name.toLowerCase().includes(q),
-      );
-  const byOwner = new Map<string, RepoSummary[]>();
-  for (const repo of filtered) {
-    const list = byOwner.get(repo.owner);
-    if (list === undefined) byOwner.set(repo.owner, [repo]);
+  // First bucket the FULL set by owner so we know each org's real size,
+  // independent of the visible filter applied below.
+  const allByOwner = new Map<string, RepoSummary[]>();
+  for (const repo of all) {
+    const list = allByOwner.get(repo.owner);
+    if (list === undefined) allByOwner.set(repo.owner, [repo]);
     else list.push(repo);
   }
-  return Array.from(byOwner.entries())
-    .map<OrgGroup>(([owner, repos]) => {
-      const sorted = repos.slice().sort((a, b) => a.name.localeCompare(b.name));
-      const trackedCount = sorted.reduce(
+  const q = search.value.trim().toLowerCase();
+  return Array.from(allByOwner.entries())
+    .map<OrgGroup>(([owner, ownerRepos]) => {
+      const visible = ownerRepos.filter((r) => {
+        if (showTrackedOnly.value && !r.is_tracked) return false;
+        if (q.length > 0
+            && !r.owner.toLowerCase().includes(q)
+            && !r.name.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      const sortedVisible = visible.slice().sort((a, b) => a.name.localeCompare(b.name));
+      const trackedCount = ownerRepos.reduce(
         (n, r) => n + (r.is_tracked ? 1 : 0),
         0,
       );
-      return { owner, repos: sorted, trackedCount };
+      return {
+        owner,
+        repos: sortedVisible,
+        allRepos: ownerRepos,
+        trackedCount,
+        totalCount: ownerRepos.length,
+      };
     })
+    .filter((g) => g.repos.length > 0)
     .sort((a, b) => a.owner.localeCompare(b.owner));
 }
 
 function orgTrackState(group: OrgGroup): OrgTrackState {
   if (group.trackedCount === 0) return "none";
-  if (group.trackedCount === group.repos.length) return "all";
+  if (group.trackedCount === group.totalCount) return "all";
   return "mixed";
 }
 
-function isCollapsed(accountId: number, owner: string): boolean {
-  return collapsedOrgs.value.has(`${accountId}:${owner}`);
+function isExpanded(accountId: number, owner: string): boolean {
+  return expandedOrgs.value.has(`${accountId}:${owner}`);
 }
 
-function toggleCollapsed(accountId: number, owner: string): void {
+function toggleExpanded(accountId: number, owner: string): void {
   const key = `${accountId}:${owner}`;
-  const next = new Set(collapsedOrgs.value);
+  const next = new Set(expandedOrgs.value);
   if (next.has(key)) next.delete(key);
   else next.add(key);
-  collapsedOrgs.value = next;
+  expandedOrgs.value = next;
 }
 
-// Auto-expand all orgs while a search is active so matches aren't hidden
-// behind a collapsed header.
-watch(search, (q) => {
-  if (q.trim().length > 0 && collapsedOrgs.value.size > 0) {
-    collapsedOrgs.value = new Set();
+function allOrgKeys(): Set<string> {
+  const out = new Set<string>();
+  for (const account of accountsStore.accounts) {
+    for (const repo of reposStore.getRepos(account.id)) {
+      out.add(`${account.id}:${repo.owner}`);
+    }
+  }
+  return out;
+}
+
+// While search OR the Tracked-only filter is active, expand every org so
+// matches surface immediately. Snapshot the user's manual state on the way
+// in, restore it on the way out so a transient search doesn't wipe their
+// deliberate expansions.
+const isAutoExpanding = computed<boolean>(
+  () => search.value.trim().length > 0 || showTrackedOnly.value,
+);
+
+watch(isAutoExpanding, (active) => {
+  if (active && expandedOrgsSnapshot.value === null) {
+    expandedOrgsSnapshot.value = new Set(expandedOrgs.value);
+    expandedOrgs.value = allOrgKeys();
+  } else if (!active && expandedOrgsSnapshot.value !== null) {
+    expandedOrgs.value = expandedOrgsSnapshot.value;
+    expandedOrgsSnapshot.value = null;
   }
 });
 
@@ -130,9 +173,10 @@ async function toggleTracked(repo: RepoSummary): Promise<void> {
 
 async function toggleOrgTracked(group: OrgGroup): Promise<void> {
   // Mixed and none both go ON (positive default for the org gesture);
-  // all goes OFF.
+  // all goes OFF. Walk the UNFILTERED org so the gesture applies to every
+  // repo, not just the slice visible under the current filter.
   const target = orgTrackState(group) !== "all";
-  const work = group.repos.filter((r) => r.is_tracked !== target);
+  const work = group.allRepos.filter((r) => r.is_tracked !== target);
   if (work.length === 0) return;
   try {
     await Promise.all(work.map((r) => reposStore.setTracked(r.id, target)));
@@ -227,6 +271,15 @@ watch(
           :spellcheck="false"
           autocomplete="off"
         />
+        <button
+          type="button"
+          class="repo-account__filter-btn"
+          :class="{ 'repo-account__filter-btn--active': showTrackedOnly }"
+          :aria-pressed="showTrackedOnly"
+          @click="showTrackedOnly = !showTrackedOnly"
+        >
+          Tracked only
+        </button>
       </div>
 
       <div
@@ -268,17 +321,20 @@ watch(
         >
           <header
             class="org-group__head"
-            :class="{ 'org-group__head--all': orgTrackState(group) === 'all' }"
+            :class="{
+              'org-group__head--all': orgTrackState(group) === 'all',
+              'org-group__head--has-tracked': group.trackedCount > 0,
+            }"
           >
             <button
               type="button"
               class="org-group__toggle-btn"
-              :aria-expanded="!isCollapsed(account.id, group.owner)"
-              @click="toggleCollapsed(account.id, group.owner)"
+              :aria-expanded="isExpanded(account.id, group.owner)"
+              @click="toggleExpanded(account.id, group.owner)"
             >
               <svg
                 class="org-group__chevron"
-                :class="{ 'org-group__chevron--open': !isCollapsed(account.id, group.owner) }"
+                :class="{ 'org-group__chevron--open': isExpanded(account.id, group.owner) }"
                 width="10"
                 height="10"
                 viewBox="0 0 16 16"
@@ -293,7 +349,7 @@ watch(
               </svg>
               <span class="org-group__name">{{ group.owner }}</span>
               <span class="org-group__count">
-                {{ group.trackedCount }} / {{ group.repos.length }}
+                {{ group.trackedCount }} / {{ group.totalCount }}
               </span>
             </button>
             <div class="org-group__action">
@@ -313,7 +369,7 @@ watch(
           </header>
 
           <ul
-            v-if="!isCollapsed(account.id, group.owner)"
+            v-if="isExpanded(account.id, group.owner)"
             class="org-group__list"
           >
             <li
@@ -510,7 +566,45 @@ watch(
 }
 
 .repo-account__search {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
   margin-bottom: var(--s-4);
+}
+
+.repo-account__search > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.repo-account__filter-btn {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-2);
+  border: 1px solid var(--border-2);
+  background: var(--bg-2);
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.repo-account__filter-btn:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.repo-account__filter-btn--active {
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+  border-color: transparent;
+}
+
+.repo-account__filter-btn--active:hover {
+  background: var(--accent-bg);
+  color: var(--accent-strong);
 }
 
 .repo-account__orgs {
@@ -586,7 +680,7 @@ watch(
   border-radius: var(--r-1);
 }
 
-.org-group__head--all .org-group__count {
+.org-group__head--has-tracked .org-group__count {
   color: var(--accent-strong);
   background: var(--accent-bg);
   border-color: transparent;

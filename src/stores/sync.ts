@@ -78,7 +78,7 @@ function aggregatePhase(accounts: readonly AccountSyncState[]): SyncPhase {
 
 export const useSyncStore = defineStore("sync", () => {
   const accounts = ref<AccountSyncState[]>([]);
-  const intervalSeconds = ref<number>(60);
+  const intervalSeconds = ref<number>(300);
   const minIntervalSeconds = ref<number>(30);
   const maxIntervalSeconds = ref<number>(600);
 

@@ -174,11 +174,19 @@ fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     ));
     app.manage(notify_sink.clone());
 
+    // Hydrate the poll interval from `app_settings` so the user's last
+    // chosen cadence survives across restarts. Falls back to the default
+    // if the column read fails or the persisted value is out of range.
+    let scheduler_config = sync::SchedulerConfig::shared();
+    if let Some(persisted) = sync::read_persisted_interval(&db_handle) {
+        scheduler_config.set_interval(persisted);
+    }
+
     let ctx = sync::WorkerContext {
         db: db_handle.clone(),
         accounts: account_store,
         clients: client_factory,
-        config: sync::SchedulerConfig::shared(),
+        config: scheduler_config,
         state: sync::SyncStateMap::new(),
         emit: Arc::new(sync::AppHandleEmitter::new(app.handle().clone())),
         reauth: Arc::new(sync::AppHandleReauth::new(app.handle().clone())),

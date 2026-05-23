@@ -200,21 +200,21 @@ onBeforeUnmount(() => {
 .sidebar__brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 6px var(--s-4);
+  gap: 10px;
+  padding: 8px 6px var(--s-4);
 }
 
 .sidebar__brand-mark {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   color: var(--text-strong);
-  flex: 0 0 22px;
+  flex: 0 0 28px;
 }
 
 .sidebar__brand-name {
-  font-size: var(--fs-14);
+  font-size: var(--fs-20);
   font-weight: 600;
-  letter-spacing: -0.4px;
+  letter-spacing: -0.01em;
   color: var(--text-strong);
 }
 
@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 .sidebar__nav {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
 }
 
 .sidebar__foot {
