@@ -159,6 +159,16 @@ git commit -m "sync from docs/wiki@${SHA}"
 git push
 ```
 
+## Updater manifest
+
+The Tauri updater consumes a `latest.json` manifest published on GitHub Pages. ADR-0024 owns the design; [`.github/workflows/update-manifest.yml`](.github/workflows/update-manifest.yml) regenerates the manifest whenever a draft Release is published (gate 3 of ADR-0023's review chain).
+
+### One-time setup
+
+After the workflow lands its first commit on the `gh-pages` branch (which it creates automatically on the first matching `release: published` event), set repo **Settings -> Pages -> Source** to "Deploy from a branch" with **Branch: `gh-pages` / Root (`/`)**. GitHub Pages then serves `latest.json` at `https://cerinoligutom.github.io/PRism/latest.json`. The updater plugin's `endpoints` value in `src-tauri/tauri.conf.json` (added by issue #308) points at that URL.
+
+No new secrets are needed: the workflow signs nothing of its own. It reads the `.sig` files that `release.yml` produced via `TAURI_SIGNING_PRIVATE_KEY` and copies the signatures into the manifest verbatim.
+
 ## Issues
 
 - Pick the template that fits: bug, feature request, or chore.

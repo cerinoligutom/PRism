@@ -1,0 +1,164 @@
+name: Updater manifest
+
+run-name: Updater manifest for ${{ github.event.release.tag_name }}
+
+# Regenerates the Tauri updater manifest on GitHub Pages whenever the
+# maintainer clicks Publish on a draft Release (gate 3 of ADR-0023's
+# review chain). The manifest only ever points at artefacts that
+# survived that manual review, so the OTA channel can't surface
+# anything the maintainer hasn't already seen.
+#
+# Deployed shape: a single `latest.json` at the GH Pages root holding
+# entries for every supported target. ADR-0024's URL pattern
+# (`/updater/{{target}}/{{current_version}}`) was the conceptual
+# placeholder; the plugin picks the matching platform entry out of one
+# document, so the deployed shape simplifies to one stable file. The
+# tauri.conf.json `endpoints` value follows the same simplification.
+#
+# Inputs:
+#   - Triggering event: `release: published` on a non-draft, non-pre-
+#     release Release (drafts shouldn't reach users; pre-releases
+#     shouldn't auto-update stable installs to an -rc).
+#   - The `.sig` files attached to the release by release.yml (signed
+#     by TAURI_SIGNING_PRIVATE_KEY at build time per ADR-0023).
+#
+# Outputs:
+#   - `latest.json` pushed to the `gh-pages` branch root.
+#   - Served by GitHub Pages once the repo's Settings -> Pages source is
+#     set to the `gh-pages` branch (one-time maintainer step documented
+#     in CONTRIBUTING.md).
+
+on:
+  release:
+    types: [published]
+
+# `contents: write` is the only elevated permission needed: the job
+# writes `latest.json` to the gh-pages branch via peaceiris/actions-gh-
+# pages. No Pages-API permission is required because we use the branch-
+# source approach rather than actions/deploy-pages.
+permissions:
+  contents: write
+
+# One manifest update per release tag at a time. Two concurrent runs
+# against the same tag would race on the gh-pages push.
+concurrency:
+  group: update-manifest-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-manifest:
+    name: Generate and publish latest.json
+    # Skip drafts and pre-releases. The `release: published` event also
+    # fires when a draft is published, so the draft filter is a no-op in
+    # practice; it stays for clarity and to guard against future API
+    # behaviour changes. The pre-release filter is the load-bearing
+    # check: it stops `vX.Y.Z-rc.N` tags from auto-updating stable
+    # installs.
+    if: github.event.release.draft == false && github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          # We only need write access to the gh-pages branch via the
+          # deploy step below, so the default checkout is fine.
+          persist-credentials: false
+
+      - name: Download release signature files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p sigs
+          # Only the `.sig` files are needed to build the manifest; the
+          # binary URLs are computed from the tag + known filename
+          # pattern, so downloading the multi-hundred-MB installers
+          # would be wasted bandwidth.
+          gh release download "$TAG" --dir sigs --pattern '*.sig'
+          echo "Downloaded signatures:"
+          ls -la sigs/
+
+      - name: Generate latest.json
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PUB_DATE: ${{ github.event.release.published_at }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Strip the leading 'v' from the tag to match the bundle
+          # filename pattern that tauri-action emits
+          # (`PRism_<version>_<arch>.<ext>`).
+          version="${TAG#v}"
+
+          # Helper: read a .sig file by filename and emit its trimmed
+          # contents. Fails loudly when the file is missing so a half-
+          # populated manifest never reaches gh-pages.
+          read_sig() {
+            local sig_path="sigs/$1"
+            if [ ! -f "$sig_path" ]; then
+              echo "::error::Missing signature file: $1"
+              echo "::error::release.yml must produce updater artefacts (bundle.createUpdaterArtifacts in tauri.conf.json) for every target before the manifest workflow can run."
+              exit 1
+            fi
+            tr -d '\n\r' < "$sig_path"
+          }
+
+          # Bundle filenames are tauri-action's v2-format defaults. If
+          # release.yml ever pins different bundle targets the patterns
+          # below have to follow.
+          mac_arm_bundle="PRism_${version}_aarch64.app.tar.gz"
+          mac_x64_bundle="PRism_${version}_x64.app.tar.gz"
+          win_x64_bundle="PRism_${version}_x64-setup.exe"
+          linux_x64_bundle="PRism_${version}_amd64.AppImage"
+
+          base_url="https://github.com/${REPO}/releases/download/${TAG}"
+
+          mac_arm_sig=$(read_sig "${mac_arm_bundle}.sig")
+          mac_x64_sig=$(read_sig "${mac_x64_bundle}.sig")
+          win_x64_sig=$(read_sig "${win_x64_bundle}.sig")
+          linux_x64_sig=$(read_sig "${linux_x64_bundle}.sig")
+
+          # jq composes the manifest so platform entries are always
+          # JSON-safe. Signatures can contain characters (newlines,
+          # quotes) that don't survive a shell heredoc cleanly.
+          mkdir -p out
+          jq -n \
+            --arg version "$version" \
+            --arg pub_date "$PUB_DATE" \
+            --arg mac_arm_sig "$mac_arm_sig" \
+            --arg mac_arm_url "${base_url}/${mac_arm_bundle}" \
+            --arg mac_x64_sig "$mac_x64_sig" \
+            --arg mac_x64_url "${base_url}/${mac_x64_bundle}" \
+            --arg win_x64_sig "$win_x64_sig" \
+            --arg win_x64_url "${base_url}/${win_x64_bundle}" \
+            --arg linux_x64_sig "$linux_x64_sig" \
+            --arg linux_x64_url "${base_url}/${linux_x64_bundle}" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $mac_arm_sig, url: $mac_arm_url },
+                "darwin-x86_64":  { signature: $mac_x64_sig, url: $mac_x64_url },
+                "windows-x86_64": { signature: $win_x64_sig, url: $win_x64_url },
+                "linux-x86_64":   { signature: $linux_x64_sig, url: $linux_x64_url }
+              }
+            }' > out/latest.json
+
+          echo "Generated manifest:"
+          cat out/latest.json
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./out
+          publish_branch: gh-pages
+          # `keep_files: true` preserves anything already on gh-pages
+          # (older diagnostic pages, future per-target manifests if we
+          # ever switch to the multi-file layout). The action still
+          # overwrites latest.json on every run.
+          keep_files: true
+          commit_message: 'chore(updater): publish manifest for ${{ github.event.release.tag_name }}'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
