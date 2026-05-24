@@ -13,6 +13,12 @@
 //! - `notify`: OS notification dispatch sink (M6 plumbing; ADR 0017)
 //! - `startup`: graceful failure surface for setup-hook + `run()` errors (M7, issue #239)
 //! - `update`: auto-update subsystem (ADR-0024, issue #308)
+//!
+//! The `prism://` custom URL scheme (issue #339) is wired through the
+//! `tauri-plugin-deep-link` plugin registered below; the bundle config in
+//! `tauri.conf.json > plugins.deep-link.desktop.schemes` emits the macOS
+//! `CFBundleURLTypes`, Linux `.desktop` MimeType, and Windows registry
+//! entries during bundling. Frontend handler in `src/composables/useDeepLinkRouter.ts`.
 
 pub mod app_metadata;
 pub mod auth;
@@ -36,11 +42,31 @@ const NOTIFICATION_OPEN_PR_EVENT: &str = "notification://open-pr";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let result = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // Linux + Windows route inbound `prism://` URLs by spawning a new app
+    // instance with the URL as a CLI argument. The single-instance plugin
+    // (with the `deep-link` feature) intercepts that spawn, forwards the
+    // URL into the running app's deep-link channel, and quits the duplicate
+    // process so the existing window handles the URL (issue #339). macOS
+    // doesn't need this - the OS routes the URL into the live process
+    // directly via `onOpenUrl`.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    let result = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
         .on_window_event(on_window_event)
         .setup(|app| {
             // Run the real setup inside a helper so we can intercept any `?`
@@ -69,6 +95,7 @@ pub fn run() {
             dashboard::commands::get_pr_route_metadata,
             dashboard::commands::list_dashboard_pull_requests,
             dashboard::commands::list_dashboard_view_counts,
+            dashboard::commands::pr_lookup_by_coordinates,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_tracked,
@@ -238,6 +265,19 @@ fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let auth_state = app.state::<auth::commands::AuthState>();
     auth_state.set_listener(worker.clone() as Arc<dyn auth::commands::AccountChangeListener>);
     app.manage(worker);
+
+    // Register the `prism://` scheme with the OS on Linux + Windows dev
+    // launches (issue #339). Bundling emits the `.desktop` MimeType / registry
+    // entries from `tauri.conf.json`, but a `cargo tauri dev` run skips those
+    // paths; runtime `register("prism")` fills that gap. macOS / iOS / Android
+    // ignore this call per the plugin's documentation.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        if let Err(err) = app.deep_link().register("prism") {
+            tracing::warn!(%err, "deep-link: runtime register failed");
+        }
+    }
 
     // Auto-update subsystem (ADR-0024, issue #308). The state handle
     // holds the pending-update slot the Settings panel + banner read,

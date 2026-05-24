@@ -16,6 +16,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - "Mark all read" action in the dashboard header clears unread / mention state on every PR matching the active view + chip filter (#336).
 - Bulk multi-select on dashboard rows with an inline checkbox; the toolbar above the list archives every selected PR in one batched write per account, with Shift+click for range extension (#331).
 - Configurable auto-archive window in Settings -> Sync; defaults to 30 days, 0 disables auto-archive, capped at 365 (#333).
+- `prism://` custom URL scheme for deep-linking into a specific PR; URL shape `prism://pr/<owner>/<repo>/<number>` with an optional `?host=` query for non-github.com PRs, falling back to opening on GitHub when PRism isn't tracking the PR (#339).
 
 ### Changed
 

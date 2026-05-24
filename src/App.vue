@@ -4,6 +4,7 @@ import { onMounted, ref, watch } from "vue";
 import AppShell from "@/components/AppShell.vue";
 import PRismToastViewport from "@/components/ui/PRismToastViewport.vue";
 import WhatsNewDialog from "@/components/WhatsNewDialog.vue";
+import { useDeepLinkRouter } from "@/composables/useDeepLinkRouter";
 import { useKeyboardShortcuts } from "@/composables/useKeyboardShortcuts";
 import { useAppMetadata } from "@/composables/useAppMetadata";
 import { useNotificationRouter } from "@/composables/useNotificationRouter";
@@ -17,6 +18,7 @@ import { useAppSettings } from "@/stores/settings";
 
 useKeyboardShortcuts();
 useNotificationRouter();
+useDeepLinkRouter();
 
 // In-app "What's new" wiring (ADR 0025).
 //
