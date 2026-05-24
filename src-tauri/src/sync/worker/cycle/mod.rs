@@ -24,8 +24,8 @@ use crate::sync::state::{format_rfc3339, SyncPhase};
 use super::dispatch::dispatch_triggers;
 use super::enrichment::write_pr_updates;
 use super::{
-    emit_status, record_failure, rfc3339_to_unix, unix_now, CycleOutcome, SkipReason,
-    SyncCycleReport, WorkerContext,
+    emit_status, next_sync_hint, record_failure, rfc3339_to_unix, unix_now, CycleOutcome,
+    SkipReason, SyncCycleReport, WorkerContext,
 };
 
 mod activity;
@@ -109,7 +109,7 @@ pub async fn run_one_cycle(
             s.message = Some(format!("{label} budget {pct}%, skipping cycle"));
             s.rate_remaining_pct = Some(pct);
             s.rate_limit = Some(entry_snap.limit);
-            s.next_sync_in_seconds = Some(ctx.config.interval_secs());
+            s.next_sync_in_seconds = next_sync_hint(ctx, None);
         });
         emit_status(&ctx.emit, &state);
         return SyncCycleReport {
@@ -202,7 +202,7 @@ pub async fn run_one_cycle(
             let state = ctx.state.update(account.id, |s| {
                 s.phase = SyncPhase::RateLimited;
                 s.message = Some(format!("{label} budget low; upstream throttled"));
-                s.next_sync_in_seconds = reset_in.or(Some(ctx.config.interval_secs()));
+                s.next_sync_in_seconds = next_sync_hint(ctx, reset_in);
             });
             emit_status(&ctx.emit, &state);
             let bucket_snap = client.rate().snapshot().for_bucket(bucket);
@@ -315,7 +315,7 @@ pub async fn run_one_cycle(
                 let state = ctx.state.update(account.id, |s| {
                     s.phase = SyncPhase::RateLimited;
                     s.message = Some(format!("{label} budget low; upstream throttled"));
-                    s.next_sync_in_seconds = reset_in.or(Some(ctx.config.interval_secs()));
+                    s.next_sync_in_seconds = next_sync_hint(ctx, reset_in);
                 });
                 emit_status(&ctx.emit, &state);
                 let bucket_snap = client.rate().snapshot().for_bucket(resource);
@@ -426,7 +426,7 @@ fn finish_completed(
     let state = ctx.state.update(account.id, |s| {
         s.phase = SyncPhase::Synced;
         s.last_synced_at = synced_at.clone();
-        s.next_sync_in_seconds = Some(ctx.config.interval_secs());
+        s.next_sync_in_seconds = next_sync_hint(ctx, None);
         s.message = None;
         if pct.is_some() {
             s.rate_remaining_pct = pct;

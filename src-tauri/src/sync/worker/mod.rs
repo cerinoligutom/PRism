@@ -324,10 +324,12 @@ fn start_account_task(
     let refresh = Arc::new(Notify::new());
     let account_id = account.id;
 
-    // Seed the state map so the UI shows a baseline immediately.
+    // Seed the state map so the UI shows a baseline immediately. Manual
+    // mode (interval == 0) leaves `next_sync_in_seconds` as `None` so the
+    // status-bar hides the "next in" chip until a manual refresh runs.
     let initial = ctx.state.update(account_id, |s| {
         s.phase = SyncPhase::Idle;
-        s.next_sync_in_seconds = Some(ctx.config.interval_secs());
+        s.next_sync_in_seconds = next_sync_hint(&ctx, None);
     });
     emit_status(&ctx.emit, &initial);
 
@@ -393,13 +395,26 @@ async fn account_loop(
                 continue;
             }
             CycleOutcome::RateLimited { reset_in_seconds } => {
-                // Honour the upstream reset hint if we have one; otherwise
-                // fall back to the configured interval.
-                let wait = reset_in_seconds
-                    .map(Duration::from_secs)
-                    .unwrap_or(ctx.config.interval());
-                if !sleep_or_refresh(&cancel, &refresh, wait).await {
-                    return;
+                // Honour the upstream reset hint if we have one. Without a
+                // hint, fall back to the configured interval — or park
+                // entirely in Manual mode (interval == 0) since there's no
+                // auto cadence to wait on.
+                match reset_in_seconds {
+                    Some(secs) => {
+                        if !sleep_or_refresh(&cancel, &refresh, Duration::from_secs(*secs)).await {
+                            return;
+                        }
+                    }
+                    None if ctx.config.is_manual() => {
+                        if !park_until_refresh(&cancel, &refresh).await {
+                            return;
+                        }
+                    }
+                    None => {
+                        if !sleep_or_refresh(&cancel, &refresh, ctx.config.interval()).await {
+                            return;
+                        }
+                    }
                 }
             }
             _ => {
@@ -411,13 +426,25 @@ async fn account_loop(
 
 /// Sleep until the next interval boundary, watching for cancellation +
 /// manual-refresh nudges. Updates the state map's `next_sync_in_seconds`
-/// once at the start so the UI countdown is anchored.
+/// once at the start so the UI countdown is anchored. In Manual mode
+/// (`interval_secs == 0`) the loop parks until an explicit refresh nudge or
+/// cancellation; `next_sync_in_seconds` is cleared so the UI hides the
+/// "next in" chip.
 async fn wait_for_next(
     ctx: &WorkerContext,
     account_id: AccountId,
     cancel: &CancellationToken,
     refresh: &Arc<Notify>,
 ) {
+    if ctx.config.is_manual() {
+        let next_state = ctx.state.update(account_id, |s| {
+            s.next_sync_in_seconds = None;
+        });
+        emit_status(&ctx.emit, &next_state);
+        let _ = park_until_refresh(cancel, refresh).await;
+        return;
+    }
+
     let interval = ctx.config.interval();
     let next_state = ctx.state.update(account_id, |s| {
         s.next_sync_in_seconds = Some(seconds_floor(interval));
@@ -441,6 +468,32 @@ async fn sleep_or_refresh(
     }
 }
 
+/// Park indefinitely until cancelled or nudged via `refresh.notify_one()`.
+/// Used in Manual mode (issue #358) where there's no auto cadence to drive
+/// the next cycle. Returns `false` on cancellation, `true` on refresh.
+async fn park_until_refresh(cancel: &CancellationToken, refresh: &Arc<Notify>) -> bool {
+    tokio::select! {
+        _ = cancel.cancelled() => false,
+        _ = refresh.notified() => true,
+    }
+}
+
+/// Convert the configured interval into the `next_sync_in_seconds` value
+/// surfaced to the frontend. Manual mode (interval == 0) returns `None` so
+/// the status-bar hides the "next in" chip; auto mode returns the configured
+/// interval. Callers may pass `override_seconds` (e.g. an upstream rate-reset
+/// hint) which always wins when set.
+pub(super) fn next_sync_hint(ctx: &WorkerContext, override_seconds: Option<u64>) -> Option<u64> {
+    if let Some(secs) = override_seconds {
+        return Some(secs);
+    }
+    if ctx.config.is_manual() {
+        None
+    } else {
+        Some(ctx.config.interval_secs())
+    }
+}
+
 pub(super) fn emit_status(emit: &Arc<dyn EmitSink>, state: &AccountSyncState) {
     let payload = SyncStatusPayload::new(state.clone());
     emit.emit(
@@ -453,7 +506,7 @@ pub(super) fn record_failure(ctx: &WorkerContext, account: &Account, message: &s
     let state = ctx.state.update(account.id, |s| {
         s.phase = SyncPhase::Error;
         s.message = Some(short_error_message(message));
-        s.next_sync_in_seconds = Some(ctx.config.interval_secs());
+        s.next_sync_in_seconds = next_sync_hint(ctx, None);
     });
     emit_status(&ctx.emit, &state);
     ctx.emit.emit(

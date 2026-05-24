@@ -98,7 +98,12 @@ const summary = computed<SummaryLine>(() => {
     case "syncing":
       return { phase, dotClass: "dot dot-info dot-pulse", labelClass: "text-info", label: "Syncing" };
     case "synced":
-      return { phase, dotClass: "dot dot-success", labelClass: "text-success", label: "Live" };
+      return {
+        phase,
+        dotClass: "dot dot-success",
+        labelClass: "text-success",
+        label: sync.isManual ? "On demand" : "Live",
+      };
     case "idle":
     default:
       return {
@@ -147,6 +152,11 @@ const lastSyncedLabel = computed<string | null>(() => {
 });
 
 const nextSyncLabel = computed<string | null>(() => {
+  // Manual mode parks the scheduler, so the countdown is meaningless. The
+  // backend already nulls `next_sync_in_seconds` for manual accounts, but
+  // gating here too keeps the chip from flickering during an in-flight
+  // settings change.
+  if (sync.isManual) return null;
   const secs = sync.secondsUntilNextSync;
   if (secs === null) return null;
   return `next in ${formatDuration(secs)}`;
