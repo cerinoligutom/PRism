@@ -327,7 +327,7 @@ async function openCommentOnGitHub(
                       :login="p.login"
                       :avatar-url="p.avatar_url"
                       size="sm"
-                      :title="null"
+                      :tooltip="null"
                     />
                     <span class="thread-card__participants-tooltip-login">{{ p.login }}</span>
                   </li>

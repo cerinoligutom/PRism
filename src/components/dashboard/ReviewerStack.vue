@@ -115,7 +115,7 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
             :login="user.login"
             :avatar-url="user.avatar_url"
             size="sm"
-            :title="null"
+            :tooltip="null"
             :class="[
               'reviewer-stack__avatar',
               reviewerByLogin.get(user.login)
@@ -137,7 +137,7 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
               :login="reviewer.login"
               :avatar-url="reviewer.avatar_url"
               size="sm"
-              :title="null"
+              :tooltip="null"
             />
             <span class="reviewer-stack__tooltip-login">{{ reviewer.login }}</span>
             <span
