@@ -2,6 +2,8 @@
 
 How a PRism release gets cut. v1.0.0 is the first stable tag; the same playbook applies to every subsequent release.
 
+> **Status**: the pipeline is wired end-to-end and the [one-time setup](#one-time-setup-before-the-first-release) is ready to run, but the v1.0.0 cut is currently on hold pending the deferred-polish sweep tracked in [Roadmap → Pre-v1 polish](Roadmap#pre-v1-polish-current-focus). The playbook below is the same once the cut is unpaused.
+
 The pipeline shape, signing choices, and review gates are recorded in [ADR-0023](https://github.com/cerinoligutom/PRism/blob/main/docs/adr/0023-release-pipeline.md) and [ADR-0024](https://github.com/cerinoligutom/PRism/blob/main/docs/adr/0024-auto-update-mechanism.md). This page is the operational checklist.
 
 ## One-time setup (before the first release)

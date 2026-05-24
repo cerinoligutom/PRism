@@ -15,6 +15,17 @@ PRism v1 is delivered across eight milestones. Each milestone is tracked in GitH
 
 Milestone order is indicative; M1 must land first, but the others overlap.
 
+## Pre-v1 polish (current focus)
+
+M1-M7 plus the auto-update / in-app changelog wave are on `main`. Before tagging v1.0.0, a deferred-polish sweep is in progress to clear items carried over from M3-M6. Working themes:
+
+- **Notifications polish** — quiet hours (TZ-aware suppression), per-account notification overrides, Windows taskbar overlay + Linux launcher badge parity.
+- **Archive polish** — bulk archive (multi-select), `E` keyboard shortcut for archive, configurable retention window (the 30-day TTL from ADR-0018 becomes a setting).
+- **Developer experience** — replace `eprintln!` with the `tracing` crate, split `src-tauri/src/sync/worker.rs` (~3.4k lines).
+- **Misc deferrals** — "Mark all read" action, overflow tooltip for thread-participant avatar stacks, conversation-store cycle-cache invalidation on sync, multi-account `threads_involved` union, `StatusTimelineTab` event-set expansion, `prism://` deep-link URL scheme.
+
+Open issues are labelled `priority:p2` / `priority:p3` and (where filed) carry the matching milestone.
+
 ## Out of scope for v1
 
 Deferred to post-v1; tracked separately when committed:
