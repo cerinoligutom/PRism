@@ -130,7 +130,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             let queue = app.state::<notify::PendingPayloadQueueHandle>();
             for payload in queue.drain_fresh() {
                 if let Err(err) = app.emit(NOTIFICATION_OPEN_PR_EVENT, &payload) {
-                    eprintln!("notify: emit {NOTIFICATION_OPEN_PR_EVENT} failed: {err}");
+                    tracing::warn!(event = NOTIFICATION_OPEN_PR_EVENT, %err, "notify: emit failed");
                 }
             }
         }
@@ -151,7 +151,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = update::worker::install_quietly(&app_handle, &state_handle).await
                 {
-                    eprintln!("update: install-on-quit failed: {err}");
+                    tracing::error!(%err, "update: install-on-quit failed");
                 }
             });
         }
@@ -162,6 +162,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
 /// Setup-hook body, lifted to a free function so the `?` failure paths can be
 /// caught by the outer closure and routed through `startup::report_failure`.
 fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let db_handle = db::init(app.handle())?;
     app.manage(db_handle.clone());
     auth::commands::install(&app.handle().clone(), db_handle.clone())
@@ -249,4 +250,16 @@ fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let update_worker = update::spawn_worker(app.handle().clone(), db_handle, update_state);
     app.manage::<update::UpdateWorkerHandle>(update_worker);
     Ok(())
+}
+
+/// Initialise the global `tracing` subscriber for stdout. ADR 0026: stdout
+/// only, no rolling file. The filter reads `RUST_LOG` when present and falls
+/// back to `warn` so a default run stays quiet. `try_init` swallows the
+/// "already set" error so this is safe to call from re-entered setup hooks
+/// (the Tauri builder runs setup once per `run()` call, but cargo test loads
+/// the lib crate multiple times).
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt().with_env_filter(filter).try_init();
 }

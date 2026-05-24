@@ -165,7 +165,7 @@ fn read_settings_snapshot(db: &DbHandle) -> (bool, u64) {
     let conn = match lock_db(db) {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("update: settings snapshot - db lock failed: {err}");
+            tracing::error!(%err, "update: settings snapshot - db lock failed");
             return (false, DEFAULT_INTERVAL_SECS);
         }
     };
@@ -188,7 +188,7 @@ fn read_settings_snapshot(db: &DbHandle) -> (bool, u64) {
             (enabled, secs.max(MIN_INTERVAL_SECS))
         }
         Err(err) => {
-            eprintln!("update: settings snapshot - query failed: {err}");
+            tracing::warn!(%err, "update: settings snapshot - query failed");
             (false, DEFAULT_INTERVAL_SECS)
         }
     }
@@ -212,7 +212,7 @@ pub async fn run_check<R: Runtime>(app: &AppHandle<R>, db: &DbHandle, state: &Up
                 release_notes: pending.release_notes,
             };
             if let Err(err) = app.emit(UPDATE_AVAILABLE_EVENT, &payload) {
-                eprintln!("update: emit available failed: {err}");
+                tracing::warn!(event = UPDATE_AVAILABLE_EVENT, %err, "update: emit failed");
             }
             persist_outcome(db, true, None);
             emit_check_event(app, true, None);
@@ -253,7 +253,7 @@ pub(crate) fn persist_outcome(db: &DbHandle, success: bool, failure_message: Opt
     let conn = match lock_db(db) {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("update: persist outcome - db lock failed: {err}");
+            tracing::error!(%err, "update: persist outcome - db lock failed");
             return;
         }
     };
@@ -267,7 +267,7 @@ pub(crate) fn persist_outcome(db: &DbHandle, success: bool, failure_message: Opt
           WHERE id = 1",
         rusqlite::params![stored],
     ) {
-        eprintln!("update: persist outcome - write failed: {err}");
+        tracing::error!(%err, "update: persist outcome - write failed");
     }
 }
 
@@ -281,7 +281,7 @@ fn emit_check_event<R: Runtime>(
         failure_message,
     };
     if let Err(err) = app.emit(UPDATE_CHECK_EVENT, &payload) {
-        eprintln!("update: emit check failed: {err}");
+        tracing::warn!(event = UPDATE_CHECK_EVENT, %err, "update: emit failed");
     }
 }
 

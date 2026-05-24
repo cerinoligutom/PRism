@@ -90,7 +90,7 @@ pub fn set_sync_interval(
     worker.config().set_interval(input.seconds);
     let applied = worker.config().interval_secs();
     if let Err(err) = crate::sync::write_persisted_interval(&db, applied) {
-        eprintln!("sync: persist interval failed: {err}");
+        tracing::warn!(%err, "sync: persist interval failed");
     }
     SetIntervalResult {
         applied_seconds: applied,

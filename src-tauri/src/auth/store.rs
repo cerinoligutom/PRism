@@ -212,7 +212,7 @@ pub fn import_legacy_json_if_present(
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("legacy accounts.json: read failed ({e}); skipping import");
+            tracing::warn!(err = %e, "legacy accounts.json: read failed; skipping import");
             return Ok(());
         }
     };
@@ -223,22 +223,23 @@ pub fn import_legacy_json_if_present(
     let parsed: LegacyPersisted = match serde_json::from_str(&raw) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("legacy accounts.json: parse failed ({e}); skipping import");
+            tracing::warn!(err = %e, "legacy accounts.json: parse failed; skipping import");
             return Ok(());
         }
     };
 
     for account in &parsed.accounts {
         if let Err(e) = store.upsert(account.clone()) {
-            eprintln!(
-                "legacy accounts.json: upsert id={} failed: {e}; continuing",
-                account.id
+            tracing::warn!(
+                account_id = account.id,
+                err = %e,
+                "legacy accounts.json: upsert failed; continuing"
             );
         }
     }
 
     if let Err(e) = std::fs::rename(&path, path.with_extension("json.bak")) {
-        eprintln!("legacy accounts.json: rename to .bak failed: {e}");
+        tracing::warn!(err = %e, "legacy accounts.json: rename to .bak failed");
     }
     Ok(())
 }

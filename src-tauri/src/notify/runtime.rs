@@ -82,7 +82,7 @@ impl<R: Runtime, A: PermissionAsker> NotificationSink for TauriNotificationSink<
             .body(notification.body.clone())
             .show()
         {
-            eprintln!("notify: plugin show failed: {err}");
+            tracing::error!(%err, "notify: plugin show failed");
         }
     }
 }
@@ -96,7 +96,7 @@ pub(crate) fn decide_dispatch(db: &DbHandle, asker: &dyn PermissionAsker) -> boo
     let settings = match load_settings(db) {
         Ok(s) => s,
         Err(err) => {
-            eprintln!("notify: load app_settings failed: {err}");
+            tracing::error!(%err, "notify: load app_settings failed");
             return false;
         }
     };
@@ -110,12 +110,12 @@ pub(crate) fn decide_dispatch(db: &DbHandle, asker: &dyn PermissionAsker) -> boo
         NotificationPermissionState::Unprompted => {
             let answered = asker.request();
             if let Err(err) = persist_permission(db, answered) {
-                eprintln!("notify: persist permission state failed: {err}");
+                tracing::error!(%err, "notify: persist permission state failed");
             }
             answered == NotificationPermissionState::Granted
         }
         NotificationPermissionState::Denied => {
-            eprintln!("notify: skipping dispatch, OS permission denied");
+            tracing::debug!("notify: skipping dispatch, OS permission denied");
             false
         }
     }
@@ -140,7 +140,7 @@ impl<R: Runtime> PermissionAsker for PluginPermissionAsker<R> {
         match self.app.notification().permission_state() {
             Ok(state) => map_plugin_state(state),
             Err(err) => {
-                eprintln!("notify: plugin permission_state failed: {err}");
+                tracing::warn!(%err, "notify: plugin permission_state failed");
                 NotificationPermissionState::Denied
             }
         }
@@ -155,7 +155,7 @@ impl<R: Runtime> PermissionAsker for PluginPermissionAsker<R> {
                 // of a retry: the sink will persist Denied, the Settings
                 // panel will show the "blocked" callout (#195), and the next
                 // dispatch won't re-ping the OS.
-                eprintln!("notify: plugin request_permission failed: {err}");
+                tracing::warn!(%err, "notify: plugin request_permission failed");
                 NotificationPermissionState::Denied
             }
         }

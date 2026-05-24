@@ -186,7 +186,7 @@ fn resolve_pr_route_metadata(
 }
 
 fn internal(message: &str) -> DashboardCommandError {
-    eprintln!("dashboard command internal error: {message}");
+    tracing::error!(message, "dashboard command internal error");
     DashboardCommandError::Internal
 }
 

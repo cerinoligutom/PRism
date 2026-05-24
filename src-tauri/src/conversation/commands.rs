@@ -42,7 +42,7 @@ pub enum ConversationCommandError {
 }
 
 fn internal(message: &str) -> ConversationCommandError {
-    eprintln!("conversation command internal error: {message}");
+    tracing::error!(message, "conversation command internal error");
     ConversationCommandError::Internal
 }
 
@@ -143,11 +143,13 @@ pub async fn fetch_pr_conversation<R: Runtime>(
 /// the relation table directly.
 fn auto_mark_read(db: &DbHandle, pull_request_id: i64, account_id: i64) {
     if mark_read_in_tx(db, pull_request_id, account_id).is_err() {
-        // The `mark_read_in_tx` `internal()` helper already eprintln'd the
+        // The `mark_read_in_tx` `internal()` helper already logged the
         // underlying failure; the outer site only needs to mark the run as
         // best-effort so the hydrated response still surfaces.
-        eprintln!(
-            "auto-mark-on-open: best-effort failure (pr={pull_request_id}, account={account_id})"
+        tracing::warn!(
+            pull_request_id,
+            account_id,
+            "auto-mark-on-open: best-effort failure",
         );
     }
 }
@@ -189,9 +191,11 @@ fn mark_read_in_tx(
         // must persist). The hydration transaction has already committed; the
         // mark-read fanout is best-effort from here.
         if let Err(e) = crate::triage::query::mark_read(&tx, owner, pull_request_id) {
-            eprintln!(
-                "auto-mark-on-open mark_read failed (pr={pull_request_id}, \
-                 account={owner}): {e}"
+            tracing::warn!(
+                pull_request_id,
+                account = owner,
+                err = %e,
+                "auto-mark-on-open mark_read failed",
             );
             continue;
         }
@@ -204,9 +208,11 @@ fn mark_read_in_tx(
         // future ADR can revisit if user feedback flags missed signals.
         match crate::triage::query::recompute_needs_attention(&tx, owner, pull_request_id, None) {
             Ok(_triggers) => {}
-            Err(e) => eprintln!(
-                "auto-mark-on-open recompute failed (pr={pull_request_id}, \
-                 account={owner}): {e}"
+            Err(e) => tracing::warn!(
+                pull_request_id,
+                account = owner,
+                err = %e,
+                "auto-mark-on-open recompute failed",
             ),
         }
     }

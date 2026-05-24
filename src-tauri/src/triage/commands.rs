@@ -53,7 +53,7 @@ pub enum TriageCommandError {
 }
 
 fn internal(message: &str) -> TriageCommandError {
-    eprintln!("triage command internal error: {message}");
+    tracing::error!(message, "triage command internal error");
     TriageCommandError::Internal
 }
 
@@ -315,7 +315,7 @@ pub fn mark_view_read<R: Runtime>(
 /// next sync-cycle reload.
 fn emit_dashboard_refresh<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = app.emit(DASHBOARD_REFRESH_EVENT, ()) {
-        eprintln!("failed to emit {DASHBOARD_REFRESH_EVENT}: {err}");
+        tracing::warn!(event = DASHBOARD_REFRESH_EVENT, %err, "failed to emit refresh event");
     }
 }
 
@@ -334,9 +334,10 @@ fn dispatch_triggers(
     for trigger in triggers {
         match format_trigger(conn, trigger) {
             Some(notification) => sink.dispatch(&notification),
-            None => eprintln!(
-                "notify: skipping dispatch, PR row missing (account={}, pr={})",
-                trigger.account_id, trigger.pull_request_id,
+            None => tracing::debug!(
+                account_id = trigger.account_id,
+                pull_request_id = trigger.pull_request_id,
+                "notify: skipping dispatch, PR row missing",
             ),
         }
     }
@@ -367,9 +368,11 @@ where
     drop(stmt);
     for account_id in account_ids {
         if let Err(err) = op(tx, account_id) {
-            eprintln!(
-                "per-account triage write failed (pr={pull_request_id}, \
-                 account={account_id}): {err}"
+            tracing::warn!(
+                pull_request_id,
+                account_id,
+                %err,
+                "per-account triage write failed",
             );
         }
     }
