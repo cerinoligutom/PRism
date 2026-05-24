@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
 import { useConversationStore } from "@/stores/conversation";
@@ -127,14 +127,23 @@ function retry(): void {
 }
 
 onMounted(() => {
+  store.acquire(props.pullRequestId);
   void loadConversation();
+});
+
+onBeforeUnmount(() => {
+  store.release(props.pullRequestId);
 });
 
 // React to host swapping the id without an unmount. The cache returns
 // immediately when warm, so swapping between PRs in the same drawer is cheap.
+// The acquire / release pair shifts to the new id so the sync-cycle refresh
+// targets the conversation the user is actually looking at.
 watch(
   () => props.pullRequestId,
-  () => {
+  (next, previous) => {
+    if (previous !== undefined) store.release(previous);
+    store.acquire(next);
     activeTab.value = "threads";
     void loadConversation();
   },
