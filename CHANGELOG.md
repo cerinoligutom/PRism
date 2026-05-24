@@ -30,4 +30,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 
 ### Fixed
 
+- Conversation drawer / route refreshes in place when a sync cycle completes; cached entries for non-visible PRs drop so the next open re-hydrates (#337).
+
 ### Security
