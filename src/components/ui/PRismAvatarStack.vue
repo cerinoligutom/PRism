@@ -13,10 +13,9 @@ import PRismAvatar from "@/components/ui/PRismAvatar.vue";
  * decoration via the `avatar` slot.
  *
  * Z-order trick: each avatar (and the overflow pill) sits inside a
- * positioned `<span>`. `PRismAvatar` has a multi-root `<template>`, so
- * inline `style` / `class` bound on it doesn't fall through to a single
- * rendered root. The slot wrapper is what gives us reliable per-item
- * z-index. Same approach as the original `ReviewerStack` (#140).
+ * positioned `<span>` so per-item z-index applies reliably regardless of
+ * how the slotted avatar renders. Same approach as the original
+ * `ReviewerStack` (#140).
  */
 type StackUser = { login: string; avatar_url: string | null };
 type StackSize = "sm" | "md" | "lg";
@@ -103,9 +102,8 @@ const slotCount = computed<number>(
 }
 
 /* Each avatar (and the overflow pill) sits inside a positioned slot so the
- * per-item z-index actually applies. `PRismAvatar` has a multi-root template,
- * so inline `:style` passed to it doesn't fall through to the rendered DOM -
- * the slot wrapper is what gives reliable stack-order control. */
+ * per-item z-index applies reliably regardless of how the slotted avatar
+ * renders. */
 .prism-avatar-stack__slot {
   position: relative;
   display: inline-flex;
