@@ -492,7 +492,7 @@ function onUnarchive(): void {
                   :login="account.login"
                   :avatar-url="account.avatar_url"
                   size="sm"
-                  :title="null"
+                  :tooltip="null"
                 />
                 <span class="pr-row__accounts-tooltip-label">
                   {{ account.label || account.login }}

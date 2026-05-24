@@ -102,7 +102,7 @@ function selectAccount(account: Account): void {
               :login="selectedAccount.login"
               :avatar-url="selectedAccount.avatar_url"
               size="sm"
-              :title="null"
+              :tooltip="null"
             />
           </template>
           <template v-else-if="accounts.length > 0">
@@ -212,7 +212,7 @@ function selectAccount(account: Account): void {
               :login="account.login"
               :avatar-url="account.avatar_url"
               size="sm"
-              :title="null"
+              :tooltip="null"
             />
           </span>
           <span class="account-picker__option-body">
@@ -251,7 +251,7 @@ function selectAccount(account: Account): void {
           :login="soloAccount.login"
           :avatar-url="soloAccount.avatar_url"
           size="sm"
-          :title="null"
+          :tooltip="null"
         />
       </span>
       <span class="account-picker__label">{{ triggerLabel }}</span>

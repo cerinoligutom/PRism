@@ -80,7 +80,7 @@ const slotCount = computed<number>(
           :login="user.login"
           :avatar-url="user.avatar_url"
           :size="size"
-          :title="null"
+          :tooltip="null"
           class="prism-avatar-stack__avatar"
         />
       </slot>
