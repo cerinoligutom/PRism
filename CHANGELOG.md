@@ -16,6 +16,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - "Mark all read" action in the dashboard header clears unread / mention state on every PR matching the active view + chip filter (#336).
 - Bulk multi-select on dashboard rows with an inline checkbox; the toolbar above the list archives every selected PR in one batched write per account, with Shift+click for range extension (#331).
 - Configurable auto-archive window in Settings -> Sync; defaults to 30 days, 0 disables auto-archive, capped at 365 (#333).
+- Cross-platform unread badge parity: Windows taskbar overlay icon and Linux Unity launcher D-Bus count signal, fed by the same `count_global_unread` query the macOS dock badge already uses (#330).
 
 ### Changed
 

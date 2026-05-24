@@ -1,11 +1,12 @@
-//! macOS dock badge for the global unread-PR count (ADR 0017 decision 3,
-//! refined post-M6 smoke to match Slack-style semantics).
+//! Cross-platform unread-PR badge (ADR 0017 decision 3, plus the post-v1
+//! Windows + Linux follow-up in issue #330).
 //!
 //! Two surfaces:
 //!
-//! * [`update_badge`] - the cross-platform entry point. `#[cfg(target_os = "macos")]`
-//!   reads the count via [`count_global_unread`] and pushes it onto the main
-//!   webview window. Every other target is a no-op.
+//! * [`update_badge`] - the cross-platform entry point. Reads the count via
+//!   [`count_global_unread`] and dispatches to the platform-specific
+//!   `apply_badge`: macOS dock badge, Windows taskbar overlay icon, Linux
+//!   Unity launcher D-Bus signal. Targets without a known affordance no-op.
 //! * [`BadgeSink`] / [`AppHandleBadge`] - the trait + production impl the sync
 //!   worker holds inside `WorkerContext`. Mirrors `EmitSink` and
 //!   `ReauthNotifier` so unit tests can capture refresh calls without booting
@@ -41,23 +42,24 @@ use tauri::{AppHandle, Runtime};
 
 use crate::db::DbHandle;
 
-/// Hard cap for the on-dock number. macOS renders the badge inside a small
-/// circle; anything past three digits is illegible. Counts beyond the cap
-/// clamp to 999 so the dock keeps rendering a fixed-width number rather than
-/// growing the pill arbitrarily.
-const BADGE_MAX: i64 = 999;
+/// Hard cap for the on-badge number. macOS renders inside a small circle;
+/// anything past three digits is illegible. Counts beyond the cap clamp to
+/// 999 so the badge keeps a fixed-width number rather than growing arbitrarily.
+/// The Windows tile renderer applies a tighter "99+" ceiling because the
+/// 16x16 taskbar overlay only fits two glyphs.
+pub(crate) const BADGE_MAX: i64 = 999;
 
-/// Push `count` onto the main window's dock badge on macOS. `count == 0`
-/// clears the badge. Non-macOS builds are a no-op.
+/// Push `count` onto the OS badge surface for the current platform. `count == 0`
+/// clears the badge. Targets without a badge affordance no-op.
 ///
-/// Counts above [`BADGE_MAX`] are clamped to 999. The macOS dock formats the
-/// number itself; a `set_badge_label` "999+" variant exists, but mixing label
-/// and count APIs forfeits the system's auto-formatting (font, padding) for
-/// no functional gain at v1 scale.
+/// Counts above [`BADGE_MAX`] are clamped to 999. Each platform's `apply_badge`
+/// downstream formats from there (macOS leaves it to the dock, Windows folds
+/// counts past 99 to a "99+" tile, Linux passes the raw integer to the
+/// launcher receiver, which formats it).
 ///
-/// Failures inside the Tauri call (missing window, plugin error) are logged
-/// and swallowed - the badge is a convenience signal and never blocks the
-/// sync loop or a triage command.
+/// Failures inside the Tauri call or the D-Bus emit are logged and swallowed -
+/// the badge is a convenience signal and never blocks the sync loop or a
+/// triage command.
 pub fn update_badge<R: Runtime>(app: &AppHandle<R>, count: i64) {
     apply_badge(app, count.clamp(0, BADGE_MAX));
 }
@@ -79,9 +81,37 @@ fn apply_badge<R: Runtime>(app: &AppHandle<R>, count: i64) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn apply_badge<R: Runtime>(app: &AppHandle<R>, count: i64) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else {
+        tracing::warn!("badge: main webview window missing, skipping update");
+        return;
+    };
+    let image = if count > 0 {
+        Some(windows::render_overlay_tile(count))
+    } else {
+        None
+    };
+    if let Err(err) = window.set_overlay_icon(image) {
+        tracing::warn!(%err, "badge: set_overlay_icon failed");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_badge<R: Runtime>(_app: &AppHandle<R>, count: i64) {
+    // Best-effort. No D-Bus session, no Unity launcher consumer, or a Linux
+    // desktop that ignores the signal all land on the silent no-op path -
+    // ADR 0017 decision 3's "documented gap" stays honest. We still attempt
+    // the emit on every refresh; the failure surface is a single trace log.
+    if let Err(err) = linux::emit_launcher_update(count) {
+        tracing::debug!(%err, "badge: linux launcher emit failed (likely no D-Bus session)");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn apply_badge<R: Runtime>(_app: &AppHandle<R>, _count: i64) {
-    // Documented gap (ADR 0017 decision 3). Windows / Linux land post-v1.
+    // Other targets (iOS / Android / BSD) have no v1 badge story.
 }
 
 /// Read the global count from `db` and push it onto the dock. The Tauri
@@ -157,6 +187,267 @@ impl<R: Runtime> AppHandleBadge<R> {
 impl<R: Runtime> BadgeSink for AppHandleBadge<R> {
     fn refresh(&self) {
         refresh_from_db(&self.handle, &self.db);
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    //! 16x16 RGBA overlay tile rendered at runtime for the Windows taskbar.
+    //!
+    //! Tauri's `set_overlay_icon` takes an [`Image`] (RGBA, top-to-bottom,
+    //! row-major). The Windows taskbar paints the overlay at 16x16 over the
+    //! app's existing taskbar icon. We compose the tile in three passes:
+    //!
+    //! 1. A filled accent-coloured circle inscribed in the 16x16 square,
+    //!    matching the macOS dock badge's visual weight.
+    //! 2. A label - one or two digits, or "9+" for counts >= 100 - centred
+    //!    inside the circle. Glyphs are 3x5 bitmaps from `GLYPH_3X5`,
+    //!    blitted as 1:1 pixels in white.
+    //! 3. Edge antialias is skipped intentionally - at 16x16 a hand-drawn
+    //!    aliased circle reads as crisp on Windows' nearest-neighbour
+    //!    scaling. Adding subpixel blending here would require a font /
+    //!    raster crate for a single use site.
+    //!
+    //! The whole tile is heap-allocated per call (16 * 16 * 4 = 1024 bytes);
+    //! `set_overlay_icon` happens at most a few times per minute (sync cycle
+    //! + triage writes), so caching the tiles per count would save
+    //! microseconds for no perceptible win.
+    use tauri::image::Image;
+
+    const TILE: u32 = 16;
+    /// Accent colour: PRism's `--accent` token, baked to sRGB. Tile rendering
+    /// can't reach the runtime token store, and the overlay sits outside the
+    /// webview's CSS context anyway.
+    const ACCENT: [u8; 4] = [0xE5, 0x4C, 0x4C, 0xFF];
+    const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+
+    /// Compact 3x5 bitmap glyphs for the digits 0-9 plus '+'. Each entry is
+    /// five rows of three bits; bit-2 (mask 0b100) is the leftmost column.
+    /// Designed for legibility at native size; no antialias needed.
+    const GLYPH_3X5: [(char, [u8; 5]); 11] = [
+        ('0', [0b111, 0b101, 0b101, 0b101, 0b111]),
+        ('1', [0b010, 0b110, 0b010, 0b010, 0b111]),
+        ('2', [0b111, 0b001, 0b111, 0b100, 0b111]),
+        ('3', [0b111, 0b001, 0b111, 0b001, 0b111]),
+        ('4', [0b101, 0b101, 0b111, 0b001, 0b001]),
+        ('5', [0b111, 0b100, 0b111, 0b001, 0b111]),
+        ('6', [0b111, 0b100, 0b111, 0b101, 0b111]),
+        ('7', [0b111, 0b001, 0b010, 0b010, 0b010]),
+        ('8', [0b111, 0b101, 0b111, 0b101, 0b111]),
+        ('9', [0b111, 0b101, 0b111, 0b001, 0b111]),
+        ('+', [0b000, 0b010, 0b111, 0b010, 0b000]),
+    ];
+
+    /// Render the overlay tile for `count`. `count` is the clamped value from
+    /// [`super::update_badge`]; callers never reach this with `count == 0`.
+    pub(super) fn render_overlay_tile(count: i64) -> Image<'static> {
+        // The 16x16 overlay only fits two glyphs; counts past 99 fold to "9+".
+        // Mirrors the Slack / Discord taskbar convention at this tile size.
+        let label = format_label(count);
+        let mut rgba = vec![0u8; (TILE * TILE * 4) as usize];
+        draw_circle(&mut rgba, ACCENT);
+        draw_label(&mut rgba, &label, WHITE);
+        Image::new_owned(rgba, TILE, TILE)
+    }
+
+    fn format_label(count: i64) -> String {
+        if count >= 100 {
+            "9+".to_string()
+        } else {
+            count.to_string()
+        }
+    }
+
+    /// Filled circle, midpoint-style. Radius 7.5 around (7.5, 7.5) yields an
+    /// inscribed disc that fills the tile with a one-pixel transparent margin.
+    fn draw_circle(rgba: &mut [u8], colour: [u8; 4]) {
+        let radius_sq = 7.5_f32 * 7.5_f32;
+        for y in 0..TILE {
+            for x in 0..TILE {
+                let dx = x as f32 - 7.5;
+                let dy = y as f32 - 7.5;
+                if dx * dx + dy * dy <= radius_sq {
+                    write_pixel(rgba, x, y, colour);
+                }
+            }
+        }
+    }
+
+    /// Blit each glyph in `label` one pixel apart, horizontally centred.
+    /// Label height is 5px; vertical centre puts the top row at y = 5.
+    fn draw_label(rgba: &mut [u8], label: &str, colour: [u8; 4]) {
+        let glyph_count = label.chars().count() as u32;
+        // 3px per glyph + 1px spacing between glyphs.
+        let width = glyph_count * 3 + glyph_count.saturating_sub(1);
+        let start_x = (TILE.saturating_sub(width)) / 2;
+        let start_y = (TILE - 5) / 2;
+        let mut pen_x = start_x;
+        for ch in label.chars() {
+            if let Some(rows) = glyph_rows(ch) {
+                blit_glyph(rgba, pen_x, start_y, rows, colour);
+            }
+            pen_x += 4; // 3px glyph + 1px spacing
+        }
+    }
+
+    fn glyph_rows(ch: char) -> Option<&'static [u8; 5]> {
+        GLYPH_3X5
+            .iter()
+            .find_map(|(c, rows)| if *c == ch { Some(rows) } else { None })
+    }
+
+    fn blit_glyph(rgba: &mut [u8], origin_x: u32, origin_y: u32, rows: &[u8; 5], colour: [u8; 4]) {
+        for (row_idx, row) in rows.iter().enumerate() {
+            for col_idx in 0..3u32 {
+                let mask = 0b100u8 >> col_idx;
+                if row & mask != 0 {
+                    write_pixel(rgba, origin_x + col_idx, origin_y + row_idx as u32, colour);
+                }
+            }
+        }
+    }
+
+    fn write_pixel(rgba: &mut [u8], x: u32, y: u32, colour: [u8; 4]) {
+        if x >= TILE || y >= TILE {
+            return;
+        }
+        let idx = ((y * TILE + x) * 4) as usize;
+        rgba[idx..idx + 4].copy_from_slice(&colour);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn format_label_under_hundred_renders_decimal() {
+            assert_eq!(format_label(1), "1");
+            assert_eq!(format_label(42), "42");
+            assert_eq!(format_label(99), "99");
+        }
+
+        #[test]
+        fn format_label_clamps_at_hundred_to_nine_plus() {
+            assert_eq!(format_label(100), "9+");
+            assert_eq!(format_label(500), "9+");
+            assert_eq!(format_label(BADGE_MAX), "9+");
+        }
+
+        #[test]
+        fn render_overlay_tile_produces_16x16_rgba() {
+            let image = render_overlay_tile(5);
+            assert_eq!(image.width(), 16);
+            assert_eq!(image.height(), 16);
+            assert_eq!(image.rgba().len(), 16 * 16 * 4);
+        }
+
+        #[test]
+        fn render_overlay_tile_paints_circle_centre() {
+            // The centre pixel sits inside the inscribed circle and is the
+            // accent colour, not transparent.
+            let image = render_overlay_tile(1);
+            let rgba = image.rgba();
+            let centre_idx = ((8 * 16 + 8) * 4) as usize;
+            assert_eq!(&rgba[centre_idx..centre_idx + 4], &ACCENT);
+        }
+
+        #[test]
+        fn render_overlay_tile_leaves_corners_transparent() {
+            // The 16x16 tile is an inscribed circle; the (0, 0) corner sits
+            // outside the radius and must remain RGBA-zero.
+            let image = render_overlay_tile(1);
+            let rgba = image.rgba();
+            assert_eq!(&rgba[0..4], &[0u8, 0, 0, 0]);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    //! Unity LauncherEntry D-Bus signal emission.
+    //!
+    //! The session-bus signal `com.canonical.Unity.LauncherEntry.Update` is
+    //! the cross-DE convention for app-icon counts: Unity, KDE Plasma's task
+    //! manager, and a handful of GNOME Shell extensions consume it.
+    //! Environments without a listener silently drop the signal.
+    //!
+    //! Object path: `/com/canonical/unity/launcherentry/<crc32(uri)>`.
+    //! Launcher receivers compute the same CRC32 over the desktop entry URI
+    //! they're tracking and only route signals matching that path. We feed
+    //! the URI built from the bundle identifier in `tauri.conf.json`; if the
+    //! Linux bundle config changes the desktop file's basename, update
+    //! [`DESKTOP_ENTRY_URI`] in lockstep.
+    //!
+    //! Signal body: `(sa{sv})` per the spec - URI string plus an a{sv} of
+    //! properties. We emit `count` (i64) and `count-visible` (bool); the
+    //! receiver hides the badge when `count-visible` is false.
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    /// Application URI used by D-Bus launcher receivers to match the signal
+    /// against a running app. Derived from `tauri.conf.json`'s `identifier`
+    /// (com.cerinoligutom.prism) - if the Linux bundle ever ships a different
+    /// `.desktop` basename, update this constant to match.
+    const DESKTOP_ENTRY_URI: &str = "application://com.cerinoligutom.prism.desktop";
+    const INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
+    const SIGNAL: &str = "Update";
+
+    /// Emit the launcher Update signal for `count`. Errors propagate so the
+    /// caller can log them at debug level; the contract with `apply_badge` is
+    /// best-effort, no panics, no retries.
+    pub(super) fn emit_launcher_update(count: i64) -> zbus::Result<()> {
+        let connection = zbus::blocking::Connection::session()?;
+        let path = launcher_object_path(DESKTOP_ENTRY_URI);
+        let mut props: HashMap<&str, Value<'_>> = HashMap::new();
+        props.insert("count", Value::I64(count));
+        props.insert("count-visible", Value::Bool(count > 0));
+        connection.emit_signal(
+            None::<&str>,
+            path.as_str(),
+            INTERFACE,
+            SIGNAL,
+            &(DESKTOP_ENTRY_URI, props),
+        )
+    }
+
+    /// `/com/canonical/unity/launcherentry/<crc32(uri)>` - the per-app object
+    /// path receivers filter on. Computed via `crc32fast` to match the
+    /// Electron / GTK conventions widely in the wild.
+    fn launcher_object_path(uri: &str) -> String {
+        let id = crc32fast::hash(uri.as_bytes());
+        format!("/com/canonical/unity/launcherentry/{id}")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn launcher_object_path_is_stable_for_known_uri() {
+            // Hand-computed crc32 of "application://com.cerinoligutom.prism.desktop"
+            // pins the expected receiver path; if this changes silently the
+            // launcher will stop matching our signal.
+            let path = launcher_object_path(DESKTOP_ENTRY_URI);
+            assert!(
+                path.starts_with("/com/canonical/unity/launcherentry/"),
+                "path must live under the Unity prefix, got {path}"
+            );
+            let suffix = path
+                .strip_prefix("/com/canonical/unity/launcherentry/")
+                .unwrap();
+            assert!(
+                suffix.parse::<u32>().is_ok(),
+                "suffix must be a u32, got {suffix}"
+            );
+        }
+
+        #[test]
+        fn launcher_object_path_differs_per_uri() {
+            assert_ne!(
+                launcher_object_path("application://a.desktop"),
+                launcher_object_path("application://b.desktop")
+            );
+        }
     }
 }
 
