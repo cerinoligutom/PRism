@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RadioGroupIndicator, RadioGroupItem, RadioGroupRoot } from "reka-ui";
 
 import { useSyncStore } from "@/stores/sync";
+import { useAppSettings } from "@/stores/settings";
 
 interface IntervalOption {
   readonly value: number;
@@ -17,7 +18,11 @@ const INTERVAL_OPTIONS: readonly IntervalOption[] = [
   { value: 600, label: "Every 10 minutes", hint: "Quietest setting. Great for background." },
 ];
 
+const AUTO_ARCHIVE_MIN = 0;
+const AUTO_ARCHIVE_MAX = 365;
+
 const sync = useSyncStore();
+const settings = useAppSettings();
 
 const persisting = ref(false);
 const error = ref<string | null>(null);
@@ -32,6 +37,29 @@ const selectedValue = computed<number>({
   set: (next) => {
     void persistInterval(next);
   },
+});
+
+// Local edit buffer for the auto-archive input. Mirrors the store but lets
+// the user type "0", "-2", or "" without the watcher re-snapping back. The
+// buffer is committed on blur or Enter.
+const autoArchiveBuffer = ref<string>(String(settings.autoArchiveDays));
+const archivePersisting = ref(false);
+const archiveError = ref<string | null>(null);
+
+watch(
+  () => settings.autoArchiveDays,
+  (next) => {
+    if (!archivePersisting.value) {
+      autoArchiveBuffer.value = String(next);
+    }
+  },
+);
+
+const autoArchiveHint = computed(() => {
+  if (settings.autoArchiveDays === 0) {
+    return "Auto-archive is off. Only manual archive flips a PR.";
+  }
+  return `Closed or merged PRs auto-archive after ${settings.autoArchiveDays} days of inactivity.`;
 });
 
 async function persistInterval(next: number): Promise<void> {
@@ -50,6 +78,45 @@ async function persistInterval(next: number): Promise<void> {
   }
 }
 
+function clampArchiveDays(raw: string): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) return settings.autoArchiveDays;
+  if (parsed < AUTO_ARCHIVE_MIN) return AUTO_ARCHIVE_MIN;
+  if (parsed > AUTO_ARCHIVE_MAX) return AUTO_ARCHIVE_MAX;
+  return parsed;
+}
+
+async function commitArchiveDays(): Promise<void> {
+  if (archivePersisting.value) return;
+  const next = clampArchiveDays(autoArchiveBuffer.value);
+  autoArchiveBuffer.value = String(next);
+  if (next === settings.autoArchiveDays) return;
+  archivePersisting.value = true;
+  archiveError.value = null;
+  try {
+    await settings.update({
+      notifications_enabled: settings.settings.notifications_enabled,
+      notify_on_needs_attention: settings.settings.notify_on_needs_attention,
+      notify_on_mention: settings.settings.notify_on_mention,
+      auto_update_enabled: settings.settings.auto_update_enabled,
+      auto_update_interval_seconds:
+        settings.settings.auto_update_interval_seconds,
+      auto_archive_days: next,
+    });
+  } catch (caught) {
+    archiveError.value = caught instanceof Error ? caught.message : String(caught);
+  } finally {
+    archivePersisting.value = false;
+  }
+}
+
+function onArchiveKeydown(event: KeyboardEvent): void {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void commitArchiveDays();
+  }
+}
+
 onMounted(async () => {
   // StatusBar binds the sync store on mount, but a fresh launch may land on
   // this page before the bind completes. Refresh defensively so the radio
@@ -58,6 +125,15 @@ onMounted(async () => {
     await sync.refreshSnapshot();
   } catch {
     // The status bar binding will retry; leaving the local default is fine.
+  }
+  // Load app_settings so the auto-archive input reflects the persisted
+  // value rather than the store's DEFAULT_SETTINGS placeholder.
+  try {
+    await settings.load();
+    autoArchiveBuffer.value = String(settings.autoArchiveDays);
+  } catch {
+    // The store populates `lastError`; falling back to the placeholder is
+    // fine while the user is offline.
   }
 });
 </script>
@@ -108,6 +184,42 @@ onMounted(async () => {
       </RadioGroupRoot>
 
       <p v-if="error" class="sync-panel__error">{{ error }}</p>
+    </section>
+
+    <section class="sync-panel__section">
+      <div class="sync-panel__section-head">
+        <h3 class="sync-panel__section-title">Auto-archive after</h3>
+        <span class="sync-panel__section-desc">
+          How long a closed or merged PR lingers before flipping to the Archive view.
+        </span>
+      </div>
+
+      <div class="sync-panel__archive">
+        <label class="sync-panel__archive-field">
+          <span class="sync-panel__archive-label">Days of inactivity</span>
+          <span class="sync-panel__archive-input">
+            <input
+              v-model="autoArchiveBuffer"
+              class="input"
+              type="number"
+              inputmode="numeric"
+              :min="AUTO_ARCHIVE_MIN"
+              :max="AUTO_ARCHIVE_MAX"
+              step="1"
+              :disabled="archivePersisting"
+              aria-label="Auto-archive after days of inactivity"
+              @blur="commitArchiveDays"
+              @keydown="onArchiveKeydown"
+            />
+            <span class="sync-panel__archive-unit">days</span>
+          </span>
+        </label>
+        <p class="sync-panel__archive-hint">{{ autoArchiveHint }}</p>
+        <p class="sync-panel__archive-help">
+          Set to 0 to disable auto-archive entirely. Maximum 365 days.
+        </p>
+        <p v-if="archiveError" class="sync-panel__error">{{ archiveError }}</p>
+      </div>
     </section>
   </div>
 </template>
@@ -254,5 +366,53 @@ onMounted(async () => {
   background: var(--danger-bg);
   color: var(--danger);
   font-size: var(--fs-12);
+}
+
+.sync-panel__archive {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.sync-panel__archive-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.sync-panel__archive-label {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  font-weight: 500;
+}
+
+.sync-panel__archive-input {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.sync-panel__archive-input .input {
+  width: 96px;
+  text-align: right;
+}
+
+.sync-panel__archive-unit {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}
+
+.sync-panel__archive-hint {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.sync-panel__archive-help {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  line-height: 1.45;
 }
 </style>

@@ -14,6 +14,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - In-app "What's new" dialog (#305).
 - `E` keyboard shortcut to archive (or unarchive on the Archive view) the focused PR row; arrow keys move the focus highlight through the list (#332).
 - "Mark all read" action in the dashboard header clears unread / mention state on every PR matching the active view + chip filter (#336).
+- Configurable auto-archive window in Settings -> Sync; defaults to 30 days, 0 disables auto-archive, capped at 365 (#333).
 
 ### Changed
 

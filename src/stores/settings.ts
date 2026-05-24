@@ -50,6 +50,12 @@ export interface AppSettings {
    * iff this is set. Read-only from the Settings panel.
    */
   readonly auto_update_last_failure_message: string | null;
+  /**
+   * Auto-archive inactivity window in days (issue #333). Defaults to 30
+   * per ADR-0018; `0` disables the auto-archive sweep entirely (manual
+   * archive only). Clamped server-side to `[0, 365]`.
+   */
+  readonly auto_archive_days: number;
   /** Unix seconds. Advanced server-side on every write. */
   readonly updated_at: number;
 }
@@ -68,6 +74,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   auto_update_interval_seconds: 21600,
   auto_update_last_check_at: null,
   auto_update_last_failure_message: null,
+  auto_archive_days: 30,
   updated_at: 0,
 };
 
@@ -83,6 +90,7 @@ export interface AppSettingsUpdate {
   readonly notify_on_mention: boolean;
   readonly auto_update_enabled: boolean;
   readonly auto_update_interval_seconds: number;
+  readonly auto_archive_days: number;
 }
 
 export const useAppSettings = defineStore("app-settings", () => {
@@ -104,6 +112,7 @@ export const useAppSettings = defineStore("app-settings", () => {
   const autoUpdateLastFailureMessage = computed(
     () => settings.value.auto_update_last_failure_message,
   );
+  const autoArchiveDays = computed(() => settings.value.auto_archive_days);
 
   async function load(): Promise<void> {
     loading.value = true;
@@ -131,6 +140,7 @@ export const useAppSettings = defineStore("app-settings", () => {
       notify_on_mention: prefs.notify_on_mention,
       auto_update_enabled: prefs.auto_update_enabled,
       auto_update_interval_seconds: prefs.auto_update_interval_seconds,
+      auto_archive_days: prefs.auto_archive_days,
     };
     lastError.value = null;
     try {
@@ -152,6 +162,7 @@ export const useAppSettings = defineStore("app-settings", () => {
           auto_update_last_check_at: previous.auto_update_last_check_at,
           auto_update_last_failure_message:
             previous.auto_update_last_failure_message,
+          auto_archive_days: prefs.auto_archive_days,
           updated_at: 0,
         },
       });
@@ -217,6 +228,7 @@ export const useAppSettings = defineStore("app-settings", () => {
     autoUpdateEnabled,
     autoUpdateLastCheckAt,
     autoUpdateLastFailureMessage,
+    autoArchiveDays,
     load,
     update,
     setPermissionState,

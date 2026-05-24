@@ -850,6 +850,11 @@ pub async fn run_one_cycle(
 /// the current logging convention; structured `tracing` is on the M7
 /// polish list). A failure inside the sweep is logged and swallowed: the
 /// archive sweep is cosmetic and the next cycle retries.
+///
+/// Reads `app_settings.auto_archive_days` (issue #333) so the sweep window
+/// follows the user's Settings -> Sync choice. The settings load happens
+/// inside the same transaction as the UPDATE so a concurrent write to
+/// the singleton can't shift the window mid-sweep.
 fn run_auto_archive_sweep(db: &DbHandle) {
     let mut conn = match db.lock() {
         Ok(g) => g,
@@ -865,7 +870,18 @@ fn run_auto_archive_sweep(db: &DbHandle) {
             return;
         }
     };
-    let archived = match crate::triage::query::auto_archive_sweep(&tx) {
+    let days: i64 = match tx.query_row(
+        "SELECT auto_archive_days FROM app_settings WHERE id = 1",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("auto-archive sweep: read window: {err}");
+            return;
+        }
+    };
+    let archived = match crate::triage::query::auto_archive_sweep(&tx, days) {
         Ok(n) => n,
         Err(err) => {
             eprintln!("auto-archive sweep: update: {err}");
@@ -876,7 +892,7 @@ fn run_auto_archive_sweep(db: &DbHandle) {
         eprintln!("auto-archive sweep: commit: {err}");
         return;
     }
-    eprintln!("auto-archive sweep complete: archived={archived}");
+    eprintln!("auto-archive sweep complete: days={days} archived={archived}");
 }
 
 /// Wrap [`crate::triage::query::archive_retention_sweep`] in a transaction and
