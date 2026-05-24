@@ -945,6 +945,17 @@ export const useDashboardStore = defineStore("dashboard", () => {
     expandedPullRequestId.value = null;
   }
 
+  /**
+   * Open the drawer surface for `pullRequestId` directly. The deep-link
+   * router (#339) reaches for this when the appearance setting routes the
+   * detail surface to the drawer; the in-app row click goes through
+   * `openPullRequest`, which needs a full `DashboardPullRequest` payload
+   * the deep-link path doesn't have.
+   */
+  function setExpandedPullRequest(pullRequestId: number | null): void {
+    expandedPullRequestId.value = pullRequestId;
+  }
+
   async function bind(): Promise<void> {
     await listener.bind(() =>
       Promise.all([
@@ -1024,6 +1035,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     archiveSelected,
     openPullRequest,
     closeExpanded,
+    setExpandedPullRequest,
     bind,
     unbind,
     clearError,

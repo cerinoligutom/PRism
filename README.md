@@ -104,6 +104,10 @@ Open **Settings -> Accounts -> + Add account** to walk through the same PAT flow
 
 To change which orgs and repos PRism watches, go to **Settings -> Repositories** and toggle entries on or off.
 
+## Deep links
+
+PRism registers the `prism://` custom URL scheme on install. Open any PR PRism is tracking by clicking a link of the form `prism://pr/<owner>/<repo>/<number>` (add `?host=ghes.example.com` for non-github.com hosts). Links to PRs PRism isn't tracking fall back to opening on GitHub. See the [wiki Architecture page](https://github.com/cerinoligutom/PRism/wiki/Architecture#deep-links) for the full URL shape.
+
 ## Getting started (development)
 
 Prerequisites and dev setup live in the wiki: [Getting Started](https://github.com/cerinoligutom/PRism/wiki/Getting-Started). The short version:

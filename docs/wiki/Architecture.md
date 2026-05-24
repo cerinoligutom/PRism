@@ -73,6 +73,20 @@ OS dock / taskbar badge support: macOS only in v1 (numeric badge from total "nee
 
 See PRD §5.6 and ADR 0017.
 
+## Deep links
+
+PRism registers the `prism://` custom URL scheme so external tools (chat messages, browser extensions, scripts, notifications fired by other apps) can deep-link into a specific PR. URL shape:
+
+```
+prism://pr/<owner>/<repo>/<number>[?host=<host>]
+```
+
+`host` defaults to `github.com`; pass a GHES host (e.g. `?host=ghes.example.com`) to target a non-github.com account. The router parses the URL, looks up the matching PR in the local cache by `(host, owner, repo, number)`, and opens the same detail surface (drawer or route, per the appearance setting) an in-app row click would. If the PR isn't tracked locally, the router falls back to opening the canonical GitHub URL via `tauri-plugin-opener` so the link still lands somewhere useful.
+
+Implementation: `tauri-plugin-deep-link` registers the scheme; bundling emits the macOS `CFBundleURLTypes`, Linux `.desktop` `MimeType=x-scheme-handler/prism`, and Windows registry entries from `tauri.conf.json > plugins.deep-link.desktop.schemes`. The `tauri-plugin-single-instance` plugin's `deep-link` feature forwards inbound URLs into the running app on Linux + Windows so a fresh process isn't spawned for each click. Frontend handler: `src/composables/useDeepLinkRouter.ts`. Issue #339.
+
+Out of scope for v1: `prism://search?q=...` and other non-PR routes.
+
 ## Non-functional targets
 
 | Target | Value | Source |

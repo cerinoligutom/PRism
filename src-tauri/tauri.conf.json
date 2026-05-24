@@ -48,6 +48,11 @@
     "updater": {
       "pubkey": "REPLACE_WITH_GENERATED_PUBLIC_KEY",
       "endpoints": ["https://cerinoligutom.github.io/PRism/latest.json"]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["prism"]
+      }
     }
   }
 }
