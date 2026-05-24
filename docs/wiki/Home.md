@@ -11,6 +11,7 @@ PRism gives developers, reviewers, and engineering leads a single focused dashbo
 - **[Roadmap](Roadmap)** — M1–M7 milestones and what's in each.
 - **[Conventions](Conventions)** — quick reference for commits, PRs, ADRs.
 - **[Platform QA](Platform-QA)** — per-platform checklist run before tagging a release.
+- **[Releasing](Releasing)** — one-time setup + the per-release playbook (prepare → review → publish → manifest).
 - **[FAQ](FAQ)** — common questions.
 
 ## Outside the wiki
