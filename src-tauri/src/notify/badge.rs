@@ -31,10 +31,10 @@
 //!   auto-archive sweep, so per-account fan-out and the archive sweep both
 //!   feed into the same post-cycle update.
 //! * The triage write commands (`mark_pr_read`, `mark_pr_unread`,
-//!   `mark_pr_archived`, `mark_pr_unarchived`) and the conversation
-//!   hydrator's auto-mark-on-open call [`refresh_from_db`] after their
-//!   commit so the dock reflects the change without waiting for the next
-//!   sync tick.
+//!   `mark_pr_archived`, `mark_pr_unarchived`, `mark_view_read`) and the
+//!   conversation hydrator's auto-mark-on-open call [`refresh_from_db`]
+//!   after their commit so the dock reflects the change without waiting
+//!   for the next sync tick.
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Runtime};
@@ -87,9 +87,9 @@ fn apply_badge<R: Runtime>(_app: &AppHandle<R>, _count: i64) {
 
 /// Read the global count from `db` and push it onto the dock. The Tauri
 /// command surface (`mark_pr_read`, `mark_pr_unread`, `mark_pr_archived`,
-/// `mark_pr_unarchived`, and the conversation hydrator's auto-mark-on-open)
-/// call this once per write so the dock reflects the change without waiting
-/// for the next sync cycle (ADR 0017 decision 3).
+/// `mark_pr_unarchived`, `mark_view_read`, and the conversation hydrator's
+/// auto-mark-on-open) call this once per write so the dock reflects the
+/// change without waiting for the next sync cycle (ADR 0017 decision 3).
 ///
 /// Errors at every step log and continue - the badge is a convenience signal
 /// that should never propagate a failure into a triage command's return path.

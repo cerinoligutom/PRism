@@ -100,6 +100,18 @@ const activeChipsList = computed<readonly ChipKey[]>(() =>
   Array.from(dashboard.activeChips as Set<ChipKey>),
 );
 
+// Issue #336: gate the "Mark all read" action on the view + chip filter
+// having at least one unread / mention. Reads `pullRequests` (the backend's
+// view + chip filtered list) instead of `filteredPullRequests` because the
+// in-memory search is client-side; the Rust command doesn't know about
+// search, so the button state should match what the backend would mark.
+const hasUnreadInView = computed<boolean>(() =>
+  dashboard.pullRequests.some(
+    (pr: DashboardPullRequest) =>
+      pr.unread || pr.mentioned_count_unread > 0,
+  ),
+);
+
 // View labels are nicer than the kebab keys when surfaced in copy ("12 of
 // your authored PRs are hidden"). Falls back to the kebab key if a new view
 // lands without a label entry.
@@ -220,6 +232,14 @@ function onMarkUnread(pr: DashboardPullRequest): void {
   // relation row for the PR. Both surfaces converge on a single round-trip
   // that matches the merged row's read semantics.
   void dashboard.markPullRequestUnread(pr.id, null);
+}
+
+function onMarkAllRead(): void {
+  // Issue #336: the store's `markViewRead` carries the active view + chips +
+  // account scope to the Tauri command and reconciles via the post-write
+  // reload. No confirmation dialog - the per-row unread toggle is the
+  // reversal path.
+  void dashboard.markViewRead();
 }
 
 function onArchive(pr: DashboardPullRequest): void {
@@ -416,6 +436,22 @@ watch(
           :model-value="(dashboard.sort as DashboardSort)"
           @update:model-value="onSortUpdate"
         />
+        <div class="dashboard__chips-spacer" />
+        <PRismTooltip
+          :text="hasUnreadInView
+            ? 'Clear unread and mention dots on every PR in this view.'
+            : 'No unread PRs to mark in this view.'"
+          :as-child="true"
+        >
+          <button
+            type="button"
+            class="btn btn-sm"
+            :disabled="!hasUnreadInView || isFetching"
+            @click="onMarkAllRead"
+          >
+            Mark all read
+          </button>
+        </PRismTooltip>
       </div>
     </header>
 
@@ -626,6 +662,10 @@ watch(
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+
+.dashboard__chips-spacer {
+  flex: 1;
 }
 
 .dashboard__chips-sep {

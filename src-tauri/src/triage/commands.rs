@@ -15,6 +15,11 @@
 //! M6 wave 1 adds `mark_pr_archived` / `mark_pr_unarchived` (ADR 0018). Both
 //! commands fire [`DASHBOARD_REFRESH_EVENT`] on success so the frontend can
 //! reload the affected views without waiting for the next sync tick.
+//!
+//! Issue #336 adds `mark_view_read` - the "Mark all read" command that
+//! bulk-flips read state on every relation row matching the active view +
+//! chip filter. Same per-row semantics as `mark_pr_read`, applied to the row
+//! set the dashboard list would project.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
@@ -27,7 +32,7 @@ use crate::notify::{
     NotificationTrigger,
 };
 use crate::triage::query;
-use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
+use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
 
 /// Fired when a triage write that affects dashboard membership commits.
 /// The frontend listens for this and reloads the active view; the payload is
@@ -226,6 +231,47 @@ pub fn mark_pr_unarchived<R: Runtime>(
     emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
     Ok(())
+}
+
+/// Mark every PR in the active view as read.
+///
+/// Issue #336: bulk read-flip for every relation row matching the dashboard
+/// view + active chip filter. The write set is the same one the dashboard list
+/// projects, so a user clicking "Mark all read" sees every visible row's dot
+/// settle in one round-trip.
+///
+/// `account_id = Some(id)` flips only the active account's relation rows.
+/// `account_id = None` (ADR 0016 unified mode) flips every relation row for
+/// every PR the view + chips admit. Tracked-view PRs the active account has
+/// never opened (no relation row) are not touched - bulk mark-read doesn't
+/// UPSERT, since flipping read on a PR the user has never engaged with would
+/// create relation rows the sync cycle hasn't validated.
+///
+/// Returns the number of distinct PRs whose read state the call touched.
+/// Mirrors the user-visible "N marked" report the frontend renders.
+///
+/// Recomputes `needs_attention` for the same row set inside the same
+/// transaction. Per ADR 0017 decision 1, read clears don't surface as OS
+/// notifications, so this command emits no notification triggers.
+#[tauri::command]
+pub fn mark_view_read<R: Runtime>(
+    view: DashboardView,
+    account_id: Option<i64>,
+    chips: Vec<ChipKey>,
+    db: State<'_, DbHandle>,
+    app_handle: AppHandle<R>,
+) -> Result<i64, TriageCommandError> {
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
+    let count = query::mark_view_read(&tx, view, account_id, &chips)
+        .map_err(|e| internal(&format!("mark view read: {e}")))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
+    drop(conn);
+    refresh_badge_from_db(&app_handle, &db);
+    Ok(count)
 }
 
 /// Fire-and-forget refresh signal. A failed emit logs and continues - the
