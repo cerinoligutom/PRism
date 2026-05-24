@@ -47,6 +47,18 @@ rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 
+# Linux taskbar badge (issue #330). Emits `com.canonical.Unity.LauncherEntry.Update`
+# on the session bus; Unity, KDE Plasma, and a handful of GNOME extensions
+# consume it. Best-effort - failure to connect (no D-Bus session, unsupported
+# desktop) is silently swallowed. `default-features = false` keeps the async-io
+# runtime out of the binary; `blocking-api` gives us the synchronous
+# `Connection::emit_signal` we use from the triage + sync paths.
+# `crc32fast` computes the per-app object path id the launcher receivers expect.
+# Both crates are already in the dependency graph transitively via tauri.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.15", default-features = false, features = ["blocking-api"] }
+crc32fast = "1.5"
+
 [dev-dependencies]
 wiremock = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util"] }
