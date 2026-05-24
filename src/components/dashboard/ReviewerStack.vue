@@ -213,10 +213,8 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
   color: var(--text-faint);
 }
 
-/* The avatar slot's `PRismAvatar` resolves to a single rendered element
- * (the image / initial span), so the `reviewer-stack__avatar` class on it
- * survives fallthrough. The base ring matches the `PRismAvatarStack`
- * default - we keep it so the per-state ::after pseudo can anchor here. */
+/* Base ring matches the `PRismAvatarStack` default so the per-state
+ * ::after pseudo can anchor here. */
 .reviewer-stack__avatar {
   position: relative;
   border-width: 1.5px;
