@@ -22,6 +22,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 ### Changed
 
 - Backend logs now flow through the `tracing` crate; default level is `warn` and `RUST_LOG` overrides apply (#334).
+- Multi-account dashboard rows show the union of involved threads across every tracked account; a thread visible to two accounts counts once and the threads-bar matches the unified view's account scope (#338).
 
 ### Deprecated
 

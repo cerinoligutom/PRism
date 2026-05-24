@@ -2337,3 +2337,189 @@ fn list_view_counts_matches_with_archived_and_closed_rows() {
         assert_eq!(actual, expected, "scope {scope:?}");
     }
 }
+
+// ===== issue #338: multi-account threads_involved union =====
+//
+// The unified threads rollup is the union of every in-scope account's
+// involved set. A thread that one or more in-scope accounts authored a
+// comment on counts as `unresolved_involved` (or `resolved_involved`) once;
+// a thread no in-scope account authored a comment on counts as the matching
+// `*_uninvolved` bucket. The bucket SUMs run over `review_threads`, so each
+// thread contributes at most one to a single bucket regardless of how many
+// in-scope accounts authored comments on it.
+
+/// Seed a two-account PR (PR 100, alice authored / bob review-requested,
+/// both in-scope) ready for thread-bucket fixtures. Mirrors
+/// `seed_two_account_shared_pr_fixture` but lives next to these tests to
+/// keep the issue-#338 fixtures self-contained.
+fn seed_338_two_account_pr(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0),
+            (2, 'bob-acct',   'github.com', 'bob',   0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, is_draft, author_login,
+             created_at, updated_at, latest_status_change_at, base_ref, head_ref) VALUES
+            (100, 10, 1, 'shared', 'open', 0, 'someone-else', 0, 1000, 1000,
+             'main', 'feat-a');
+
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, relation_observed_at) VALUES
+            (1, 100, 1, 0, 0, 0),
+            (2, 100, 0, 1, 0, 0);
+        "#,
+    )
+    .unwrap();
+}
+
+/// A thread visible to two in-scope accounts (both alice and bob authored
+/// comments on it) counts as a single involved thread. The bucket SUM walks
+/// `review_threads`, so the per-thread EXISTS subquery returns one boolean
+/// regardless of how many in-scope accounts match - no double-counting.
+#[test]
+fn union_thread_with_comments_from_two_in_scope_accounts_counts_once() {
+    let conn = fresh_db();
+    seed_338_two_account_pr(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_shared');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a says hi', 1),
+            (2002, 1001, 'bob',   'b chimes in', 2);
+        "#,
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 1, "one thread on the PR");
+    assert_eq!(
+        threads.unresolved_involved, 1,
+        "a thread two in-scope accounts both commented on counts once",
+    );
+    assert_eq!(
+        threads.unresolved_uninvolved, 0,
+        "the in-scope EXISTS hit so the thread is not uninvolved",
+    );
+}
+
+/// Disjoint involved sets: alice commented on thread A, bob on thread B,
+/// stranger on thread C. The union sees A and B as involved; C stays
+/// uninvolved. The `unresolved_involved` count equals the union of the two
+/// accounts' individual involved sets (2), not their sum-of-overlaps (which
+/// would be the same here but the disjoint case rules out the "max of
+/// individuals" fallacy).
+#[test]
+fn union_disjoint_involved_sets_aggregate_to_the_set_union() {
+    let conn = fresh_db();
+    seed_338_two_account_pr(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_a'),
+            (1002, 100, 0, 0, 'RT_b'),
+            (1003, 100, 0, 0, 'RT_c');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice',    'a', 1),
+            (2002, 1002, 'bob',      'b', 2),
+            (2003, 1003, 'stranger', 'c', 3);
+        "#,
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 3);
+    assert_eq!(
+        threads.unresolved_involved, 2,
+        "alice's thread + bob's thread = 2 involved under the union",
+    );
+    assert_eq!(threads.unresolved_uninvolved, 1, "stranger's thread");
+}
+
+/// Single-account scope on alice surfaces alice's perspective only: she
+/// commented on one of the three threads. Compare with the union scope,
+/// which sees two. This rules out a regression to "active account's count"
+/// in the union path.
+#[test]
+fn union_count_exceeds_single_account_count_when_other_account_extends_involvement() {
+    let conn = fresh_db();
+    seed_338_two_account_pr(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 0, 0, 'RT_alice'),
+            (1002, 100, 0, 0, 'RT_bob'),
+            (1003, 100, 0, 0, 'RT_none');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice',    'a', 1),
+            (2002, 1002, 'bob',      'b', 2),
+            (2003, 1003, 'stranger', 'c', 3);
+        "#,
+    )
+    .unwrap();
+
+    let alice_only = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let alice_pr = alice_only.iter().find(|r| r.id == 100).unwrap();
+    let alice_threads = alice_pr.threads.as_ref().expect("threads populated");
+    assert_eq!(
+        alice_threads.unresolved_involved, 1,
+        "alice alone sees only her thread"
+    );
+
+    let union =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let union_pr = union.iter().find(|r| r.id == 100).unwrap();
+    let union_threads = union_pr.threads.as_ref().expect("threads populated");
+    assert_eq!(
+        union_threads.unresolved_involved, 2,
+        "union over alice + bob extends the involved set"
+    );
+}
+
+/// Resolved-side mirror of the union: a resolved thread with comments from
+/// two in-scope accounts counts once in `resolved_involved`. Guards against
+/// a regression where the EXISTS evaluates per-comment instead of per-thread
+/// (which would double-count on the resolved bucket the same way it would on
+/// unresolved).
+#[test]
+fn union_resolved_thread_with_two_in_scope_authors_counts_once() {
+    let conn = fresh_db();
+    seed_338_two_account_pr(&conn);
+    conn.execute_batch(
+        r#"
+        INSERT INTO review_threads (id, pull_request_id, is_resolved, is_outdated, node_id) VALUES
+            (1001, 100, 1, 0, 'RT_resolved');
+        INSERT INTO review_comments (id, review_thread_id, author_login, body, created_at) VALUES
+            (2001, 1001, 'alice', 'a', 1),
+            (2002, 1001, 'bob',   'b', 2);
+        "#,
+    )
+    .unwrap();
+
+    let rows =
+        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    let threads = pr.threads.as_ref().expect("threads populated");
+    assert_eq!(threads.total, 1);
+    assert_eq!(threads.resolved_involved, 1);
+    assert_eq!(threads.unresolved_involved, 0);
+    assert_eq!(threads.resolved_uninvolved, 0);
+}
