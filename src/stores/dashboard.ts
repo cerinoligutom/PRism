@@ -245,6 +245,14 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // starts unfocused rather than inheriting a stale id from the previous one.
   const focusedPullRequestId = ref<number | null>(null);
 
+  // Bulk multi-select state (#331). `selectedRowIds` holds the PR ids the
+  // user has ticked; the dashboard renders a sticky toolbar above the table
+  // while non-empty. `lastSelectedId` anchors Shift+click range extension so
+  // a contiguous slice of `visibleRowIds` flips together. Both reset on
+  // view-switch and after a successful bulk archive.
+  const selectedRowIds = ref<Set<number>>(new Set());
+  const lastSelectedId = ref<number | null>(null);
+
   // Session-local collapsed groups, keyed by the bucket key produced in the
   // `groups` computed. Survives navigation between views (the store lives for
   // the app session) but not a full app restart. Durable persistence across
@@ -518,6 +526,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // Drop any focused row so the new view doesn't inherit a highlight for
     // a PR that almost certainly isn't in the next list.
     focusedPullRequestId.value = null;
+    // #331: bulk selection is per-view; rows in the next view shouldn't
+    // inherit a multi-select that targets the previous list's PR ids.
+    clearSelection();
     await load();
   }
 
@@ -691,6 +702,135 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
   function dismissArchiveError(): void {
     archiveError.value = null;
+  }
+
+  /**
+   * Toggle the bulk-selection state for one PR id (#331). Updates
+   * `lastSelectedId` so a subsequent Shift+click can extend a range from
+   * here. The replace-the-Set pattern keeps shallow-ref reactivity firing
+   * for the Pinia getters that consume the selection.
+   */
+  function toggleSelection(pullRequestId: number): void {
+    const next = new Set(selectedRowIds.value);
+    if (next.has(pullRequestId)) {
+      next.delete(pullRequestId);
+    } else {
+      next.add(pullRequestId);
+    }
+    selectedRowIds.value = next;
+    lastSelectedId.value = pullRequestId;
+  }
+
+  /**
+   * Extend the selection between `lastSelectedId` and `toId` along the
+   * visible row order (#331). Every id in the slice flips to checked; ids
+   * outside the slice keep their existing state so the user can compose
+   * multiple ranges. With no anchor yet (`lastSelectedId === null`) this
+   * falls back to a plain toggle so the first Shift+click still feels
+   * responsive instead of being a silent no-op.
+   */
+  function extendSelection(toId: number, orderedIds: readonly number[]): void {
+    const anchor = lastSelectedId.value;
+    if (anchor === null) {
+      toggleSelection(toId);
+      return;
+    }
+    const fromIdx = orderedIds.indexOf(anchor);
+    const toIdx = orderedIds.indexOf(toId);
+    if (fromIdx === -1 || toIdx === -1) {
+      toggleSelection(toId);
+      return;
+    }
+    const [lo, hi] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+    const next = new Set(selectedRowIds.value);
+    for (let i = lo; i <= hi; i++) {
+      const id = orderedIds[i];
+      if (id !== undefined) next.add(id);
+    }
+    selectedRowIds.value = next;
+    lastSelectedId.value = toId;
+  }
+
+  function clearSelection(): void {
+    if (selectedRowIds.value.size === 0 && lastSelectedId.value === null) {
+      return;
+    }
+    selectedRowIds.value = new Set();
+    lastSelectedId.value = null;
+  }
+
+  /**
+   * Archive every PR in the current `selectedRowIds`. Fans the write out by
+   * account: for each tracked account holding a relation row for any
+   * selected PR, invokes `mark_prs_archived(pull_request_ids, account_id)`
+   * with the subset that account holds. The single SQL UPDATE per account
+   * keeps a 30-row selection at one round-trip per account, not 30.
+   *
+   * Optimistic flip: every selected id lands in `optimisticallyArchivedIds`
+   * up-front so the rows fade before the writes resolve. Per-account
+   * failures collect into `archiveError` so the surface can name them; the
+   * post-write `load()` reconciles canonical state. Selection clears once
+   * the dispatch completes (matching the acceptance criterion).
+   */
+  async function archiveSelected(): Promise<void> {
+    if (selectedRowIds.value.size === 0) return;
+    const selectedIds = Array.from(selectedRowIds.value);
+    // Group the selected PR ids by relation owner so each account gets one
+    // batched invoke. Rows with no `account_ids` (Tracked-view PRs with no
+    // relation in unified scope) can't archive - they're skipped silently
+    // for the same reason the per-row `canArchive` guard hides the menu
+    // entry on them.
+    const byAccount = new Map<number, number[]>();
+    for (const row of pullRequests.value) {
+      if (!selectedRowIds.value.has(row.id)) continue;
+      for (const accountId of row.account_ids) {
+        const list = byAccount.get(accountId);
+        if (list === undefined) byAccount.set(accountId, [row.id]);
+        else list.push(row.id);
+      }
+    }
+    if (byAccount.size === 0) {
+      clearSelection();
+      return;
+    }
+    archiveError.value = null;
+    inFlightArchiveBatches += 1;
+    for (const id of selectedIds) markRowArchivedOptimistically(id);
+    try {
+      const entries = Array.from(byAccount.entries());
+      const results = await Promise.allSettled(
+        entries.map(([accountId, ids]) =>
+          invoke("mark_prs_archived", {
+            pullRequestIds: ids,
+            accountId,
+          }).then(() => accountId),
+        ),
+      );
+      const failures: ArchiveFailure[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          const accountId = entries[i]?.[0] ?? -1;
+          failures.push({
+            accountId,
+            message: formatError(r.reason),
+          });
+        }
+      });
+      if (failures.length > 0) {
+        archiveError.value = failures;
+        if (failures.length === entries.length) {
+          // Full failure across every account - revert the optimistic
+          // flips so the rows stay visible. The post-write reload would
+          // re-add them anyway, but the explicit revert keeps the table
+          // stable in the brief window before `load()` settles.
+          for (const id of selectedIds) revertOptimisticArchive(id);
+        }
+      }
+      clearSelection();
+    } finally {
+      await load();
+      inFlightArchiveBatches -= 1;
+    }
   }
 
   async function runArchiveFanOut(
@@ -876,6 +1016,12 @@ export const useDashboardStore = defineStore("dashboard", () => {
     unarchive,
     archiveError,
     dismissArchiveError,
+    selectedRowIds,
+    lastSelectedId,
+    toggleSelection,
+    extendSelection,
+    clearSelection,
+    archiveSelected,
     openPullRequest,
     closeExpanded,
     bind,
