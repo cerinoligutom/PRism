@@ -17,6 +17,7 @@ import { useToastStore } from "@/stores/toast";
 import { useNowSeconds } from "@/composables/useNowSeconds";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
+import PRismCheckbox from "@/components/ui/PRismCheckbox.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ReviewerStack from "./ReviewerStack.vue";
@@ -61,6 +62,14 @@ interface Props {
    * `:focus-visible` ring on the underlying `<article role="button">`.
    */
   focused?: boolean;
+  /** True when the row's bulk-archive checkbox is ticked (#331). */
+  selected?: boolean;
+  /**
+   * True when any row in the active list is selected (#331). The checkbox
+   * cell stays visible across every row while non-zero so the user can
+   * extend the selection without hunting hover targets.
+   */
+  selectionActive?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -71,6 +80,8 @@ const props = withDefaults(defineProps<Props>(), {
   singleAccountScope: false,
   isArchiveView: false,
   focused: false,
+  selected: false,
+  selectionActive: false,
 });
 
 const emit = defineEmits<{
@@ -84,6 +95,10 @@ const emit = defineEmits<{
   /** ADR 0018 inverse - viewer asked to pull the PR back out of archive
    * from the Archive view's overflow. */
   unarchive: [pullRequest: DashboardPullRequest];
+  /** #331 bulk-archive selection - the leading checkbox flipped. `shiftKey`
+   * carries the modifier so the parent can extend a range between the last
+   * anchor and this row. */
+  "toggle-select": [pullRequest: DashboardPullRequest, shiftKey: boolean];
 }>();
 
 const toastStore = useToastStore();
@@ -283,6 +298,31 @@ function onArchive(): void {
 function onUnarchive(): void {
   emit("unarchive", props.pullRequest);
 }
+
+/**
+ * Intercept the checkbox click on the leading select cell so the row's own
+ * `@click` handler doesn't open the PR underneath it. The event's
+ * `shiftKey` carries the range-extend modifier so the parent can flip a
+ * contiguous slice of the visible list (#331).
+ */
+function onToggleSelect(event: MouseEvent): void {
+  if (props.isArchiveView) return;
+  event.stopPropagation();
+  emit("toggle-select", props.pullRequest, event.shiftKey);
+}
+
+/**
+ * Keyboard accessibility for the leading checkbox: Space toggles the
+ * selection without opening the row. Mirrors the click handler so the
+ * shift modifier still extends a range when the focus lands via Tab.
+ */
+function onSelectKey(event: KeyboardEvent): void {
+  if (props.isArchiveView) return;
+  if (event.key !== " " && event.key !== "Enter") return;
+  event.preventDefault();
+  event.stopPropagation();
+  emit("toggle-select", props.pullRequest, event.shiftKey);
+}
 </script>
 
 <template>
@@ -293,6 +333,8 @@ function onUnarchive(): void {
       needsAttention && 'pr-row--attention',
       unread && 'pr-row--unread',
       focused && 'pr-row--focused',
+      selectionActive && 'pr-row--selection-active',
+      selected && 'pr-row--selected',
     ]"
     :data-row-pr-id="pullRequest.id"
     role="button"
@@ -300,6 +342,19 @@ function onUnarchive(): void {
     @click="onClick"
     @keydown="onKey"
   >
+    <span
+      class="pr-row__select"
+      @click="onToggleSelect"
+      @keydown="onSelectKey"
+    >
+      <PRismCheckbox
+        v-if="!isArchiveView"
+        :model-value="selected"
+        aria-label="Select pull request for bulk archive"
+        @update:model-value="() => {}"
+      />
+    </span>
+
     <span
       class="pr-row__dot"
       :aria-label="unread ? 'Unread' : undefined"
@@ -689,10 +744,10 @@ function onUnarchive(): void {
 <style scoped>
 .pr-row {
   position: relative;
-  /* Columns: [dot] [state icon + edge] [#num] [title] [threads] [reviewers] */
-  /* [ci] [time] [github] [kebab] */
+  /* Columns: [select] [dot] [state icon + edge] [#num] [title] [accounts] */
+  /* [threads] [reviewers] [ci] [time] [github] [kebab] */
   display: grid;
-  grid-template-columns: 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 28px;
+  grid-template-columns: 20px 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 28px;
   align-items: center;
   gap: 14px;
   padding: 0 var(--s-6) 0 var(--s-3);
@@ -742,6 +797,32 @@ function onUnarchive(): void {
 
 .pr-row--focused.pr-row--attention {
   background: var(--attention-tint-hover);
+}
+
+/* Bulk-select checkbox cell (#331). Hidden by default; reveals on row hover
+ * or once any row in the list is selected (sticky once the user starts a
+ * multi-select). The cell keeps its slot in the grid either way so rows
+ * don't reflow when the checkbox appears - only opacity changes. */
+.pr-row__select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.pr-row:hover .pr-row__select,
+.pr-row--selection-active .pr-row__select,
+.pr-row--selected .pr-row__select {
+  opacity: 1;
+}
+
+.pr-row--selected {
+  background: var(--accent-bg);
+}
+
+.pr-row--selected:hover {
+  background: var(--accent-bg);
 }
 
 /* Leftmost unread dot. Sits in its own grid cell so read / unread rows align

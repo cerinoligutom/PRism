@@ -136,6 +136,53 @@ pub fn mark_unarchived(
     Ok(())
 }
 
+/// Batched archive write for a set of PRs against one `account_id`. Mirrors
+/// [`mark_archived`]'s per-pair UPSERT shape but runs as a single statement
+/// whose `VALUES` list enumerates every `(account_id, pull_request_id)` pair.
+/// Keeps the bulk multi-select archive flow (#331) at one round-trip per
+/// account instead of N. Empty `pull_request_ids` is a no-op (returns 0).
+/// Callers wrap in their own transaction so a multi-account fan-out commits
+/// atomically.
+pub fn mark_prs_archived(
+    conn: &Connection,
+    account_id: i64,
+    pull_request_ids: &[i64],
+) -> Result<usize, rusqlite::Error> {
+    if pull_request_ids.is_empty() {
+        return Ok(0);
+    }
+    // Build the per-row VALUES tuple. Each row carries
+    // `(account_id, pull_request_id, strftime(now), strftime(now))` so the
+    // INSERT side resolves the timestamps without an outer SELECT - SQLite
+    // doesn't accept `(VALUES ...) AS v(col, col)` column-name aliases.
+    let mut value_rows = String::with_capacity(pull_request_ids.len() * 24);
+    for i in 0..pull_request_ids.len() {
+        if i > 0 {
+            value_rows.push_str(", ");
+        }
+        let pair = i * 2;
+        value_rows.push_str(&format!(
+            "(?{}, ?{}, strftime('%s','now'), strftime('%s','now'))",
+            pair + 1,
+            pair + 2,
+        ));
+    }
+    let sql = format!(
+        "INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, relation_observed_at, archived_at)
+         VALUES {value_rows}
+         ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
+            archived_at = strftime('%s','now')"
+    );
+    let mut params_buf: Vec<i64> = Vec::with_capacity(pull_request_ids.len() * 2);
+    for pr_id in pull_request_ids {
+        params_buf.push(account_id);
+        params_buf.push(*pr_id);
+    }
+    let affected = conn.execute(&sql, params_from_iter(params_buf.iter()))?;
+    Ok(affected)
+}
+
 /// Run the auto-archive sweep once. Sets `archived_at = now` on every
 /// `pull_request_viewer_relations` row whose underlying PR is closed or
 /// merged _and_ has been idle for at least `days` days
@@ -1927,6 +1974,102 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(read_archived_at(&conn, 1, 100), None);
+    }
+
+    #[test]
+    fn mark_prs_archived_sets_archived_at_on_each_id() {
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "open", 1);
+        seed_pr_for_archive(&conn, 101, "open", 1);
+        seed_pr_for_archive(&conn, 102, "open", 1);
+        let affected = mark_prs_archived(&conn, 1, &[100, 101, 102]).unwrap();
+        assert_eq!(affected, 3, "one row per PR upserted");
+        assert!(read_archived_at(&conn, 1, 100).is_some());
+        assert!(read_archived_at(&conn, 1, 101).is_some());
+        assert!(read_archived_at(&conn, 1, 102).is_some());
+    }
+
+    #[test]
+    fn mark_prs_archived_upserts_when_relations_missing() {
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "open", 1);
+        seed_pr_for_archive(&conn, 101, "open", 1);
+        // No relation rows for either PR yet - the batched UPSERT must
+        // create both so the merged-row archive path works against rows
+        // the viewer has never opened.
+        mark_prs_archived(&conn, 1, &[100, 101]).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id IN (100, 101)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn mark_prs_archived_empty_input_is_noop() {
+        let conn = fresh_db();
+        let affected = mark_prs_archived(&conn, 1, &[]).unwrap();
+        assert_eq!(affected, 0);
+    }
+
+    #[test]
+    fn mark_prs_archived_preserves_other_columns() {
+        // Existing relation row with read state + needs_attention must keep
+        // them; the batched UPSERT touches archived_at only, mirroring the
+        // per-pair `mark_archived` semantics.
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "open", 1);
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, relation_observed_at,
+                 read_at, mentioned_count_unread, needs_attention)
+                VALUES (1, 100, 1, 0, 999, 3, 1)",
+            [],
+        )
+        .unwrap();
+        mark_prs_archived(&conn, 1, &[100]).unwrap();
+        let (is_authored, read_at, mentioned_count_unread, needs_attention): (
+            i64,
+            Option<i64>,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT is_authored, read_at, mentioned_count_unread, needs_attention
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(is_authored, 1);
+        assert_eq!(read_at, Some(999));
+        assert_eq!(mentioned_count_unread, 3);
+        assert_eq!(needs_attention, 1);
+        assert!(read_archived_at(&conn, 1, 100).is_some());
+    }
+
+    #[test]
+    fn mark_prs_archived_scopes_writes_to_supplied_account() {
+        // A second account's relation rows for the same PRs must not flip
+        // when the caller passes account 1's id.
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "open", 1);
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (2, 'b', 'github.com', 'bob', 0);
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (2, 100, 0);",
+        )
+        .unwrap();
+        mark_prs_archived(&conn, 1, &[100]).unwrap();
+        assert!(read_archived_at(&conn, 1, 100).is_some());
+        assert_eq!(read_archived_at(&conn, 2, 100), None);
     }
 
     #[test]

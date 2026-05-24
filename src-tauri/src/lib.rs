@@ -87,6 +87,7 @@ pub fn run() {
             triage::commands::mark_pr_read,
             triage::commands::mark_pr_unarchived,
             triage::commands::mark_pr_unread,
+            triage::commands::mark_prs_archived,
             triage::commands::mark_view_read,
             update::commands::check_for_update_now,
             update::commands::install_update_now,

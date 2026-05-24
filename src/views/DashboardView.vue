@@ -256,6 +256,34 @@ function onUnarchive(pr: DashboardPullRequest): void {
 }
 
 /**
+ * Bulk-archive multi-select (#331). Shift+click extends the selection from
+ * the last anchor along the visible row order; plain click toggles a single
+ * row. The store owns the anchor + range logic so this handler only routes
+ * the modifier through.
+ */
+function onToggleSelect(pr: DashboardPullRequest, shiftKey: boolean): void {
+  if (shiftKey) {
+    dashboard.extendSelection(pr.id, dashboard.visibleRowIds);
+    return;
+  }
+  dashboard.toggleSelection(pr.id);
+}
+
+function onCancelSelection(): void {
+  dashboard.clearSelection();
+}
+
+function onArchiveSelected(): void {
+  void dashboard.archiveSelected();
+}
+
+const selectedCount = computed<number>(() => dashboard.selectedRowIds.size);
+const hasSelection = computed<boolean>(() => selectedCount.value > 0);
+const selectedRowIdsSet = computed<ReadonlySet<number>>(
+  () => dashboard.selectedRowIds as ReadonlySet<number>,
+);
+
+/**
  * True when the current route surfaces the Archive view. Issue #197 lands
  * the route + sidebar entry; this PR keeps the row wiring backward-safe by
  * reading from the route meta directly so the union doesn't need to change
@@ -569,6 +597,30 @@ watch(
     </div>
 
     <div v-else class="dashboard__list scroll">
+      <div
+        v-if="hasSelection && !isArchive"
+        class="dashboard__bulk-toolbar"
+        role="region"
+        aria-label="Bulk archive selection"
+      >
+        <span class="dashboard__bulk-count">
+          {{ selectedCount === 1 ? "1 selected" : `${selectedCount} selected` }}
+        </span>
+        <div class="dashboard__bulk-actions">
+          <PRismButton
+            variant="primary"
+            size="sm"
+            :disabled="isFetching"
+            @click="onArchiveSelected"
+          >
+            Archive selected
+          </PRismButton>
+          <PRismButton variant="ghost" size="sm" @click="onCancelSelection">
+            Cancel
+          </PRismButton>
+        </div>
+      </div>
+
       <section
         v-for="bucket in dashboard.groups"
         :key="bucket.key"
@@ -600,10 +652,13 @@ watch(
             :single-account-scope="isSingleAccountScope"
             :is-archive-view="isArchiveView"
             :focused="pr.id === dashboard.focusedPullRequestId"
+            :selected="selectedRowIdsSet.has(pr.id)"
+            :selection-active="hasSelection"
             @open="openPullRequest"
             @mark-unread="onMarkUnread"
             @archive="onArchive"
             @unarchive="onUnarchive"
+            @toggle-select="onToggleSelect"
           />
         </TransitionGroup>
       </section>
@@ -752,6 +807,35 @@ watch(
   flex: 1;
   overflow-y: auto;
   padding: 0 0 var(--s-6);
+}
+
+/* Sticky bulk-archive toolbar. Sits at the top of the scrolling list so it
+ * stays visible while the user scrolls through a long selection. Matches the
+ * existing `.dashboard__header` density - same horizontal padding, accent
+ * border to read as an active mode banner rather than a notification. */
+.dashboard__bulk-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-6);
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--border-2);
+}
+
+.dashboard__bulk-count {
+  font-size: var(--fs-13);
+  font-weight: 500;
+  color: var(--text-strong);
+  flex: 1;
+}
+
+.dashboard__bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .dashboard__group {

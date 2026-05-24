@@ -206,6 +206,42 @@ pub fn mark_pr_archived<R: Runtime>(
     Ok(())
 }
 
+/// Batched archive write for a set of PRs against one `account_id`. Backs
+/// the dashboard's bulk multi-select archive flow (#331). Mirrors
+/// [`mark_pr_archived`]'s per-account semantics so the frontend keeps its
+/// fan-out shape: one invoke per account, each batching the subset of PR
+/// ids that account holds a relation to. Empty `pull_request_ids` is a
+/// no-op.
+///
+/// Wraps the write in a transaction to keep parity with the single-pair
+/// command; the underlying `query::mark_prs_archived` is one prepared
+/// `INSERT ... ON CONFLICT` so a future cascade addition doesn't break the
+/// atomicity contract. Emits [`DASHBOARD_REFRESH_EVENT`] on success so the
+/// frontend reloads without waiting for the next sync tick.
+#[tauri::command]
+pub fn mark_prs_archived<R: Runtime>(
+    pull_request_ids: Vec<i64>,
+    account_id: i64,
+    db: State<'_, DbHandle>,
+    app_handle: AppHandle<R>,
+) -> Result<(), TriageCommandError> {
+    if pull_request_ids.is_empty() {
+        return Ok(());
+    }
+    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| internal(&format!("begin tx: {e}")))?;
+    query::mark_prs_archived(&tx, account_id, &pull_request_ids)
+        .map_err(|e| internal(&format!("mark prs archived: {e}")))?;
+    tx.commit()
+        .map_err(|e| internal(&format!("commit tx: {e}")))?;
+    drop(conn);
+    emit_dashboard_refresh(&app_handle);
+    refresh_badge_from_db(&app_handle, &db);
+    Ok(())
+}
+
 /// Reverse of [`mark_pr_archived`]: clear `archived_at` so the PR
 /// reappears in the default views. UPSERTs the row the same way so an
 /// Archive-view unarchive against a PR the viewer never opened works
