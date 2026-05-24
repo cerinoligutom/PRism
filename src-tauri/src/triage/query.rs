@@ -345,6 +345,316 @@ pub fn recompute_needs_attention(
     Ok(triggers)
 }
 
+/// Mark every relation row matching the active view + chip filter as read.
+///
+/// Issue #336: a "Mark all read" command that bulk-flips the read state for
+/// every PR the user sees in the active dashboard view. The write follows the
+/// same per-row semantics as [`mark_read`] (sets `read_at`, snapshots
+/// `pull_requests.updated_at` into `read_pr_updated_at`, resets the mention
+/// counter, advances the mention scan watermark) but applied to every
+/// relation row that survives the view + chip predicate.
+///
+/// `account_id = Some(id)` flips only the active account's relation rows.
+/// `account_id = None` (ADR 0016 unified mode) flips every relation row for
+/// every PR in the view. The Tracked view's PRs without a relation row are
+/// not affected - mark-all-read doesn't UPSERT new rows (use the per-row
+/// `mark_pr_read` for that case).
+///
+/// After the read flip, recomputes `needs_attention` on the same row set so a
+/// PR whose only attention signal was an unread mention drops out of the
+/// attention bucket in the same transaction. Per ADR 0017 decision 1, read
+/// clears don't surface as notifications, so this helper doesn't emit
+/// notification triggers.
+///
+/// Returns the number of distinct PRs whose relation rows the call touched.
+/// In single-account mode that equals the rows-affected count of the read
+/// flip UPDATE (one relation per PR per account). In unified mode the
+/// number collapses multi-account relations into one row per PR so the
+/// frontend can report "marked N PRs" rather than "wrote N relation rows".
+///
+/// Callers wrap the call in a transaction so the read flip and the recompute
+/// commit together. See [`crate::triage::commands::mark_view_read`].
+pub fn mark_view_read(
+    conn: &Connection,
+    view: DashboardView,
+    account_id: Option<i64>,
+    active_chips: &[ChipKey],
+) -> Result<i64, rusqlite::Error> {
+    let (matching_pr_ids_sql, base_params) = matching_pr_ids_subquery(view, account_id);
+    let chip_clause = mark_view_chip_clause(active_chips);
+
+    let in_clause = if chip_clause.is_empty() {
+        matching_pr_ids_sql
+    } else {
+        format!("{matching_pr_ids_sql} {chip_clause}")
+    };
+
+    // ADR 0018: default views target unarchived relations; Archive view
+    // targets the archived ones. The dashboard query encodes the same flip
+    // through its view-specific FROM clauses; we encode it on the outer
+    // UPDATE's `rel` because the IN sub-query only enumerates PR ids.
+    let archive_filter = match view {
+        DashboardView::Archive => "AND rel.archived_at IS NOT NULL",
+        _ => "AND rel.archived_at IS NULL",
+    };
+    let account_scope = match account_id {
+        Some(_) => "AND rel.account_id = ?1",
+        None => "",
+    };
+
+    // Distinct PR count - mirrors what the frontend reports back to the user.
+    // Counts against the same WHERE the UPDATEs use so a PR with no relation
+    // row matching the account/archive scope doesn't inflate the result
+    // (Tracked view with no relation for the active account is the canonical
+    // case).
+    let count_sql = format!(
+        "SELECT COUNT(DISTINCT rel.pull_request_id)
+           FROM pull_request_viewer_relations rel
+          WHERE rel.pull_request_id IN (
+              SELECT DISTINCT pr.id {in_clause}
+          ) {account_scope}
+            {archive_filter}"
+    );
+    let distinct_pr_count: i64 =
+        conn.query_row(&count_sql, params_from_iter(base_params.iter()), |row| {
+            row.get(0)
+        })?;
+    if distinct_pr_count == 0 {
+        return Ok(0);
+    }
+
+    // Read flip. The `read_pr_updated_at` snapshot uses a correlated subquery
+    // against `pull_requests` so the watermark matches the per-row `mark_read`
+    // behaviour. The outer WHERE adds the account + archive scope so the
+    // UPDATE never touches relations the active view wouldn't have shown.
+    let read_flip_sql = format!(
+        "UPDATE pull_request_viewer_relations AS rel
+            SET read_at                    = strftime('%s','now'),
+                read_pr_updated_at         = (SELECT pr.updated_at
+                                                FROM pull_requests pr
+                                               WHERE pr.id = rel.pull_request_id),
+                mentioned_count_unread     = 0,
+                mention_scan_watermark_at  = strftime('%s','now')
+          WHERE rel.pull_request_id IN (
+              SELECT DISTINCT pr.id {in_clause}
+          ) {account_scope}
+            {archive_filter}"
+    );
+    conn.execute(&read_flip_sql, params_from_iter(base_params.iter()))?;
+
+    // Bulk needs_attention recompute against the same row set. Same CASE
+    // WHEN as `recompute_needs_attention` so the four ADR-0015 signals stay
+    // in step. The mention counter just dropped to zero, so signal 3 will
+    // miss; signals 1, 2, and 4 still resolve from the relation row's
+    // surrounding data.
+    let recompute_sql = format!(
+        "UPDATE pull_request_viewer_relations AS rel
+            SET needs_attention = (
+                SELECT CASE WHEN
+                    EXISTS (
+                        SELECT 1
+                          FROM pull_requests pr
+                          JOIN accounts a ON a.id = rel.account_id
+                          JOIN review_threads t ON t.pull_request_id = pr.id
+                         WHERE pr.id = rel.pull_request_id
+                           AND pr.author_login = a.login
+                           AND t.is_resolved = 0
+                           AND EXISTS (
+                               SELECT 1 FROM review_comments c
+                                JOIN accounts a2 ON a2.login = c.author_login
+                                WHERE c.review_thread_id = t.id
+                                  AND a2.id = rel.account_id
+                           )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                          FROM requested_reviewers rr
+                          JOIN accounts a ON a.id = rel.account_id
+                         WHERE rr.pull_request_id = rel.pull_request_id
+                           AND rr.login = a.login
+                    )
+                    OR rel.mentioned_count_unread > 0
+                    OR EXISTS (
+                        SELECT 1
+                          FROM pull_requests pr
+                          JOIN accounts a ON a.id = rel.account_id
+                         WHERE pr.id = rel.pull_request_id
+                           AND pr.author_login = a.login
+                           AND pr.review_decision = 'CHANGES_REQUESTED'
+                    )
+                THEN 1 ELSE 0 END
+            )
+          WHERE rel.pull_request_id IN (
+              SELECT DISTINCT pr.id {in_clause}
+          ) {account_scope}
+            {archive_filter}"
+    );
+    conn.execute(&recompute_sql, params_from_iter(base_params.iter()))?;
+
+    Ok(distinct_pr_count)
+}
+
+/// FROM + WHERE for a `SELECT DISTINCT pr.id ...` subquery that enumerates
+/// every PR id the dashboard's per-view query would surface. Mirrors the
+/// shape used by [`crate::dashboard::query`] so a row that lands in the list
+/// also lands in this set.
+///
+/// Single-account paths bind `?1` for the active account id; unified paths
+/// take no parameters. The Tracked view's single-account path includes PRs
+/// that don't have a relation row (the LEFT-JOINed `rel` is NULL for those);
+/// the caller's UPDATE then matches zero rows for them, which is the right
+/// behaviour - bulk mark-read doesn't UPSERT, and per-row `mark_pr_read`
+/// handles the relation-less Tracked case.
+fn matching_pr_ids_subquery(view: DashboardView, account_id: Option<i64>) -> (String, Vec<i64>) {
+    match (view, account_id) {
+        (DashboardView::Authored, Some(id)) => (
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_authored = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL
+               AND pr.state = 'open'"
+                .to_string(),
+            vec![id],
+        ),
+        (DashboardView::Assigned, Some(id)) => (
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_review_requested = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL
+               AND pr.state = 'open'"
+                .to_string(),
+            vec![id],
+        ),
+        (DashboardView::Watching, Some(id)) => (
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.is_involved = 1
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL
+               AND pr.state = 'open'"
+                .to_string(),
+            vec![id],
+        ),
+        (DashboardView::Tracked, Some(id)) => (
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.account_id = ?1
+               AND rel.archived_at IS NULL
+             WHERE r.is_tracked = 1
+               AND r.account_id = ?1
+               AND pr.state = 'open'"
+                .to_string(),
+            vec![id],
+        ),
+        (DashboardView::Archive, Some(id)) => (
+            "FROM pull_request_viewer_relations rel
+             JOIN pull_requests pr ON pr.id = rel.pull_request_id
+             WHERE rel.account_id = ?1
+               AND rel.archived_at IS NOT NULL"
+                .to_string(),
+            vec![id],
+        ),
+        (DashboardView::Authored, None) => (
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
+             WHERE pr.state = 'open'
+               AND EXISTS (
+                   SELECT 1 FROM pull_request_viewer_relations rel_filter
+                    WHERE rel_filter.pull_request_id = pr.id
+                      AND rel_filter.is_authored = 1
+                      AND rel_filter.archived_at IS NULL
+               )"
+            .to_string(),
+            Vec::new(),
+        ),
+        (DashboardView::Assigned, None) => (
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
+             WHERE pr.state = 'open'
+               AND EXISTS (
+                   SELECT 1 FROM pull_request_viewer_relations rel_filter
+                    WHERE rel_filter.pull_request_id = pr.id
+                      AND rel_filter.is_review_requested = 1
+                      AND rel_filter.archived_at IS NULL
+               )"
+            .to_string(),
+            Vec::new(),
+        ),
+        (DashboardView::Watching, None) => (
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
+             WHERE pr.state = 'open'
+               AND EXISTS (
+                   SELECT 1 FROM pull_request_viewer_relations rel_filter
+                    WHERE rel_filter.pull_request_id = pr.id
+                      AND rel_filter.is_involved = 1
+                      AND rel_filter.archived_at IS NULL
+               )"
+            .to_string(),
+            Vec::new(),
+        ),
+        (DashboardView::Tracked, None) => (
+            "FROM pull_requests pr
+             JOIN repos r ON r.id = pr.repo_id
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NULL
+             WHERE r.is_tracked = 1
+               AND pr.state = 'open'
+               AND (NOT EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_any
+                        WHERE rel_any.pull_request_id = pr.id
+                    )
+                    OR EXISTS (
+                       SELECT 1 FROM pull_request_viewer_relations rel_un
+                        WHERE rel_un.pull_request_id = pr.id
+                          AND rel_un.archived_at IS NULL
+                    ))"
+            .to_string(),
+            Vec::new(),
+        ),
+        (DashboardView::Archive, None) => (
+            "FROM pull_requests pr
+             LEFT JOIN pull_request_viewer_relations rel
+                ON rel.pull_request_id = pr.id
+               AND rel.archived_at IS NOT NULL
+             WHERE EXISTS (
+                 SELECT 1 FROM pull_request_viewer_relations rel_filter
+                  WHERE rel_filter.pull_request_id = pr.id
+                    AND rel_filter.archived_at IS NOT NULL
+             )"
+            .to_string(),
+            Vec::new(),
+        ),
+    }
+}
+
+/// AND-compose the chip predicates for the active chip set. Mirrors the
+/// dashboard query's `chip_where_clause` helper (which is module-private
+/// there) without coupling the triage write path to the dashboard module.
+fn mark_view_chip_clause(active_chips: &[ChipKey]) -> String {
+    if active_chips.is_empty() {
+        return String::new();
+    }
+    let mut clause = String::new();
+    for chip in active_chips {
+        clause.push_str(" AND (");
+        clause.push_str(chip_predicate(*chip));
+        clause.push(')');
+    }
+    clause
+}
+
 /// SQL predicate fragment for `chip` in the chip-count and chip-WHERE-composition
 /// queries. The `rel.*` references resolve against the
 /// `pull_request_viewer_relations` row joined to the active account; callers
@@ -1981,5 +2291,442 @@ mod tests {
         let deleted = archive_retention_sweep(&conn).unwrap();
         assert_eq!(deleted, 0);
         assert!(pr_exists(&conn, 100));
+    }
+
+    // ===== mark_view_read (issue #336) =====
+
+    /// Seed N Watching-view PRs for account 1, each unread (no `read_at`).
+    /// Returns the PR ids inserted so the test can probe individual rows.
+    fn seed_n_watching_prs(conn: &Connection, count: i64) -> Vec<i64> {
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'alice', 'web', 'public');",
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        for i in 0..count {
+            let pr_id = 1000 + i;
+            conn.execute_batch(&format!(
+                "INSERT INTO pull_requests
+                    (id, repo_id, number, title, state, is_draft, author_login,
+                     created_at, updated_at, base_ref, head_ref)
+                    VALUES ({pr_id}, 10, {pr_id}, 't', 'open', 0, 'bob',
+                            0, 1000000, 'main', 'feat');
+                 INSERT INTO pull_request_viewer_relations
+                    (account_id, pull_request_id, is_authored, is_review_requested,
+                     is_involved, relation_observed_at)
+                    VALUES (1, {pr_id}, 0, 0, 1, 0);"
+            ))
+            .unwrap();
+            ids.push(pr_id);
+        }
+        ids
+    }
+
+    fn count_unread_relations(conn: &Connection, account_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND read_at IS NULL",
+            params![account_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn mark_view_read_flips_every_pr_in_the_view() {
+        let conn = fresh_db();
+        let ids = seed_n_watching_prs(&conn, 4);
+        assert_eq!(count_unread_relations(&conn, 1), 4, "fixture is unread");
+
+        let marked = mark_view_read(&conn, DashboardView::Watching, Some(1), &[]).unwrap();
+        assert_eq!(marked, 4, "every PR in the view contributes one");
+        assert_eq!(
+            count_unread_relations(&conn, 1),
+            0,
+            "no unread relations after the bulk flip"
+        );
+
+        // Per-row read fields match the per-row `mark_read` shape.
+        for pr_id in ids {
+            let (read_at, read_pr_updated_at, mentioned, watermark): (
+                Option<i64>,
+                Option<i64>,
+                i64,
+                Option<i64>,
+            ) = conn
+                .query_row(
+                    "SELECT read_at, read_pr_updated_at,
+                            mentioned_count_unread, mention_scan_watermark_at
+                       FROM pull_request_viewer_relations
+                      WHERE account_id = 1 AND pull_request_id = ?1",
+                    params![pr_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert!(read_at.is_some(), "read_at set for pr {pr_id}");
+            assert_eq!(
+                read_pr_updated_at,
+                Some(1_000_000),
+                "read_pr_updated_at snapshots pr.updated_at for pr {pr_id}"
+            );
+            assert_eq!(mentioned, 0, "mention counter cleared for pr {pr_id}");
+            assert!(
+                watermark.is_some(),
+                "mention scan watermark advanced for pr {pr_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn mark_view_read_returns_zero_on_empty_view() {
+        let conn = fresh_db();
+        // Account exists but no PRs.
+        conn.execute(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0)",
+            [],
+        )
+        .unwrap();
+        let marked = mark_view_read(&conn, DashboardView::Authored, Some(1), &[]).unwrap();
+        assert_eq!(marked, 0);
+    }
+
+    #[test]
+    fn mark_view_read_clears_attention_when_only_signal_was_mention() {
+        let conn = fresh_db();
+        let ids = seed_n_watching_prs(&conn, 1);
+        let pr_id = ids[0];
+        // Seed a mention counter + needs_attention precomputed off the counter.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET mentioned_count_unread = 3, needs_attention = 1
+              WHERE account_id = 1 AND pull_request_id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+
+        mark_view_read(&conn, DashboardView::Watching, Some(1), &[]).unwrap();
+
+        let (mentioned, needs_attention): (i64, i64) = conn
+            .query_row(
+                "SELECT mentioned_count_unread, needs_attention
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mentioned, 0);
+        assert_eq!(
+            needs_attention, 0,
+            "read flip drops the only attention signal"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_keeps_attention_when_other_signals_still_fire() {
+        let conn = fresh_db();
+        // Author == viewer + unresolved involved thread keeps signal 1 firing
+        // even after the read flip (mentions go to zero, but threads stay).
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'alice', 'web', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'alice', 0, 1_000_000, 'main', 'feat');
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (5001, 100, 0, 0, 'RT_seed');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (6001, 5001, 'alice', 'note', 1);
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at, mentioned_count_unread,
+                 needs_attention)
+                VALUES (1, 100, 1, 0, 0, 0, 4, 1);",
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Authored, Some(1), &[]).unwrap();
+        assert_eq!(marked, 1);
+
+        let needs_attention: i64 = conn
+            .query_row(
+                "SELECT needs_attention FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            needs_attention, 1,
+            "thread-driven signal still fires after the mention flip"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_scopes_to_active_view_only() {
+        // Two PRs: one Authored, one Watching. mark_view_read on the Authored
+        // view must only touch the authored relation; the watching one stays
+        // unread.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'alice', 'web', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'authored', 'open', 0, 'alice', 0, 1, 'main', 'feat'),
+                (200, 10, 2, 'watching', 'open', 0, 'bob',   0, 1, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at) VALUES
+                (1, 100, 1, 0, 0, 0),
+                (1, 200, 0, 0, 1, 0);",
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Authored, Some(1), &[]).unwrap();
+        assert_eq!(marked, 1, "only the authored PR matched");
+
+        let authored_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let watching_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 200",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(authored_read_at.is_some(), "authored PR is now read");
+        assert!(
+            watching_read_at.is_none(),
+            "watching PR untouched - the view did not admit it"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_respects_chip_filter() {
+        // Seed two Watching PRs: PR 100 is a draft, PR 200 is not. With the
+        // Drafts chip active, only PR 100 should be marked.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'alice', 'web', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref) VALUES
+                (100, 10, 1, 'draft',    'open', 1, 'bob', 0, 1, 'main', 'feat'),
+                (200, 10, 2, 'nondraft', 'open', 0, 'bob', 0, 1, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at) VALUES
+                (1, 100, 0, 0, 1, 0),
+                (1, 200, 0, 0, 1, 0);",
+        )
+        .unwrap();
+
+        let marked =
+            mark_view_read(&conn, DashboardView::Watching, Some(1), &[ChipKey::Drafts]).unwrap();
+        assert_eq!(marked, 1, "only the draft PR is admitted by the chip");
+
+        let draft_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let nondraft_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 200",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(draft_read_at.is_some(), "draft PR marked read");
+        assert!(
+            nondraft_read_at.is_none(),
+            "non-draft PR stays unread - the chip filtered it out"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_excludes_archived_rows() {
+        // Default view (Watching) hides archived rows. mark_view_read must not
+        // touch them either.
+        let conn = fresh_db();
+        let ids = seed_n_watching_prs(&conn, 2);
+        // Archive the second PR's relation.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE account_id = 1 AND pull_request_id = ?1",
+            params![ids[1]],
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Watching, Some(1), &[]).unwrap();
+        assert_eq!(marked, 1, "archived row excluded from the active view");
+
+        let unarchived_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![ids[0]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let archived_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![ids[1]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(unarchived_read_at.is_some());
+        assert!(
+            archived_read_at.is_none(),
+            "archived row stays unread - the active view never showed it"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_works_on_archive_view() {
+        // Archive view: an archived PR should still be markable as read. The
+        // user can hit the archive surface and clear unread dots on archived
+        // rows.
+        let conn = fresh_db();
+        let ids = seed_n_watching_prs(&conn, 2);
+        // Archive both PRs.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET archived_at = strftime('%s','now')
+              WHERE account_id = 1",
+            [],
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Archive, Some(1), &[]).unwrap();
+        assert_eq!(marked, 2, "both archived PRs flip to read");
+
+        for pr_id in ids {
+            let read_at: Option<i64> = conn
+                .query_row(
+                    "SELECT read_at FROM pull_request_viewer_relations
+                      WHERE account_id = 1 AND pull_request_id = ?1",
+                    params![pr_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(read_at.is_some(), "archived PR {pr_id} is now read");
+        }
+    }
+
+    #[test]
+    fn mark_view_read_unified_mode_fans_across_relation_owners() {
+        // Two accounts share a PR via Authored (account 1) and Watching
+        // (account 2) relations. Authored union mode admits the PR; both
+        // relations should flip to read.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'a', 'github.com', 'alice', 0),
+                (2, 'b', 'github.com', 'bob',   0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'alice', 'web', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 'shared', 'open', 0, 'someone-else',
+                        0, 1_000_000, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at) VALUES
+                (1, 100, 1, 0, 0, 0),
+                (2, 100, 0, 0, 1, 0);",
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Authored, None, &[]).unwrap();
+        assert_eq!(
+            marked, 1,
+            "one distinct PR (matched via alice's authored relation)"
+        );
+
+        let alice_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let bob_read_at: Option<i64> = conn
+            .query_row(
+                "SELECT read_at FROM pull_request_viewer_relations
+                  WHERE account_id = 2 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(alice_read_at.is_some(), "alice's relation flipped");
+        assert!(
+            bob_read_at.is_some(),
+            "unified mode fans the flip to bob's relation too"
+        );
+    }
+
+    #[test]
+    fn mark_view_read_does_not_upsert_tracked_view_pr_without_relation() {
+        // Tracked view shows PRs from tracked repos even without a relation
+        // row. mark_view_read must not UPSERT - the per-row mark_pr_read is
+        // the right tool for that case.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility, is_tracked)
+                VALUES (10, 1, 'alice', 'web', 'public', 1);
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'bob', 0, 1, 'main', 'feat');",
+        )
+        .unwrap();
+
+        let marked = mark_view_read(&conn, DashboardView::Tracked, Some(1), &[]).unwrap();
+        assert_eq!(marked, 0, "no relation rows to flip");
+
+        let rel_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rel_count, 0, "mark_view_read must not UPSERT");
     }
 }

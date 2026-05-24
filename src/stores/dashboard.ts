@@ -545,6 +545,53 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   /**
+   * Mark every PR in the active view + chip filter as read (issue #336). The
+   * backend takes the same `(view, chips, account_id)` tuple the dashboard
+   * list query uses, so the user marks what they see.
+   *
+   * Optimistic flip: every visible row's `unread` + `mentioned_count_unread`
+   * are cleared in-memory before the round-trip lands. The post-write reload
+   * reconciles `needs_attention` and the canonical counters; the next sync
+   * cycle can re-raise an unread state if a comment lands between the click
+   * and the reload, which is the same race the per-row flip already accepts.
+   *
+   * Returns the number of distinct PRs the backend touched - the caller can
+   * fold the value into a toast or status copy without reading it out of the
+   * store.
+   */
+  async function markViewRead(): Promise<number> {
+    const targetView = view.value;
+    const chips = Array.from(activeChips.value);
+    markVisibleRowsReadOptimistically();
+    try {
+      const marked = await invoke<number>("mark_view_read", {
+        view: targetView,
+        accountId: accountScope.value,
+        chips,
+      });
+      return marked;
+    } finally {
+      await load();
+    }
+  }
+
+  /**
+   * Optimistically flip the in-memory `unread` / `mentioned_count_unread`
+   * fields on every visible row. The reload that follows reads the canonical
+   * state; this just keeps the dashboard from showing stale dots in the
+   * window between the invoke and the refresh.
+   */
+  function markVisibleRowsReadOptimistically(): void {
+    let touched = false;
+    const next = pullRequests.value.map((row) => {
+      if (!row.unread && row.mentioned_count_unread === 0) return row;
+      touched = true;
+      return { ...row, unread: false, mentioned_count_unread: 0 };
+    });
+    if (touched) pullRequests.value = next;
+  }
+
+  /**
    * Archive a PR across the relations the viewer holds for it. The Tauri
    * command takes a single (account, PR) pair so the fan-out happens here:
    * one parallel invoke per relation owner mirrors the Rust mark-read multi
@@ -760,6 +807,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setSearchQuery,
     clearFilters,
     markPullRequestUnread,
+    markViewRead,
     archive,
     unarchive,
     archiveError,

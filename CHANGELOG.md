@@ -12,6 +12,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 
 - Auto-update toggle in Settings, opt-in by default (#308).
 - In-app "What's new" dialog (#305).
+- "Mark all read" action in the dashboard header clears unread / mention state on every PR matching the active view + chip filter (#336).
 
 ### Changed
 
