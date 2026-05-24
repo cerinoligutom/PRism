@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import AppShell from "@/components/AppShell.vue";
 import PRismToastViewport from "@/components/ui/PRismToastViewport.vue";
@@ -15,10 +15,18 @@ import {
   type ChangelogEntry,
 } from "@/lib/changelog";
 import { useAppSettings } from "@/stores/settings";
+import { useConversationStore } from "@/stores/conversation";
 
 useKeyboardShortcuts();
 useNotificationRouter();
 useDeepLinkRouter();
+
+// Bind the conversation cache to `sync://status` once at app scope so it
+// stays subscribed across drawer / route navigation (issue #337). The store
+// owns the listener lifecycle via `useTauriListener`; `unbind()` on app
+// teardown releases the registration.
+const conversation = useConversationStore();
+void conversation.bind();
 
 // In-app "What's new" wiring (ADR 0025).
 //
@@ -89,6 +97,10 @@ async function maybeEvaluateGate(): Promise<void> {
     dialogEntries.value = slice;
   }
 }
+
+onBeforeUnmount(() => {
+  conversation.unbind();
+});
 
 async function handleDismiss(): Promise<void> {
   const current = currentVersion.value;

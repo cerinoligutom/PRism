@@ -109,6 +109,7 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
         :max="max"
         size="sm"
         layout="overlap"
+        :overflow-tooltip="false"
       >
         <template #avatar="{ user }">
           <PRismAvatar
