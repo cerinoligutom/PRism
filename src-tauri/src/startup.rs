@@ -115,12 +115,12 @@ fn write_startup_log(body: &str) -> Option<PathBuf> {
     let path = resolve_log_path()?;
     if let Some(parent) = path.parent() {
         if let Err(err) = fs::create_dir_all(parent) {
-            eprintln!("startup: create {} failed: {err}", parent.display());
+            tracing::error!(path = %parent.display(), %err, "startup: create log dir failed");
             return None;
         }
     }
     if let Err(err) = fs::write(&path, body) {
-        eprintln!("startup: write {} failed: {err}", path.display());
+        tracing::error!(path = %path.display(), %err, "startup: write log failed");
         return None;
     }
     Some(path)
@@ -144,7 +144,7 @@ fn show_failure_dialog(body: &str) {
 /// after this returns.
 pub fn report_failure(err: &(dyn Error + 'static)) {
     let body = format_error(err);
-    eprintln!("PRism failed to start: {body}");
+    tracing::error!(%body, "PRism failed to start");
     let dialog_body = match write_startup_log(&body) {
         Some(path) => format!("{body}\n\nDetails written to:\n  {}", path.display()),
         None => body,

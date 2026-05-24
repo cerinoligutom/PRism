@@ -164,7 +164,7 @@ impl AuthState {
         // One-shot import of any pre-#62 accounts.json the user may still
         // have on disk. Best-effort: errors log but don't block startup.
         if let Err(e) = import_legacy_json_if_present(&store, data_dir) {
-            eprintln!("legacy accounts.json import: {e}");
+            tracing::warn!(err = %e, "legacy accounts.json import failed");
         }
         Ok(Self {
             store: Arc::new(store),
@@ -392,7 +392,7 @@ where
         // Metadata refresh failure isn't fatal: the new token is already in
         // the keychain and will work. Log and continue so the user's re-auth
         // doesn't appear to fail because of a side-effect.
-        eprintln!("update_token: refresh metadata: {e}");
+        tracing::warn!(err = %e, "update_token: refresh metadata failed");
     }
 
     Ok(())
@@ -462,7 +462,7 @@ pub fn emit_reauth_required<R: Runtime>(app: &AppHandle<R>, account: &Account) {
         label: account.label.clone(),
     };
     if let Err(e) = app.emit(REAUTH_EVENT, payload) {
-        eprintln!("failed to emit {REAUTH_EVENT}: {e}");
+        tracing::warn!(event = REAUTH_EVENT, err = %e, "failed to emit reauth event");
     }
 }
 
@@ -485,7 +485,7 @@ fn secret_as_str(secret: &SecretString) -> &str {
 }
 
 fn internal(message: &str) -> AuthCommandError {
-    eprintln!("auth internal error: {message}");
+    tracing::error!(message, "auth internal error");
     AuthCommandError::Internal
 }
 

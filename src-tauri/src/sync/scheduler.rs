@@ -75,7 +75,7 @@ pub fn read_persisted_interval(db: &DbHandle) -> Option<u64> {
     let conn = match lock_db(db) {
         Ok(conn) => conn,
         Err(err) => {
-            eprintln!("sync: read persisted interval — db lock failed: {err}");
+            tracing::error!(%err, "sync: read persisted interval - db lock failed");
             return None;
         }
     };
@@ -87,7 +87,7 @@ pub fn read_persisted_interval(db: &DbHandle) -> Option<u64> {
         Ok(secs) if secs > 0 => Some(clamp_interval(secs as u64)),
         Ok(_) => None,
         Err(err) => {
-            eprintln!("sync: read persisted interval — query failed: {err}");
+            tracing::warn!(%err, "sync: read persisted interval - query failed");
             None
         }
     }

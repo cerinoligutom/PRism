@@ -44,6 +44,8 @@ keyring = { version = "3.6", default-features = false, features = ["apple-native
 # portal backend has no message-dialog API and we only need the synchronous
 # `MessageDialog::show()`. GTK3 is already a transitive Tauri 2 dep on Linux.
 rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 wiremock = "0.6"

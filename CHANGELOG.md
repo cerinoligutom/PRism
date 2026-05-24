@@ -19,6 +19,8 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 
 ### Changed
 
+- Backend logs now flow through the `tracing` crate; default level is `warn` and `RUST_LOG` overrides apply (#334).
+
 ### Deprecated
 
 ### Removed

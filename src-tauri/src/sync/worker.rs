@@ -93,9 +93,9 @@ impl<R: tauri::Runtime> EmitSink for AppHandleEmitter<R> {
     fn emit(&self, event: &str, payload: &serde_json::Value) {
         use tauri::Emitter;
         if let Err(err) = self.handle.emit(event, payload) {
-            // Logged, not propagated — a failed emission must not stall the
+            // Logged, not propagated - a failed emission must not stall the
             // sync loop (the next tick will publish a fresh status anyway).
-            eprintln!("sync emit {event} failed: {err}");
+            tracing::warn!(event, %err, "sync emit failed");
         }
     }
 }
@@ -303,7 +303,7 @@ pub fn spawn_worker(ctx: WorkerContext) -> WorkerHandle {
     let accounts = match ctx.accounts.list() {
         Ok(list) => list,
         Err(err) => {
-            eprintln!("sync worker: failed to list accounts on startup: {err}");
+            tracing::error!(%err, "sync worker: failed to list accounts on startup");
             Vec::new()
         }
     };
@@ -800,7 +800,7 @@ pub async fn run_one_cycle(
         Err(err) => {
             // A prune failure is logged, not fatal: stale rows are merely cosmetic
             // and the next cycle's prune will retry.
-            eprintln!("sync prune (account {}): {err}", account.id);
+            tracing::warn!(account_id = account.id, %err, "sync prune failed");
             0
         }
     };
@@ -846,10 +846,9 @@ pub async fn run_one_cycle(
 }
 
 /// Wrap [`crate::triage::query::auto_archive_sweep`] in a transaction and
-/// log the affected row count at INFO level (the project's `eprintln!` is
-/// the current logging convention; structured `tracing` is on the M7
-/// polish list). A failure inside the sweep is logged and swallowed: the
-/// archive sweep is cosmetic and the next cycle retries.
+/// log the affected row count at INFO level. A failure inside the sweep is
+/// logged and swallowed: the archive sweep is cosmetic and the next cycle
+/// retries.
 ///
 /// Reads `app_settings.auto_archive_days` (issue #333) so the sweep window
 /// follows the user's Settings -> Sync choice. The settings load happens
@@ -859,14 +858,14 @@ fn run_auto_archive_sweep(db: &DbHandle) {
     let mut conn = match db.lock() {
         Ok(g) => g,
         Err(err) => {
-            eprintln!("auto-archive sweep: db poisoned: {err}");
+            tracing::error!(%err, "auto-archive sweep: db poisoned");
             return;
         }
     };
     let tx = match conn.transaction() {
         Ok(tx) => tx,
         Err(err) => {
-            eprintln!("auto-archive sweep: begin tx: {err}");
+            tracing::error!(%err, "auto-archive sweep: begin tx failed");
             return;
         }
     };
@@ -877,22 +876,22 @@ fn run_auto_archive_sweep(db: &DbHandle) {
     ) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("auto-archive sweep: read window: {err}");
+            tracing::warn!(%err, "auto-archive sweep: read window failed");
             return;
         }
     };
     let archived = match crate::triage::query::auto_archive_sweep(&tx, days) {
         Ok(n) => n,
         Err(err) => {
-            eprintln!("auto-archive sweep: update: {err}");
+            tracing::warn!(%err, "auto-archive sweep: update failed");
             return;
         }
     };
     if let Err(err) = tx.commit() {
-        eprintln!("auto-archive sweep: commit: {err}");
+        tracing::warn!(%err, "auto-archive sweep: commit failed");
         return;
     }
-    eprintln!("auto-archive sweep complete: days={days} archived={archived}");
+    tracing::info!(days, archived, "auto-archive sweep complete");
 }
 
 /// Wrap [`crate::triage::query::archive_retention_sweep`] in a transaction and
@@ -905,30 +904,30 @@ fn run_archive_retention_sweep(db: &DbHandle) {
     let mut conn = match db.lock() {
         Ok(g) => g,
         Err(err) => {
-            eprintln!("archive retention sweep: db poisoned: {err}");
+            tracing::error!(%err, "archive retention sweep: db poisoned");
             return;
         }
     };
     let tx = match conn.transaction() {
         Ok(tx) => tx,
         Err(err) => {
-            eprintln!("archive retention sweep: begin tx: {err}");
+            tracing::error!(%err, "archive retention sweep: begin tx failed");
             return;
         }
     };
     let deleted = match crate::triage::query::archive_retention_sweep(&tx) {
         Ok(n) => n,
         Err(err) => {
-            eprintln!("archive retention sweep: delete: {err}");
+            tracing::warn!(%err, "archive retention sweep: delete failed");
             return;
         }
     };
     if let Err(err) = tx.commit() {
-        eprintln!("archive retention sweep: commit: {err}");
+        tracing::warn!(%err, "archive retention sweep: commit failed");
         return;
     }
     if deleted > 0 {
-        eprintln!("archive retention sweep complete: deleted={deleted}");
+        tracing::info!(deleted, "archive retention sweep complete");
     }
 }
 
@@ -1766,7 +1765,7 @@ fn dispatch_triggers(
         let conn = match db.lock() {
             Ok(g) => g,
             Err(err) => {
-                eprintln!("notify dispatch: db poisoned: {err}");
+                tracing::error!(%err, "notify dispatch: db poisoned");
                 return;
             }
         };
@@ -1778,15 +1777,18 @@ fn dispatch_triggers(
     for (trigger, notification) in formatted {
         match notification {
             Some(n) => {
-                eprintln!(
-                    "notify dispatch: kind={:?} account={} pr={}",
-                    trigger.kind, trigger.account_id, trigger.pull_request_id,
+                tracing::debug!(
+                    kind = ?trigger.kind,
+                    account_id = trigger.account_id,
+                    pull_request_id = trigger.pull_request_id,
+                    "notify dispatch",
                 );
                 sink.dispatch(&n);
             }
-            None => eprintln!(
-                "notify dispatch: skipping, PR row missing (account={}, pr={})",
-                trigger.account_id, trigger.pull_request_id,
+            None => tracing::debug!(
+                account_id = trigger.account_id,
+                pull_request_id = trigger.pull_request_id,
+                "notify dispatch: skipping, PR row missing",
             ),
         }
     }

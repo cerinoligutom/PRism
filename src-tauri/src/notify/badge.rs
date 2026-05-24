@@ -48,8 +48,7 @@ use crate::db::DbHandle;
 const BADGE_MAX: i64 = 999;
 
 /// Push `count` onto the main window's dock badge on macOS. `count == 0`
-/// clears the badge. Non-macOS builds are a no-op (logged at trace level via
-/// `eprintln!` to match the project's current logging convention).
+/// clears the badge. Non-macOS builds are a no-op.
 ///
 /// Counts above [`BADGE_MAX`] are clamped to 999. The macOS dock formats the
 /// number itself; a `set_badge_label` "999+" variant exists, but mixing label
@@ -69,14 +68,14 @@ pub fn update_badge<R: Runtime>(app: &AppHandle<R>, count: i64) {
 fn apply_badge<R: Runtime>(app: &AppHandle<R>, count: i64) {
     use tauri::Manager;
     let Some(window) = app.get_webview_window("main") else {
-        eprintln!("badge: main webview window missing, skipping update");
+        tracing::warn!("badge: main webview window missing, skipping update");
         return;
     };
     // `Some(0)` and `None` both clear the badge per Tauri's docs; pass `None`
     // explicitly so the intent is legible in stack traces.
     let payload = if count > 0 { Some(count) } else { None };
     if let Err(err) = window.set_badge_count(payload) {
-        eprintln!("badge: set_badge_count failed: {err}");
+        tracing::warn!(%err, "badge: set_badge_count failed");
     }
 }
 
@@ -96,11 +95,11 @@ fn apply_badge<R: Runtime>(_app: &AppHandle<R>, _count: i64) {
 pub fn refresh_from_db<R: Runtime>(app: &AppHandle<R>, db: &DbHandle) {
     let count = match db.lock() {
         Ok(conn) => count_global_unread(&conn).unwrap_or_else(|err| {
-            eprintln!("badge: count_global_unread failed: {err}");
+            tracing::error!(%err, "badge: count_global_unread failed");
             0
         }),
         Err(err) => {
-            eprintln!("badge: db poisoned: {err}");
+            tracing::error!(%err, "badge: db poisoned");
             return;
         }
     };

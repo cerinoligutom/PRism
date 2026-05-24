@@ -100,8 +100,9 @@ impl SyncStateMap {
         update: F,
     ) -> AccountSyncState {
         let mut guard = self.inner.lock().unwrap_or_else(|poisoned| {
-            eprintln!(
-                "sync state map: recovered from poisoned mutex during update(account_id={account_id})"
+            tracing::error!(
+                %account_id,
+                "sync state map: recovered from poisoned mutex during update"
             );
             poisoned.into_inner()
         });

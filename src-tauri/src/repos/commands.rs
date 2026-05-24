@@ -138,6 +138,6 @@ fn build_client(
 }
 
 fn internal(message: &str) -> ReposCommandError {
-    eprintln!("repos command internal error: {message}");
+    tracing::error!(message, "repos command internal error");
     ReposCommandError::Internal
 }

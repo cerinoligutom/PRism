@@ -122,7 +122,7 @@ fn parse_timeline_page(bytes: &Bytes) -> Result<Vec<TimelineEvent>, GitHubError>
                     .get("event")
                     .and_then(|v| v.as_str())
                     .unwrap_or("<no event field>");
-                eprintln!("timeline: skipping element with event={kind}: {err}");
+                tracing::debug!(event = kind, %err, "timeline: skipping element");
             }
         }
     }
