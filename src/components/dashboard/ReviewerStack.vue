@@ -200,12 +200,12 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
 </template>
 
 <style scoped>
+/* Content-sized so the tooltip hit area matches the visible avatars; a
+ * stretched grid would extend hover events past the rightmost avatar. */
 .reviewer-stack {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: inline-flex;
   align-items: center;
-  width: 100%;
-  column-gap: 6px;
+  gap: 6px;
 }
 
 .reviewer-stack--empty {
@@ -244,7 +244,13 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* inline-flex so the per-state number spans and the literal "/" separators
+ * share one vertical centre; the previous inline-block layout drifted the
+ * leading digit above the slash baseline on some renderers. */
 .reviewer-stack__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   font-family: var(--font-mono);
   font-size: var(--fs-11);
   color: var(--text-mute);
@@ -258,7 +264,6 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
 .reviewer-stack__summary-changes,
 .reviewer-stack__summary-ok,
 .reviewer-stack__summary-total {
-  display: inline-block;
   min-width: 1.4em;
   text-align: center;
 }

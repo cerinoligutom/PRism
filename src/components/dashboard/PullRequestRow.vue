@@ -1121,6 +1121,7 @@ function onSelectKey(event: KeyboardEvent): void {
 
 .pr-row__time-value {
   display: block;
+  white-space: nowrap;
 }
 
 .pr-row__time-since {
@@ -1129,6 +1130,7 @@ function onSelectKey(event: KeyboardEvent): void {
   letter-spacing: 0.3px;
   display: block;
   margin-top: 1px;
+  white-space: nowrap;
 }
 
 .pr-row__time--stale .pr-row__time-value {
