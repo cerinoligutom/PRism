@@ -239,12 +239,17 @@ pub struct HydratedConversation {
 
 /// One persisted row from `timeline_events`, surfaced through
 /// `list_pr_timeline_events`. The frontend uses `event_type` to pick the
-/// rendering branch and `review_state` to badge `reviewed` events.
+/// rendering branch, `review_state` to badge `reviewed` events, and `subject`
+/// to render the label name / assignee / milestone on the ADR 0027 events.
 ///
-/// `event_type` is the GitHub wire name (`ready_for_review`,
-/// `convert_to_draft`, `review_requested`, `reviewed`, `merged`, `closed`,
-/// `reopened`) per ADR 0007. `review_state` is extracted from the row's
-/// `payload` JSON on `reviewed` events only; other rows return `None`.
+/// `event_type` is the GitHub wire name: the seven ADR 0007 status-change
+/// events (`ready_for_review`, `convert_to_draft`, `review_requested`,
+/// `reviewed`, `merged`, `closed`, `reopened`) plus the ADR 0027 renderable
+/// set (`assigned`, `unassigned`, `labeled`, `unlabeled`, `milestoned`,
+/// `demilestoned`, `head_ref_force_pushed`, `base_ref_changed`, `locked`,
+/// `unlocked`). `review_state` is extracted from the row's `payload` JSON on
+/// `reviewed` events only. `subject` is extracted from the row's `payload`
+/// JSON on the renderable-only events that carry one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEventRecord {
     pub event_type: String,
@@ -256,4 +261,10 @@ pub struct TimelineEventRecord {
     /// Unix seconds.
     pub created_at: i64,
     pub review_state: Option<String>,
+    /// Secondary string for ADR 0027 renderable-only events: the label name on
+    /// `labeled` / `unlabeled`, the assignee login on `assigned` /
+    /// `unassigned`, the milestone title on `milestoned` / `demilestoned`.
+    /// `None` for status-change events and for renderable events with no
+    /// secondary subject (e.g. `head_ref_force_pushed`, `locked`).
+    pub subject: Option<String>,
 }

@@ -189,11 +189,17 @@ export interface HydratedConversation {
 
 /**
  * One persisted row from `timeline_events`. Mirrors the Rust
- * `TimelineEventRecord` DTO. The `event_type` is the GitHub wire name per
- * ADR 0007 (`ready_for_review`, `convert_to_draft`, `review_requested`,
- * `reviewed`, `merged`, `closed`, `reopened`). `review_state` is populated
- * only on `reviewed` events (`APPROVED` / `CHANGES_REQUESTED` / `COMMENTED`
- * / `DISMISSED`).
+ * `TimelineEventRecord` DTO. The `event_type` is the GitHub wire name: the
+ * seven ADR 0007 status-change events (`ready_for_review`,
+ * `convert_to_draft`, `review_requested`, `reviewed`, `merged`, `closed`,
+ * `reopened`) plus the ADR 0027 renderable set (`assigned`, `unassigned`,
+ * `labeled`, `unlabeled`, `milestoned`, `demilestoned`,
+ * `head_ref_force_pushed`, `base_ref_changed`, `locked`, `unlocked`).
+ *
+ * `review_state` is populated only on `reviewed` events (`APPROVED` /
+ * `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED`). `subject` is populated on
+ * the ADR 0027 events that carry a secondary string (the label name, the
+ * assignee login, the milestone title).
  */
 export interface TimelineEventRecord {
   readonly event_type: string;
@@ -203,6 +209,8 @@ export interface TimelineEventRecord {
   /** Unix seconds. */
   readonly created_at: number;
   readonly review_state: string | null;
+  /** Secondary string for ADR 0027 renderable events; see Rust DTO. */
+  readonly subject: string | null;
 }
 
 /**

@@ -1,8 +1,7 @@
 //! Derives "latest status change" from a PR's timeline events.
 //!
-//! See ADR 0007 for the policy: a fixed set of qualifying GitHub timeline
-//! event types contribute to PRism's per-PR "time since latest status change"
-//! surface, and the most recent qualifying event wins.
+//! See ADR 0007 for the status-change derivation and ADR 0027 for the wider
+//! renderable set the timeline tab persists.
 
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -12,6 +11,11 @@ use time::OffsetDateTime;
 /// Kept as a closed enum (per ADR 0007's "finite enum" requirement) so the
 /// compiler flags drift if GitHub adds a relevant event type and we forget
 /// to wire it in.
+///
+/// ADR 0027 added a parallel renderable-only set (`labeled`, `assigned`, ...)
+/// that is persisted to `timeline_events` for the tab but deliberately does
+/// not feed `latest_status_change_at`. Those event wire-names return `None`
+/// from `from_wire` below; see [`latest_status_change`] for the consequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualifyingEvent {
     ReadyForReview,
@@ -25,7 +29,11 @@ pub enum QualifyingEvent {
 
 impl QualifyingEvent {
     /// Match GitHub's wire-format event name to a qualifying variant.
-    /// Returns `None` for non-qualifying events (e.g. `labeled`, `assigned`).
+    ///
+    /// Returns `None` for non-qualifying events. That bucket includes both
+    /// pure noise (`subscribed`, `mentioned`) and the ADR 0027 renderable-only
+    /// set (`labeled`, `assigned`, `milestoned`, ...) which is persisted to
+    /// `timeline_events` but must not bump `latest_status_change_at`.
     fn from_wire(event: &str) -> Option<Self> {
         match event {
             "ready_for_review" => Some(Self::ReadyForReview),
@@ -68,6 +76,12 @@ pub struct TimelineEvent {
     /// `COMMENTED`, `DISMISSED`. `None` for non-`reviewed` events.
     #[serde(default)]
     pub review_state: Option<String>,
+    /// Secondary string for renderable-only events (ADR 0027): the label
+    /// name on `labeled` / `unlabeled`, the assignee login on `assigned` /
+    /// `unassigned`, the milestone title on `milestoned` / `demilestoned`.
+    /// `None` for events with no secondary subject.
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 /// The result of derivation: the qualifying event type and its timestamp.
@@ -117,6 +131,7 @@ mod tests {
             actor_login: None,
             actor_avatar_url: None,
             review_state: None,
+            subject: None,
         }
     }
 
@@ -159,6 +174,34 @@ mod tests {
                 latest_status_change(&[evt(kind, ts)]),
                 None,
                 "{kind} should not qualify",
+            );
+        }
+    }
+
+    #[test]
+    fn adr_0027_renderable_only_events_do_not_qualify() {
+        // The ADR 0027 expansion (labels, assignees, milestones, force-pushes,
+        // base-ref changes, lock/unlock) is persisted for the timeline tab but
+        // must not bump `latest_status_change_at` - that would break the
+        // dashboard sort contract from ADR 0007.
+        let ts = datetime!(2026-05-25 09:00:00 UTC);
+        let renderable_only = [
+            "labeled",
+            "unlabeled",
+            "assigned",
+            "unassigned",
+            "milestoned",
+            "demilestoned",
+            "head_ref_force_pushed",
+            "base_ref_changed",
+            "locked",
+            "unlocked",
+        ];
+        for kind in renderable_only {
+            assert_eq!(
+                latest_status_change(&[evt(kind, ts)]),
+                None,
+                "{kind} (ADR 0027) must not qualify as a status change",
             );
         }
     }

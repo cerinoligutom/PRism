@@ -146,11 +146,43 @@ struct RawReviewedUser {
     avatar_url: Option<String>,
 }
 
+/// Assignee subject on `assigned` / `unassigned` events. GitHub nests the
+/// user under `assignee`; we only need the login to surface as the timeline
+/// row's subject (ADR 0027).
+#[derive(Debug, Deserialize)]
+struct RawAssignee {
+    login: String,
+}
+
+/// Label subject on `labeled` / `unlabeled` events. GitHub nests `{ name,
+/// color }` under `label`; we only persist the name for the timeline row.
+#[derive(Debug, Deserialize)]
+struct RawLabel {
+    name: String,
+}
+
+/// Milestone subject on `milestoned` / `demilestoned` events. GitHub nests
+/// `{ title }` under `milestone`; we persist the title as the subject.
+#[derive(Debug, Deserialize)]
+struct RawMilestone {
+    title: String,
+}
+
 /// Wire-shape for one element of the `/issues/{n}/timeline` list.
 ///
-/// The set of variants intentionally mirrors `QualifyingEvent` plus the
-/// `committed` outlier (modelled so we can ignore it explicitly rather than
-/// silently). Unknown events fall through to [`RawTimelineEvent::Other`].
+/// The set of variants covers two groups:
+///
+/// - the seven ADR 0007 status-change events (`ready_for_review`,
+///   `convert_to_draft`, `review_requested`, `reviewed`, `merged`, `closed`,
+///   `reopened`) which drive `latest_status_change_at`, and
+/// - the ADR 0027 renderable-only events (`labeled` / `unlabeled`, `assigned`
+///   / `unassigned`, `milestoned` / `demilestoned`, `head_ref_force_pushed`,
+///   `base_ref_changed`, `locked` / `unlocked`) which only feed the timeline
+///   tab.
+///
+/// `committed` is modelled explicitly so we can ignore it (it carries
+/// `committer.date` rather than `created_at`). Unknown events fall through to
+/// [`RawTimelineEvent::Other`].
 #[derive(Debug, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum RawTimelineEvent {
@@ -210,6 +242,78 @@ enum RawTimelineEvent {
         #[serde(default)]
         actor: Option<RawActor>,
     },
+    Assigned {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        assignee: Option<RawAssignee>,
+    },
+    Unassigned {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        assignee: Option<RawAssignee>,
+    },
+    Labeled {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        label: Option<RawLabel>,
+    },
+    Unlabeled {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        label: Option<RawLabel>,
+    },
+    Milestoned {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        milestone: Option<RawMilestone>,
+    },
+    Demilestoned {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+        #[serde(default)]
+        milestone: Option<RawMilestone>,
+    },
+    HeadRefForcePushed {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+    },
+    BaseRefChanged {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+    },
+    Locked {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+    },
+    Unlocked {
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: OffsetDateTime,
+        #[serde(default)]
+        actor: Option<RawActor>,
+    },
     /// `committed` carries `committer.date` instead of a top-level timestamp
     /// and is not a qualifying status-change event. We model it explicitly to
     /// document the carve-out; deserialisation tolerates the missing
@@ -256,6 +360,7 @@ impl RawTimelineEvent {
                     actor_login,
                     actor_avatar_url,
                     review_state: state.map(|s| s.to_uppercase()),
+                    subject: None,
                 })
             }
             Self::Merged { created_at, actor } => {
@@ -266,6 +371,84 @@ impl RawTimelineEvent {
             }
             Self::Reopened { created_at, actor } => {
                 Some(event_from_actor("reopened", created_at, actor, None))
+            }
+            Self::Assigned {
+                created_at,
+                actor,
+                assignee,
+            } => Some(event_with_subject(
+                "assigned",
+                created_at,
+                actor,
+                assignee.map(|a| a.login),
+            )),
+            Self::Unassigned {
+                created_at,
+                actor,
+                assignee,
+            } => Some(event_with_subject(
+                "unassigned",
+                created_at,
+                actor,
+                assignee.map(|a| a.login),
+            )),
+            Self::Labeled {
+                created_at,
+                actor,
+                label,
+            } => Some(event_with_subject(
+                "labeled",
+                created_at,
+                actor,
+                label.map(|l| l.name),
+            )),
+            Self::Unlabeled {
+                created_at,
+                actor,
+                label,
+            } => Some(event_with_subject(
+                "unlabeled",
+                created_at,
+                actor,
+                label.map(|l| l.name),
+            )),
+            Self::Milestoned {
+                created_at,
+                actor,
+                milestone,
+            } => Some(event_with_subject(
+                "milestoned",
+                created_at,
+                actor,
+                milestone.map(|m| m.title),
+            )),
+            Self::Demilestoned {
+                created_at,
+                actor,
+                milestone,
+            } => Some(event_with_subject(
+                "demilestoned",
+                created_at,
+                actor,
+                milestone.map(|m| m.title),
+            )),
+            Self::HeadRefForcePushed { created_at, actor } => Some(event_with_subject(
+                "head_ref_force_pushed",
+                created_at,
+                actor,
+                None,
+            )),
+            Self::BaseRefChanged { created_at, actor } => Some(event_with_subject(
+                "base_ref_changed",
+                created_at,
+                actor,
+                None,
+            )),
+            Self::Locked { created_at, actor } => {
+                Some(event_with_subject("locked", created_at, actor, None))
+            }
+            Self::Unlocked { created_at, actor } => {
+                Some(event_with_subject("unlocked", created_at, actor, None))
             }
             Self::Committed | Self::Other => None,
         }
@@ -288,6 +471,31 @@ fn event_from_actor(
         actor_login,
         actor_avatar_url,
         review_state,
+        subject: None,
+    }
+}
+
+/// Same as [`event_from_actor`] but populates the `subject` field for the
+/// ADR 0027 renderable-only events that carry a secondary string (the label
+/// name on `labeled`, the assignee on `assigned`, the milestone title on
+/// `milestoned`, etc.). Events with no secondary subject pass `None`.
+fn event_with_subject(
+    event: &str,
+    created_at: OffsetDateTime,
+    actor: Option<RawActor>,
+    subject: Option<String>,
+) -> TimelineEvent {
+    let (actor_login, actor_avatar_url) = match actor {
+        Some(a) => (Some(a.login), a.avatar_url),
+        None => (None, None),
+    };
+    TimelineEvent {
+        event: event.into(),
+        created_at,
+        actor_login,
+        actor_avatar_url,
+        review_state: None,
+        subject,
     }
 }
 
@@ -328,9 +536,14 @@ mod tests {
 
     #[test]
     fn unknown_event_types_are_dropped() {
+        // These three are not in the qualifying or renderable sets (the
+        // renderable set was expanded in ADR 0027 but `subscribed`,
+        // `cross-referenced`, and `mentioned` stay out per the ADR's
+        // skipped-events list).
         let json = br#"[
-            { "event": "labeled", "created_at": "2026-05-01T09:00:00Z" },
-            { "event": "assigned", "created_at": "2026-05-01T09:00:00Z" }
+            { "event": "subscribed", "created_at": "2026-05-01T09:00:00Z" },
+            { "event": "mentioned", "created_at": "2026-05-01T09:00:00Z" },
+            { "event": "cross-referenced", "created_at": "2026-05-01T09:00:00Z" }
         ]"#;
         let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
         assert!(events.is_empty());
@@ -423,6 +636,109 @@ mod tests {
         let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, "closed");
+    }
+
+    #[test]
+    fn adr_0027_renderable_events_round_trip() {
+        // ADR 0027: the timeline tab persists this wider set; the subject
+        // column carries the label name / assignee login / milestone title
+        // so the frontend can render the row without re-fetching.
+        let json = br#"[
+            {
+                "event": "assigned",
+                "created_at": "2026-05-25T09:00:00Z",
+                "actor": { "login": "alice" },
+                "assignee": { "login": "bob" }
+            },
+            {
+                "event": "unassigned",
+                "created_at": "2026-05-25T09:01:00Z",
+                "actor": { "login": "alice" },
+                "assignee": { "login": "bob" }
+            },
+            {
+                "event": "labeled",
+                "created_at": "2026-05-25T09:02:00Z",
+                "actor": { "login": "alice" },
+                "label": { "name": "bug", "color": "red" }
+            },
+            {
+                "event": "unlabeled",
+                "created_at": "2026-05-25T09:03:00Z",
+                "actor": { "login": "alice" },
+                "label": { "name": "bug", "color": "red" }
+            },
+            {
+                "event": "milestoned",
+                "created_at": "2026-05-25T09:04:00Z",
+                "actor": { "login": "alice" },
+                "milestone": { "title": "v1.0" }
+            },
+            {
+                "event": "demilestoned",
+                "created_at": "2026-05-25T09:05:00Z",
+                "actor": { "login": "alice" },
+                "milestone": { "title": "v1.0" }
+            },
+            {
+                "event": "head_ref_force_pushed",
+                "created_at": "2026-05-25T09:06:00Z",
+                "actor": { "login": "alice" }
+            },
+            {
+                "event": "base_ref_changed",
+                "created_at": "2026-05-25T09:07:00Z",
+                "actor": { "login": "alice" }
+            },
+            {
+                "event": "locked",
+                "created_at": "2026-05-25T09:08:00Z",
+                "actor": { "login": "alice" }
+            },
+            {
+                "event": "unlocked",
+                "created_at": "2026-05-25T09:09:00Z",
+                "actor": { "login": "alice" }
+            }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        let names: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "assigned",
+                "unassigned",
+                "labeled",
+                "unlabeled",
+                "milestoned",
+                "demilestoned",
+                "head_ref_force_pushed",
+                "base_ref_changed",
+                "locked",
+                "unlocked",
+            ],
+        );
+        // Subject fields are populated from the per-event payload key.
+        assert_eq!(events[0].subject.as_deref(), Some("bob"));
+        assert_eq!(events[2].subject.as_deref(), Some("bug"));
+        assert_eq!(events[4].subject.as_deref(), Some("v1.0"));
+        // Events with no payload-side subject leave the field None.
+        assert!(events[6].subject.is_none());
+        assert!(events[8].subject.is_none());
+    }
+
+    #[test]
+    fn assigned_event_with_missing_assignee_keeps_subject_none() {
+        // GitHub has been observed to omit the nested user payload on rare
+        // edge cases (deleted assignee account, replay of a very old event).
+        // The event must still parse - we keep the row and drop the subject.
+        let json = br#"[
+            { "event": "assigned", "created_at": "2026-05-25T09:00:00Z" }
+        ]"#;
+        let events = parse_timeline_page(&Bytes::from_static(json)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "assigned");
+        assert!(events[0].subject.is_none());
     }
 
     #[test]
