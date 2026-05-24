@@ -190,7 +190,8 @@ function closeDrawer(): void {
 }
 
 async function refresh(): Promise<void> {
-  await dashboard.load();
+  if (sync.aggregate === "syncing") return;
+  await sync.refreshNow(null);
 }
 
 function onDensityUpdate(value: Density): void {

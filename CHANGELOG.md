@@ -33,5 +33,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 ### Fixed
 
 - Conversation drawer / route refreshes in place when a sync cycle completes; cached entries for non-visible PRs drop so the next open re-hydrates (#337).
+- Dashboard "Refresh now" / "Try again" buttons trigger a sync cycle instead of re-running the local DB query, matching the `Cmd/Ctrl+R` keyboard binding (#356).
 
 ### Security
