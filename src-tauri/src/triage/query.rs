@@ -185,23 +185,30 @@ pub fn mark_prs_archived(
 
 /// Run the auto-archive sweep once. Sets `archived_at = now` on every
 /// `pull_request_viewer_relations` row whose underlying PR is closed or
-/// merged. Idempotent: the `archived_at IS NULL` predicate skips
-/// already-archived rows so re-runs produce the same result as the first
-/// run.
+/// merged _and_ has been idle for at least `days` days
+/// (`pull_requests.updated_at < now - days`). Idempotent: the
+/// `archived_at IS NULL` predicate skips already-archived rows so re-runs
+/// produce the same result as the first run.
 ///
-/// Account-agnostic by design (ADR 0018, decision 2 - revised post-M6):
-/// the predicate depends only on `pull_requests.state`, so the sweep
+/// `days` is the per-user inactivity window from
+/// `app_settings.auto_archive_days` (issue #333, default 30 per ADR-0018).
+/// Special-case: `days <= 0` short-circuits to a no-op so the sentinel 0
+/// disables the sweep entirely (manual archive only). Anything else is
+/// passed straight to SQLite's `strftime` modifier as `'-N days'`.
+///
+/// Account-agnostic by design (ADR 0018, decision 2): the predicate
+/// depends only on `pull_requests.state` + `updated_at`, so the sweep
 /// writes across every relation owner in one statement instead of
 /// fanning per-account. Returns the number of rows archived this call.
-///
-/// The original 30-day inactivity TTL was dropped during M6 smoke
-/// feedback: closed/merged PRs are now hidden from default views by a
-/// `pr.state = 'open'` predicate in [`crate::dashboard::query`], so
-/// leaving them around in default views during the 30-day inactivity
-/// window served no UX purpose. Immediate archive routes them straight
-/// to the Archive view, and [`archive_retention_sweep`] hard-deletes
-/// them 60 days later.
-pub fn auto_archive_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
+pub fn auto_archive_sweep(conn: &Connection, days: i64) -> Result<usize, rusqlite::Error> {
+    // 0 (and negative, defensively) means "disable auto-archive". Skip the
+    // UPDATE entirely so the sentinel is a true no-op rather than a
+    // "now - 0 days" predicate that would archive every closed PR
+    // immediately.
+    if days <= 0 {
+        return Ok(0);
+    }
+    let modifier = format!("-{days} days");
     conn.execute(
         "UPDATE pull_request_viewer_relations
             SET archived_at = strftime('%s','now')
@@ -209,8 +216,9 @@ pub fn auto_archive_sweep(conn: &Connection) -> Result<usize, rusqlite::Error> {
             AND pull_request_id IN (
                 SELECT id FROM pull_requests
                  WHERE state IN ('closed', 'merged')
+                   AND updated_at < strftime('%s','now', ?1)
             )",
-        [],
+        params![modifier],
     )
 }
 
@@ -2065,11 +2073,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_archive_sweep_archives_closed_pr_immediately() {
-        // Post-M6: the 30-day inactivity gate was dropped. Closed PRs are
-        // archived on the next sweep regardless of `updated_at`.
+    fn auto_archive_sweep_archives_closed_pr_past_window() {
+        // Default ADR-0018 window (30 days): a closed PR idle for longer
+        // than the window is archived on the next sweep.
         let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "closed", 1);
+        seed_pr_for_archive(&conn, 100, "closed", 45);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, relation_observed_at)
@@ -2078,15 +2086,15 @@ mod tests {
         )
         .unwrap();
 
-        let archived = auto_archive_sweep(&conn).unwrap();
+        let archived = auto_archive_sweep(&conn, 30).unwrap();
         assert_eq!(archived, 1);
         assert!(read_archived_at(&conn, 1, 100).is_some());
     }
 
     #[test]
-    fn auto_archive_sweep_archives_merged_pr_immediately() {
+    fn auto_archive_sweep_archives_merged_pr_past_window() {
         let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "merged", 1);
+        seed_pr_for_archive(&conn, 100, "merged", 45);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, relation_observed_at)
@@ -2095,8 +2103,70 @@ mod tests {
         )
         .unwrap();
 
-        let archived = auto_archive_sweep(&conn).unwrap();
+        let archived = auto_archive_sweep(&conn, 30).unwrap();
         assert_eq!(archived, 1);
+        assert!(read_archived_at(&conn, 1, 100).is_some());
+    }
+
+    #[test]
+    fn auto_archive_sweep_skips_closed_pr_within_window() {
+        // Closed but only 5 days idle: the 30-day window holds it in the
+        // default views so the user can still see it without unarchiving.
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "closed", 5);
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0)",
+            [],
+        )
+        .unwrap();
+
+        let archived = auto_archive_sweep(&conn, 30).unwrap();
+        assert_eq!(archived, 0);
+        assert_eq!(read_archived_at(&conn, 1, 100), None);
+    }
+
+    #[test]
+    fn auto_archive_sweep_zero_days_is_a_no_op() {
+        // Issue #333: `auto_archive_days = 0` disables auto-archive entirely
+        // (manual archive only). Even a closed PR idle for 90 days stays in
+        // the default views.
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "closed", 90);
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0)",
+            [],
+        )
+        .unwrap();
+
+        let archived = auto_archive_sweep(&conn, 0).unwrap();
+        assert_eq!(archived, 0);
+        assert_eq!(read_archived_at(&conn, 1, 100), None);
+    }
+
+    #[test]
+    fn auto_archive_sweep_honours_custom_window() {
+        // 60-day window: a closed PR idle for 45 days stays put; the same
+        // row archives once the user shortens the window to 30.
+        let conn = fresh_db();
+        seed_pr_for_archive(&conn, 100, "closed", 45);
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0)",
+            [],
+        )
+        .unwrap();
+
+        let within = auto_archive_sweep(&conn, 60).unwrap();
+        assert_eq!(within, 0, "45-day-idle PR is inside a 60-day window");
+        assert_eq!(read_archived_at(&conn, 1, 100), None);
+
+        let beyond = auto_archive_sweep(&conn, 30).unwrap();
+        assert_eq!(beyond, 1, "same PR is past a 30-day window");
         assert!(read_archived_at(&conn, 1, 100).is_some());
     }
 
@@ -2113,7 +2183,7 @@ mod tests {
         )
         .unwrap();
 
-        let archived = auto_archive_sweep(&conn).unwrap();
+        let archived = auto_archive_sweep(&conn, 30).unwrap();
         assert_eq!(archived, 0);
         assert_eq!(read_archived_at(&conn, 1, 100), None);
     }
@@ -2121,7 +2191,7 @@ mod tests {
     #[test]
     fn auto_archive_sweep_is_idempotent() {
         let conn = fresh_db();
-        seed_pr_for_archive(&conn, 100, "closed", 31);
+        seed_pr_for_archive(&conn, 100, "closed", 45);
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, relation_observed_at)
@@ -2130,9 +2200,9 @@ mod tests {
         )
         .unwrap();
 
-        let first = auto_archive_sweep(&conn).unwrap();
+        let first = auto_archive_sweep(&conn, 30).unwrap();
         let first_archived_at = read_archived_at(&conn, 1, 100).expect("archived after first run");
-        let second = auto_archive_sweep(&conn).unwrap();
+        let second = auto_archive_sweep(&conn, 30).unwrap();
         let second_archived_at = read_archived_at(&conn, 1, 100).expect("still archived");
 
         assert_eq!(first, 1, "first sweep archives the matching row");
@@ -2162,7 +2232,7 @@ mod tests {
         )
         .unwrap();
 
-        let archived = auto_archive_sweep(&conn).unwrap();
+        let archived = auto_archive_sweep(&conn, 30).unwrap();
         assert_eq!(archived, 2);
         assert!(read_archived_at(&conn, 1, 100).is_some());
         assert!(read_archived_at(&conn, 2, 100).is_some());

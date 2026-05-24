@@ -31,6 +31,12 @@ use tauri::State;
 use crate::db::DbHandle;
 use crate::settings::types::{AppSettings, NotificationPermissionState};
 
+/// Inclusive cap on the persisted auto-archive window. The migration's
+/// CHECK constraint enforces the same bound, but clamping at the writer
+/// gives a calm clamp-to-edge behaviour for an over-eager UI rather than
+/// a noisy CHECK failure. Issue #333.
+const AUTO_ARCHIVE_DAYS_MAX: i64 = 365;
+
 /// Read the singleton `app_settings` row. Called by the Settings panel and
 /// by the frontend's app-level notification preference store.
 ///
@@ -61,6 +67,7 @@ pub async fn update_app_settings(
     // untouched: the OS-grant lifecycle lives inside the notification sink
     // (ADR 0017 decision 5), and letting the panel echo back a stale state
     // would re-prompt the user on every save.
+    let auto_archive_days = prefs.auto_archive_days.clamp(0, AUTO_ARCHIVE_DAYS_MAX);
     conn.execute(
         "UPDATE app_settings
             SET notifications_enabled = ?1,
@@ -68,6 +75,7 @@ pub async fn update_app_settings(
                 notify_on_mention = ?3,
                 auto_update_enabled = ?4,
                 auto_update_interval_seconds = ?5,
+                auto_archive_days = ?6,
                 updated_at = strftime('%s', 'now')
           WHERE id = 1",
         rusqlite::params![
@@ -76,6 +84,7 @@ pub async fn update_app_settings(
             prefs.notify_on_mention as i64,
             prefs.auto_update_enabled as i64,
             prefs.auto_update_interval_seconds,
+            auto_archive_days,
         ],
     )
     .map_err(|e| format!("update app_settings: {e}"))?;
@@ -216,6 +225,7 @@ mod tests {
     /// [`update_app_settings`].
     fn invoke_update(db: &DbHandle, prefs: AppSettings) -> Result<AppSettings, String> {
         let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let auto_archive_days = prefs.auto_archive_days.clamp(0, AUTO_ARCHIVE_DAYS_MAX);
         conn.execute(
             "UPDATE app_settings
                 SET notifications_enabled = ?1,
@@ -223,6 +233,7 @@ mod tests {
                     notify_on_mention = ?3,
                     auto_update_enabled = ?4,
                     auto_update_interval_seconds = ?5,
+                    auto_archive_days = ?6,
                     updated_at = strftime('%s', 'now')
               WHERE id = 1",
             rusqlite::params![
@@ -231,6 +242,7 @@ mod tests {
                 prefs.notify_on_mention as i64,
                 prefs.auto_update_enabled as i64,
                 prefs.auto_update_interval_seconds,
+                auto_archive_days,
             ],
         )
         .map_err(|e| format!("update app_settings: {e}"))?;
@@ -304,6 +316,7 @@ mod tests {
             // arbitrary values here confirm they don't leak back.
             auto_update_last_check_at: Some(42),
             auto_update_last_failure_message: Some("stale failure".into()),
+            auto_archive_days: 45,
             updated_at: 0,
         };
         let after = invoke_update(&db, payload).expect("update app_settings");
@@ -330,6 +343,10 @@ mod tests {
         assert_eq!(
             after.auto_update_last_failure_message, None,
             "writer must never echo a stale failure message"
+        );
+        assert_eq!(
+            after.auto_archive_days, 45,
+            "auto-archive window persists through the writer (issue #333)"
         );
         assert!(
             after.updated_at > before.updated_at,
@@ -406,6 +423,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         )
@@ -482,5 +500,53 @@ mod tests {
             after.auto_update_last_failure_message.as_deref(),
             Some("manifest 404")
         );
+    }
+
+    /// Build a payload that mutates `auto_archive_days` to `value` while
+    /// leaving the rest at the migration defaults. Keeps the clamp tests
+    /// from carrying noise from unrelated fields.
+    fn payload_with_archive_days(value: i64) -> AppSettings {
+        AppSettings {
+            notifications_enabled: true,
+            notify_on_needs_attention: true,
+            notify_on_mention: true,
+            notification_permission_state: NotificationPermissionState::Unprompted,
+            last_seen_version: None,
+            auto_update_enabled: false,
+            auto_update_interval_seconds: 21600,
+            auto_update_last_check_at: None,
+            auto_update_last_failure_message: None,
+            auto_archive_days: value,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn update_persists_zero_auto_archive_days_to_disable_sweep() {
+        // Issue #333: setting the window to 0 disables the auto-archive
+        // sweep entirely. The writer must accept 0 without clamping it up.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_archive_days(0)).expect("update");
+        assert_eq!(after.auto_archive_days, 0);
+    }
+
+    #[test]
+    fn update_clamps_auto_archive_days_above_cap() {
+        // Defence in depth: the migration's CHECK already caps at 365, but
+        // the writer clamps to the same bound so an over-eager UI never
+        // triggers a CHECK failure on the persist round-trip.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_archive_days(9_999)).expect("update");
+        assert_eq!(after.auto_archive_days, 365);
+    }
+
+    #[test]
+    fn update_clamps_negative_auto_archive_days_to_zero() {
+        // Negative values reach the writer as plain `i64`s from the renderer;
+        // the migration's CHECK rejects them, so clamp to the disable
+        // sentinel rather than surface a CHECK failure.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_archive_days(-7)).expect("update");
+        assert_eq!(after.auto_archive_days, 0);
     }
 }

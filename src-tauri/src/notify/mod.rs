@@ -182,6 +182,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         );
@@ -219,6 +220,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         );
@@ -253,6 +255,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         );
@@ -286,6 +289,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         );
@@ -323,6 +327,7 @@ mod tests {
                 auto_update_interval_seconds: 21600,
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
+                auto_archive_days: 30,
                 updated_at: 0,
             },
         );
