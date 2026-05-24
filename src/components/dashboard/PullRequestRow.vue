@@ -540,6 +540,7 @@ function onSelectKey(event: KeyboardEvent): void {
             :max="3"
             size="sm"
             layout="overlap"
+            :overflow-tooltip="false"
           />
         </span>
         <template #content>

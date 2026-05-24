@@ -2,6 +2,7 @@
 import { computed } from "vue";
 
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 
 /**
  * Reusable avatar-stack primitive. Renders a row of `PRismAvatar`s with
@@ -30,12 +31,20 @@ interface Props {
   /** When set and `users.length > max`, render the first `max - 1` avatars
    * plus a `+N` overflow pill. Undefined or 0 means no overflow - show all. */
   max?: number;
+  /**
+   * Whether the `+N` overflow pill surfaces a tooltip listing the hidden
+   * logins. Defaults to `true`. Set `false` when the consumer wraps the
+   * whole stack in its own outer `PRismTooltip` (e.g. `ReviewerStack`,
+   * the dashboard row account stack) so the pill doesn't double up.
+   */
+  overflowTooltip?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   size: "md",
   layout: "overlap",
   max: undefined,
+  overflowTooltip: true,
 });
 
 const hasOverflow = computed<boolean>(() => {
@@ -49,15 +58,36 @@ const visible = computed<readonly StackUser[]>(() => {
   return props.users.slice(0, Math.max(0, (props.max ?? 0) - 1));
 });
 
-const overflowCount = computed<number>(() => {
-  if (!hasOverflow.value) return 0;
-  return props.users.length - visible.value.length;
+const hidden = computed<readonly StackUser[]>(() => {
+  if (!hasOverflow.value) return [];
+  return props.users.slice(visible.value.length);
 });
+
+const overflowCount = computed<number>(() => hidden.value.length);
 
 /** Total slot count including the overflow pill, drives the z-index ladder. */
 const slotCount = computed<number>(
   () => visible.value.length + (hasOverflow.value ? 1 : 0),
 );
+
+const OVERFLOW_TOOLTIP_INLINE_MAX = 5;
+const OVERFLOW_TOOLTIP_LINE_MAX = 25;
+
+/**
+ * Formats hidden logins for the overflow pill tooltip:
+ * - 1-5: comma-separated on one line.
+ * - 6-25: one login per line.
+ * - >25: first 25 lines + "...and N more" suffix.
+ */
+const overflowTooltipText = computed<string>(() => {
+  const logins = hidden.value.map((u) => u.login);
+  if (logins.length === 0) return "";
+  if (logins.length <= OVERFLOW_TOOLTIP_INLINE_MAX) return logins.join(", ");
+  if (logins.length <= OVERFLOW_TOOLTIP_LINE_MAX) return logins.join("\n");
+  const head = logins.slice(0, OVERFLOW_TOOLTIP_LINE_MAX).join("\n");
+  const remaining = logins.length - OVERFLOW_TOOLTIP_LINE_MAX;
+  return `${head}\n...and ${remaining} more`;
+});
 </script>
 
 <template>
@@ -88,9 +118,14 @@ const slotCount = computed<number>(
       v-if="hasOverflow"
       class="prism-avatar-stack__slot prism-avatar-stack__slot--overflow"
     >
-      <span :class="['prism-avatar-stack__overflow', `prism-avatar-stack__overflow--${size}`]">
-        +{{ overflowCount }}
-      </span>
+      <PRismTooltip :as-child="true" :disabled="!overflowTooltip">
+        <span :class="['prism-avatar-stack__overflow', `prism-avatar-stack__overflow--${size}`]">
+          +{{ overflowCount }}
+        </span>
+        <template #content>
+          <span class="prism-avatar-stack__overflow-tooltip">{{ overflowTooltipText }}</span>
+        </template>
+      </PRismTooltip>
     </span>
   </span>
 </template>
@@ -175,5 +210,17 @@ const slotCount = computed<number>(
   min-width: 28px;
   padding: 0 8px;
   font-size: var(--fs-11);
+}
+</style>
+
+<!--
+  Unscoped because the tooltip content node is teleported to `document.body`
+  by Reka's `TooltipPortal` and Vue's scoped `data-v-*` attribute selectors
+  don't follow it across the portal. The BEM class name is unique enough to
+  not need scoping.
+-->
+<style>
+.prism-avatar-stack__overflow-tooltip {
+  white-space: pre-line;
 }
 </style>
