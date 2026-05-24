@@ -91,6 +91,10 @@ watch(
  * what `synthesisedRows` produces for the equivalent state, so a PR with a
  * fully-populated `timeline_events` table renders the same shape as a PR
  * whose row falls back to the dashboard-DTO heuristic.
+ *
+ * Branches cover the ADR 0007 status-change set + the ADR 0027 renderable
+ * set. Anything else (a future GitHub event type we haven't modelled yet)
+ * falls through to the generic "Updated" label so the row still renders.
  */
 function persistedRow(event: TimelineEventRecord, index: number): TimelineRow {
   const when = event.created_at;
@@ -118,9 +122,55 @@ function persistedRow(event: TimelineEventRecord, index: number): TimelineRow {
       return { ...base, icon: "x", label: "Closed" };
     case "reopened":
       return { ...base, icon: "circle", label: "Reopened" };
+    case "assigned":
+      return { ...base, icon: "dot", label: assigneeLabel("Assigned", event.subject) };
+    case "unassigned":
+      return { ...base, icon: "dot", label: assigneeLabel("Unassigned", event.subject) };
+    case "labeled":
+      return { ...base, icon: "dot", label: subjectLabel("Labelled", event.subject) };
+    case "unlabeled":
+      return { ...base, icon: "dot", label: subjectLabel("Unlabelled", event.subject) };
+    case "milestoned":
+      return { ...base, icon: "dot", label: subjectLabel("Added to milestone", event.subject) };
+    case "demilestoned":
+      return {
+        ...base,
+        icon: "dot",
+        label: subjectLabel("Removed from milestone", event.subject),
+      };
+    case "head_ref_force_pushed":
+      return { ...base, icon: "circle", label: "Force-pushed" };
+    case "base_ref_changed":
+      return { ...base, icon: "circle", label: "Base branch changed" };
+    case "locked":
+      return { ...base, icon: "circle", label: "Locked" };
+    case "unlocked":
+      return { ...base, icon: "circle", label: "Unlocked" };
     default:
-      return { ...base, icon: "circle", label: event.event_type };
+      // Forward-compat fallback for unmodelled GitHub event types (ADR 0027).
+      return { ...base, icon: "circle", label: "Updated" };
   }
+}
+
+/**
+ * `Labelled "bug"` reads better than `Labelled bug`; we quote the subject so
+ * it's visually distinct from the verb. A missing subject (rare: GitHub
+ * occasionally omits the nested payload on replayed legacy events) falls
+ * back to the bare verb.
+ */
+function subjectLabel(verb: string, subject: string | null): string {
+  if (subject === null || subject.length === 0) return verb;
+  return `${verb} "${subject}"`;
+}
+
+/**
+ * `Assigned @bob` reads better than `Assigned "bob"`; assignee subjects are
+ * GitHub logins so the `@` prefix matches the actor convention elsewhere on
+ * the tab. Missing-subject fallback mirrors `subjectLabel`.
+ */
+function assigneeLabel(verb: string, subject: string | null): string {
+  if (subject === null || subject.length === 0) return verb;
+  return `${verb} @${subject}`;
 }
 
 function reviewIcon(state: string | null): Icon {

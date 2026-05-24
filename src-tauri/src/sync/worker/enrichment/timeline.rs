@@ -45,17 +45,29 @@ pub(super) fn write_timeline_events(
 
 /// Build the `payload` JSON column for one timeline event.
 ///
-/// `reviewed` events carry the review state (`APPROVED`, `CHANGES_REQUESTED`,
-/// `COMMENTED`, `DISMISSED`); all other qualifying events produce `{}` because
-/// no auxiliary field exists for them today. Persisting a value rather than
-/// NULL keeps the `payload` column's NOT NULL invariant in 0001_init.sql.
+/// Two optional keys land in the JSON object today:
+///
+/// - `state` on `reviewed` events (`APPROVED`, `CHANGES_REQUESTED`,
+///   `COMMENTED`, `DISMISSED`), already present pre-ADR 0027.
+/// - `subject` on ADR 0027 renderable-only events that carry a secondary
+///   string: the label name on `labeled` / `unlabeled`, the assignee login on
+///   `assigned` / `unassigned`, the milestone title on `milestoned` /
+///   `demilestoned`. Events with no secondary subject (status-change events
+///   and the actor-only force-push / base-ref / lock events) omit the key.
+///
+/// Persisting `{}` rather than NULL when both are absent keeps the column's
+/// NOT NULL invariant in 0001_init.sql.
 pub(super) fn timeline_event_payload(
     event: &crate::sync::status_timeline::TimelineEvent,
 ) -> String {
-    match event.review_state.as_deref() {
-        Some(state) => serde_json::json!({ "state": state }).to_string(),
-        None => "{}".to_string(),
+    let mut obj = serde_json::Map::new();
+    if let Some(state) = event.review_state.as_deref() {
+        obj.insert("state".into(), serde_json::Value::String(state.into()));
     }
+    if let Some(subject) = event.subject.as_deref() {
+        obj.insert("subject".into(), serde_json::Value::String(subject.into()));
+    }
+    serde_json::Value::Object(obj).to_string()
 }
 
 pub(super) fn qualifying_event_wire_name(

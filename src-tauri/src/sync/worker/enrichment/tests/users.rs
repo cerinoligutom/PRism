@@ -90,6 +90,7 @@ fn write_pr_updates_upserts_timeline_actor_avatars() {
         actor_login: Some("carol".into()),
         actor_avatar_url: Some("https://avatars/carol.png".into()),
         review_state: Some("APPROVED".into()),
+        subject: None,
     }];
     write_pr_updates(&db, 1, repo_id, pr_id, None, Some(&events)).unwrap();
     assert_eq!(
