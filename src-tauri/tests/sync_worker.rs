@@ -526,10 +526,11 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
         .unwrap();
     assert_eq!(issue_count, 7);
 
-    // timeline_events: the REST fixture has eight qualifying events
-    // (ready_for_review x 2, review_requested, reviewed, convert_to_draft,
-    // merged, closed, reopened); non-qualifying events (labeled, committed,
-    // assigned) are filtered upstream of persistence.
+    // timeline_events: the REST fixture has ten qualifying events. ADR-0027
+    // (issue #342) adds `labeled` and `assigned` to the renderable set, so
+    // they now persist alongside ready_for_review x 2, review_requested,
+    // reviewed, convert_to_draft, merged, closed, reopened. Only `committed`
+    // is filtered upstream of persistence.
     type TimelineRow = (String, Option<String>, i64, String);
     let timeline_rows: Vec<TimelineRow> = {
         let conn = harness.db.lock().unwrap();
@@ -548,13 +549,15 @@ async fn one_cycle_persists_pr_detail_and_latest_status_change() {
     };
     assert_eq!(
         timeline_rows.len(),
-        8,
-        "eight qualifying events from the REST fixture",
+        10,
+        "ten qualifying events from the REST fixture",
     );
-    // First qualifying event in the fixture is ready_for_review by alice.
-    assert_eq!(timeline_rows[0].0, "ready_for_review");
-    assert_eq!(timeline_rows[0].1.as_deref(), Some("alice"));
-    assert_eq!(timeline_rows[0].3, "{}");
+    // First qualifying event in the fixture is `labeled` (ADR-0027 promotes
+    // label events into the renderable set). The REST `labeled` payload has
+    // no actor field, so `actor_login` is None; the label name lives in the
+    // `subject` field on the payload.
+    assert_eq!(timeline_rows[0].0, "labeled");
+    assert_eq!(timeline_rows[0].3, r#"{"subject":"enhancement"}"#);
     // The `reviewed` event carries its review state in the payload column.
     let reviewed = timeline_rows
         .iter()

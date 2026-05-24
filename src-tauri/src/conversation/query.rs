@@ -563,10 +563,10 @@ pub fn list_reviews(
 /// List persisted timeline events for a PR, ordered by `created_at`.
 ///
 /// `payload` is parsed inline via SQLite's `json_extract` so the DTO carries
-/// the only field the frontend needs (`state` on `reviewed` events) without
-/// dragging the full JSON blob over the IPC boundary. Rows with malformed
-/// payload JSON surface `None` for `review_state` rather than failing the
-/// whole read.
+/// the only two fields the frontend reads (`state` on `reviewed` events, and
+/// `subject` on the ADR 0027 renderable events) without dragging the full
+/// JSON blob over the IPC boundary. Rows with malformed payload JSON surface
+/// `None` for the extracted columns rather than failing the whole read.
 pub fn list_pr_timeline_events(
     conn: &Connection,
     pull_request_id: i64,
@@ -576,7 +576,8 @@ pub fn list_pr_timeline_events(
                 te.actor_login,
                 u.avatar_url,
                 te.created_at,
-                json_extract(te.payload, '$.state') AS review_state
+                json_extract(te.payload, '$.state') AS review_state,
+                json_extract(te.payload, '$.subject') AS subject
            FROM timeline_events te
            LEFT JOIN users u ON u.login = te.actor_login
           WHERE te.pull_request_id = ?1
@@ -589,6 +590,7 @@ pub fn list_pr_timeline_events(
             actor_avatar_url: row.get(2)?,
             created_at: row.get(3)?,
             review_state: row.get(4)?,
+            subject: row.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -613,5 +615,47 @@ mod tests {
     #[test]
     fn resolution_rate_full() {
         assert_eq!(compute_resolution_rate(4, 4), 1.0);
+    }
+
+    #[test]
+    fn list_pr_timeline_events_extracts_review_state_and_subject_from_payload() {
+        // ADR 0027 stores the renderable-event secondary string (label name,
+        // assignee login, milestone title) under `payload.subject`. The query
+        // must extract it via json_extract so the frontend DTO carries it
+        // without dragging the JSON blob across IPC.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'o', 'r', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, '', 0, 0, 'main', 'feat');
+             INSERT INTO timeline_events
+                (pull_request_id, event_type, actor_login, created_at, payload)
+                VALUES
+                 (100, 'reviewed', 'bob', 1000, '{\"state\":\"APPROVED\"}'),
+                 (100, 'labeled', 'alice', 1001, '{\"subject\":\"bug\"}'),
+                 (100, 'head_ref_force_pushed', 'alice', 1002, '{}'),
+                 (100, 'mystery_future_event', 'alice', 1003, '{}');",
+        )
+        .unwrap();
+
+        let rows = list_pr_timeline_events(&conn, 100).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].event_type, "reviewed");
+        assert_eq!(rows[0].review_state.as_deref(), Some("APPROVED"));
+        assert!(rows[0].subject.is_none());
+        assert_eq!(rows[1].event_type, "labeled");
+        assert_eq!(rows[1].subject.as_deref(), Some("bug"));
+        assert!(rows[1].review_state.is_none());
+        assert_eq!(rows[2].event_type, "head_ref_force_pushed");
+        assert!(rows[2].subject.is_none());
+        // Unknown event types persist verbatim and the query surfaces them so
+        // the frontend can fall back to the "Updated" label.
+        assert_eq!(rows[3].event_type, "mystery_future_event");
     }
 }

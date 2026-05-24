@@ -23,6 +23,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 ### Changed
 
 - Backend logs now flow through the `tracing` crate; default level is `warn` and `RUST_LOG` overrides apply (#334).
+- Status timeline tab now renders the wider GitHub event set per ADR-0027: label add/remove, assignee add/remove, milestone add/remove, force-pushes, base-branch changes, and lock/unlock (#342).
 
 ### Deprecated
 

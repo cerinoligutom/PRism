@@ -363,13 +363,16 @@ async fn rest_timeline_deserialises_full_lifecycle() {
         ListTimeline::NotModified => panic!("expected Events, got NotModified"),
     };
 
-    // 11 input events; `committed`, `labeled`, `assigned` are dropped — leaves 8.
+    // 11 input events; `committed` is dropped as non-status noise. ADR-0027
+    // adds `labeled` and `assigned` to the renderable set, so 10 survive.
     let event_names: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
     assert_eq!(
         event_names,
         vec![
+            "labeled",
             "ready_for_review",
             "review_requested",
+            "assigned",
             "reviewed",
             "convert_to_draft",
             "ready_for_review",
