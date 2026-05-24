@@ -29,6 +29,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0017_rename_relation_last_seen_at.sql"),
     include_str!("../../migrations/0018_last_seen_version.sql"),
     include_str!("../../migrations/0019_auto_update_settings.sql"),
+    include_str!("../../migrations/0020_auto_archive_days.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -670,6 +671,73 @@ mod tests {
             .query_row("SELECT id FROM app_settings", [], |row| row.get(0))
             .unwrap();
         assert_eq!(id, 1, "the seeded singleton must be keyed id = 1");
+    }
+
+    #[test]
+    fn auto_archive_days_column_defaults_to_thirty() {
+        // Migration 0020 (issue #333) adds `auto_archive_days` with a default
+        // of 30 to preserve ADR-0018's behaviour on every existing install.
+        let conn = fresh();
+        let days: i64 = conn
+            .query_row(
+                "SELECT auto_archive_days FROM app_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(days, 30);
+    }
+
+    #[test]
+    fn auto_archive_days_check_rejects_negative_value() {
+        // The migration adds `CHECK (auto_archive_days BETWEEN 0 AND 365)` so
+        // a write that bypasses the writer's clamp can't smuggle a negative
+        // window into the column.
+        let conn = fresh();
+        let err = conn
+            .execute(
+                "UPDATE app_settings SET auto_archive_days = -1 WHERE id = 1",
+                [],
+            )
+            .expect_err("CHECK must reject -1");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn auto_archive_days_check_rejects_over_cap_value() {
+        let conn = fresh();
+        let err = conn
+            .execute(
+                "UPDATE app_settings SET auto_archive_days = 366 WHERE id = 1",
+                [],
+            )
+            .expect_err("CHECK must reject 366 (above 365 cap)");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn auto_archive_days_accepts_boundary_values() {
+        let conn = fresh();
+        // Lower boundary: 0 disables the sweep per #333.
+        conn.execute(
+            "UPDATE app_settings SET auto_archive_days = 0 WHERE id = 1",
+            [],
+        )
+        .expect("0 is in range");
+        // Upper boundary: 365 is the documented cap.
+        conn.execute(
+            "UPDATE app_settings SET auto_archive_days = 365 WHERE id = 1",
+            [],
+        )
+        .expect("365 is in range");
     }
 
     #[test]

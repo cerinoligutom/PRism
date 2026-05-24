@@ -37,6 +37,7 @@ async function persistToggle(next: boolean): Promise<void> {
       auto_update_enabled: next,
       auto_update_interval_seconds:
         settings.settings.auto_update_interval_seconds,
+      auto_archive_days: settings.settings.auto_archive_days,
     });
   } catch (err) {
     localError.value = err instanceof Error ? err.message : String(err);

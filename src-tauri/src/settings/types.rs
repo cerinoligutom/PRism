@@ -72,6 +72,18 @@ pub struct AppSettings {
     /// the next successful check. ADR-0024's silent-failure policy: no
     /// toast, no banner, just this line in the Settings panel.
     pub auto_update_last_failure_message: Option<String>,
+    /// Auto-archive inactivity window in days. Defaults to 30 to match
+    /// ADR-0018; the Settings -> Sync panel writes the user-chosen value
+    /// and the sync worker reads it before every auto-archive sweep.
+    ///
+    /// Semantics:
+    ///   * `0` disables the sweep entirely (manual archive only).
+    ///   * `> 0` archives closed / merged PRs after they have been idle
+    ///     (`pull_requests.updated_at`) for that many days.
+    ///
+    /// Clamped to `[0, 365]` by the writer command and by the migration's
+    /// CHECK constraint. Issue #333.
+    pub auto_archive_days: i64,
     /// Unix seconds. Updated by the writer command on every change so the
     /// frontend can show "Updated <relative>" affordances if needed.
     pub updated_at: i64,
@@ -92,6 +104,7 @@ impl AppSettings {
                     auto_update_interval_seconds,
                     auto_update_last_check_at,
                     auto_update_last_failure_message,
+                    auto_archive_days,
                     updated_at
                FROM app_settings
               WHERE id = 1",
@@ -108,7 +121,8 @@ impl AppSettings {
                     auto_update_interval_seconds: row.get(6)?,
                     auto_update_last_check_at: row.get(7)?,
                     auto_update_last_failure_message: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    auto_archive_days: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             },
         )
@@ -156,6 +170,10 @@ mod tests {
         );
         assert_eq!(settings.auto_update_last_check_at, None);
         assert_eq!(settings.auto_update_last_failure_message, None);
+        assert_eq!(
+            settings.auto_archive_days, 30,
+            "auto-archive window defaults to 30 days per ADR-0018 (issue #333)"
+        );
         assert!(settings.updated_at > 0, "updated_at seeded to now()");
     }
 
