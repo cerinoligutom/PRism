@@ -23,7 +23,9 @@ PRism gives developers, reviewers, and engineering leads a single focused dashbo
 
 ## Status
 
-Pre-alpha. Standards and scaffolding are landing first; the M1 application work is queued under the [M1 — Foundations milestone](https://github.com/cerinoligutom/PRism/milestone/1).
+Implementation feature-complete: M1-M7 plus the auto-update and in-app changelog wave are all on `main`. The release pipeline (prepare-release / release.yml / updater manifest) is wired end-to-end and the [Releasing](Releasing) playbook documents the per-release flow.
+
+The v1.0.0 cut is currently **on hold** pending a deferred-polish sweep covering items carried over from M3-M6 (notifications polish, archive polish, internal refactors, and a few smaller surfaces). See [Roadmap → Pre-v1 polish](Roadmap#pre-v1-polish-current-focus) for the active list.
 
 ## Wiki source
 
