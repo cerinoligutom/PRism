@@ -318,6 +318,7 @@ mod windows {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::notify::badge::BADGE_MAX;
 
         #[test]
         fn format_label_under_hundred_renders_decimal() {
