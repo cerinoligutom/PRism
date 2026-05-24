@@ -18,6 +18,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Configurable auto-archive window in Settings -> Sync; defaults to 30 days, 0 disables auto-archive, capped at 365 (#333).
 - Cross-platform unread badge parity: Windows taskbar overlay icon and Linux Unity launcher D-Bus count signal, fed by the same `count_global_unread` query the macOS dock badge already uses (#330).
 - `prism://` custom URL scheme for deep-linking into a specific PR; URL shape `prism://pr/<owner>/<repo>/<number>` with an optional `?host=` query for non-github.com PRs, falling back to opening on GitHub when PRism isn't tracking the PR (#339).
+- Hover tooltip on the `PRismAvatarStack` overflow pill listing the hidden logins, with one-line / per-line / "...and N more" formatting based on count (#341).
 
 ### Changed
 
