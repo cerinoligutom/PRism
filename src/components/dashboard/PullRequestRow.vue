@@ -54,6 +54,13 @@ interface Props {
    * keep the original Archive affordance.
    */
   isArchiveView?: boolean;
+  /**
+   * True when the row is the current target for keyboard-shortcut actions
+   * (e.g. `E` to archive). Renders a subtle outline so the user can see
+   * which row a hotkey will operate on. Independent of the browser's
+   * `:focus-visible` ring on the underlying `<article role="button">`.
+   */
+  focused?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -63,6 +70,7 @@ const props = withDefaults(defineProps<Props>(), {
   accountsById: () => new Map<number, AccountMarker>(),
   singleAccountScope: false,
   isArchiveView: false,
+  focused: false,
 });
 
 const emit = defineEmits<{
@@ -284,7 +292,9 @@ function onUnarchive(): void {
       `pr-row--${density}`,
       needsAttention && 'pr-row--attention',
       unread && 'pr-row--unread',
+      focused && 'pr-row--focused',
     ]"
+    :data-row-pr-id="pullRequest.id"
     role="button"
     tabindex="0"
     @click="onClick"
@@ -717,6 +727,20 @@ function onUnarchive(): void {
 }
 
 .pr-row--attention:hover {
+  background: var(--attention-tint-hover);
+}
+
+/* Keyboard-targeted row. The inset outline reads as a focus ring without
+ * stealing space from the row's grid, so the highlight doesn't shift the
+ * adjacent rows. The browser's `:focus-visible` ring stacks on top when
+ * the underlying element is tab-focused, so click + hotkey share the cue. */
+.pr-row--focused {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  background: var(--bg-2);
+}
+
+.pr-row--focused.pr-row--attention {
   background: var(--attention-tint-hover);
 }
 

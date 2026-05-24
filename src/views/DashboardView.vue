@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
@@ -167,6 +167,9 @@ function openPullRequest(pr: DashboardPullRequest): void {
   // Reka's DialogContent captures `document.activeElement` on mount as the
   // restore target, then refocuses it on unmount — so the row that emitted
   // `open` keeps focus when the drawer dismisses without us tracking it.
+  // Also sync the keyboard-targeted focus so `E` immediately after a click
+  // or Enter activates the same PR the user opened.
+  dashboard.setFocusedPullRequest(pr.id);
   dashboard.openPullRequest(pr, router);
 }
 
@@ -325,6 +328,26 @@ onBeforeUnmount(() => {
 watch(() => route.meta?.dashboardView, () => {
   void syncFromRoute();
 });
+
+/**
+ * Scroll the keyboard-focused row into view when the focus id changes via
+ * arrow keys. `block: 'nearest'` keeps in-viewport rows put; only off-screen
+ * targets trigger a scroll. `behavior: 'instant'` avoids queuing animations
+ * when the user holds ArrowDown - rapid presses snap instead of chase.
+ * The `nextTick` defers until the row's `pr-row--focused` paint lands so
+ * the selector resolves against the just-flipped DOM.
+ */
+watch(
+  () => dashboard.focusedPullRequestId,
+  async (id) => {
+    if (id === null) return;
+    await nextTick();
+    const row = document.querySelector(`[data-row-pr-id="${id}"]`);
+    if (row !== null) {
+      row.scrollIntoView({ block: "nearest", behavior: "instant" });
+    }
+  },
+);
 </script>
 
 <template>
@@ -540,6 +563,7 @@ watch(() => route.meta?.dashboardView, () => {
             :accounts-by-id="accountMarkersById"
             :single-account-scope="isSingleAccountScope"
             :is-archive-view="isArchiveView"
+            :focused="pr.id === dashboard.focusedPullRequestId"
             @open="openPullRequest"
             @mark-unread="onMarkUnread"
             @archive="onArchive"

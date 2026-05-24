@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { useSyncStore, type SyncPhase } from "@/stores/sync";
 import { useAccountsStore } from "@/stores/accounts";
+import { useDashboardStore } from "@/stores/dashboard";
 import { useSyncActivityStore } from "@/stores/syncActivity";
 import { usePlatformModifier } from "@/composables/usePlatformModifier";
 import { useAppMetadata } from "@/composables/useAppMetadata";
@@ -13,7 +14,9 @@ import { formatDuration } from "@/lib/format";
 
 const sync = useSyncStore();
 const accounts = useAccountsStore();
+const dashboard = useDashboardStore();
 const syncActivity = useSyncActivityStore();
+const route = useRoute();
 
 function loginForAccount(accountId: number | null): string | null {
   if (accountId === null) return null;
@@ -160,6 +163,19 @@ const budgetLabel = computed<string | null>(() => {
 // Refresh-shortcut glyph matches the binding installed by `useKeyboardShortcuts`.
 const refreshGlyph = usePlatformModifier();
 
+/**
+ * Hint visibility + copy for the `E` archive shortcut. Only meaningful while
+ * a dashboard route is active and a row is focused; otherwise the keystroke
+ * is a no-op, so showing the hint would be misleading. Wording flips on the
+ * Archive view to "Unarchive" because the same key drives the inverse write.
+ */
+const archiveHint = computed<{ show: boolean; label: string } | null>(() => {
+  const view = typeof route.meta?.dashboardView === "string" ? route.meta.dashboardView : null;
+  if (view === null) return null;
+  const label = view === "archive" ? "Unarchive" : "Archive";
+  return { show: dashboard.focusedPullRequestId !== null, label };
+});
+
 const { metadata } = useAppMetadata();
 
 /**
@@ -212,6 +228,11 @@ const versionTooltip = computed<string>(() => {
     <span class="status-bar__spacer" />
     <!-- Cmd+K Search and Cmd+, Settings hints land with their M7 bindings. -->
     <!-- <span class="status-bar__item status-bar__item--hint"><kbd>⌘</kbd><kbd>K</kbd> Search</span> -->
+    <span
+      v-if="archiveHint?.show"
+      class="status-bar__item status-bar__item--hint"
+      :class="{ 'status-bar__item--hint-disabled': summary.phase === 'syncing' }"
+    ><kbd>E</kbd> {{ archiveHint.label }}</span>
     <span
       class="status-bar__item status-bar__item--hint"
       :class="{ 'status-bar__item--hint-disabled': summary.phase === 'syncing' }"

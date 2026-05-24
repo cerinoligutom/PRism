@@ -237,6 +237,14 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // reads this ref directly to decide its open state.
   const expandedPullRequestId = ref<number | null>(null);
 
+  // Row receiving keyboard-shortcut targeting (e.g. `E` to archive). `null`
+  // means no row is focused, in which case row-targeted shortcuts no-op. The
+  // ref tracks the PR id so it survives sort and chip churn that reorders
+  // the underlying list; the `groups` computed restores the highlight as
+  // long as the PR is still visible. Reset on view change so the next view
+  // starts unfocused rather than inheriting a stale id from the previous one.
+  const focusedPullRequestId = ref<number | null>(null);
+
   // Session-local collapsed groups, keyed by the bucket key produced in the
   // `groups` computed. Survives navigation between views (the store lives for
   // the app session) but not a full app restart. Durable persistence across
@@ -249,6 +257,38 @@ export const useDashboardStore = defineStore("dashboard", () => {
     if (collapsed) next.add(bucketKey);
     else next.delete(bucketKey);
     collapsedGroups.value = next;
+  }
+
+  function setFocusedPullRequest(id: number | null): void {
+    focusedPullRequestId.value = id;
+  }
+
+  /**
+   * Advance the focus through the visible rows in the order they appear in
+   * `groups` (the post-search, post-chip projection - what the user sees).
+   * `delta = 1` moves down, `-1` moves up. With no focus yet, the first call
+   * lands on the first row going forward or the last going back. Clamps at
+   * each end rather than wrapping so the highlight doesn't "teleport" past
+   * the visible list edges.
+   */
+  function moveFocus(delta: 1 | -1): void {
+    const order = visibleRowIds.value;
+    if (order.length === 0) {
+      focusedPullRequestId.value = null;
+      return;
+    }
+    const current = focusedPullRequestId.value;
+    if (current === null) {
+      focusedPullRequestId.value = delta === 1 ? order[0]! : order[order.length - 1]!;
+      return;
+    }
+    const idx = order.indexOf(current);
+    if (idx === -1) {
+      focusedPullRequestId.value = delta === 1 ? order[0]! : order[order.length - 1]!;
+      return;
+    }
+    const next = Math.max(0, Math.min(order.length - 1, idx + delta));
+    focusedPullRequestId.value = order[next]!;
   }
 
   const listener = useTauriListener();
@@ -329,6 +369,23 @@ export const useDashboardStore = defineStore("dashboard", () => {
   });
 
   const counts = computed(() => ({ ...viewCounts.value }));
+
+  /**
+   * Flat list of PR ids in the order they render across `groups`. Drives
+   * arrow-key focus traversal so the highlight follows the same buckets the
+   * user reads, including collapsed groups (whose ids stay in order but
+   * aren't visually present - moving onto them feels right because the
+   * collapse is a session-level affordance, not a content filter).
+   */
+  const visibleRowIds = computed<readonly number[]>(() => {
+    const ids: number[] = [];
+    for (const bucket of groups.value) {
+      for (const item of bucket.items) {
+        ids.push(item.id);
+      }
+    }
+    return ids;
+  });
 
   /**
    * Pull the list for the active view _without_ chip filtering. The sidebar
@@ -458,6 +515,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // fetch lands without the previous view's chips bleeding through.
     activeChips.value = new Set();
     searchQuery.value = "";
+    // Drop any focused row so the new view doesn't inherit a highlight for
+    // a PR that almost certainly isn't in the next list.
+    focusedPullRequestId.value = null;
     await load();
   }
 
@@ -744,10 +804,14 @@ export const useDashboardStore = defineStore("dashboard", () => {
     loading,
     lastError,
     expandedPullRequestId,
+    focusedPullRequestId,
     collapsedGroups,
     setGroupCollapsed,
+    setFocusedPullRequest,
+    moveFocus,
     viewLabel,
     groups,
+    visibleRowIds,
     counts,
     load,
     setView,
