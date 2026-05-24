@@ -40,7 +40,7 @@ We follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1
 
 ### Scopes (optional but encouraged)
 
-`ui`, `sync`, `db`, `auth`, `tauri`, `github`, `notif`, `settings`, `docs`, `ci`, `adr`, `repo`, `release`. Use the scope that maps to the issue label and the area of code being touched. If a change spans many areas, omit the scope. `release` is reserved for the `chore(release): vX.Y.Z` PR opened by `.github/workflows/prepare-release.yml`.
+`ui`, `sync`, `db`, `auth`, `tauri`, `github`, `notif`, `settings`, `docs`, `ci`, `adr`, `repo`, `release`, `wiki`. Use the scope that maps to the issue label and the area of code being touched. If a change spans many areas, omit the scope. `release` is reserved for the `chore(release): vX.Y.Z` PR opened by `.github/workflows/prepare-release.yml`. `wiki` is for PRs that only touch `docs/wiki/` source.
 
 ### Breaking changes
 
