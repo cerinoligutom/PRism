@@ -14,6 +14,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use prism_lib::auth::store::{Account, AccountStore, SqlAccountStore};
 use prism_lib::db::{open_at, DbHandle};
@@ -888,6 +889,91 @@ async fn remove_account_cancels_task_and_clears_state() {
     // refresh_account no longer finds it; state map forgot it.
     assert!(!worker.refresh_account(9));
     assert!(harness.state.snapshot(9).is_none());
+
+    worker.shutdown();
+}
+
+#[tokio::test]
+async fn manual_interval_parks_loop_until_refresh_nudge() {
+    // Issue #358: with the Manual sentinel (interval_seconds == 0), the
+    // per-account loop runs its startup cycle and then parks. No further
+    // ticks fire until an explicit refresh nudge arrives. The test asserts
+    // both halves: the post-cycle state lands as Synced with no "next in"
+    // hint, and only a `refresh_account` call produces a second Syncing
+    // emission.
+    let server = MockServer::start().await;
+    let mut harness = setup_harness(&server);
+    harness.config = Arc::new(SchedulerConfig::new(prism_lib::sync::MANUAL_INTERVAL_SECS));
+    let _account = seed_account(&harness, 1, "alice");
+    mount_empty_discovery(&server).await;
+
+    let ctx = harness.ctx();
+    let worker = prism_lib::sync::spawn_worker(ctx);
+
+    // Wait for the startup cycle to drain to Synced. Polling beats an
+    // arbitrary sleep here - the loop turnaround is fast on an empty
+    // discovery + no repos path.
+    let synced = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                harness.state.snapshot(1).map(|s| s.phase),
+                Some(prism_lib::sync::SyncPhase::Synced)
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(synced.is_ok(), "startup cycle did not reach Synced");
+
+    let state = harness.state.snapshot(1).expect("post-cycle state");
+    assert_eq!(
+        state.next_sync_in_seconds, None,
+        "manual mode hides the next-sync hint"
+    );
+
+    let syncing_before = harness
+        .emit
+        .payloads(prism_lib::sync::SYNC_STATUS_EVENT)
+        .iter()
+        .filter(|p| p.get("phase").and_then(|v| v.as_str()) == Some("syncing"))
+        .count();
+
+    // No nudge yet - the loop must stay parked.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let syncing_idle = harness
+        .emit
+        .payloads(prism_lib::sync::SYNC_STATUS_EVENT)
+        .iter()
+        .filter(|p| p.get("phase").and_then(|v| v.as_str()) == Some("syncing"))
+        .count();
+    assert_eq!(
+        syncing_idle, syncing_before,
+        "manual mode must not emit a second Syncing without a nudge"
+    );
+
+    // Nudge: a refresh signal should drive a second cycle through Syncing.
+    assert!(worker.refresh_account(1));
+    let nudged = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let count = harness
+                .emit
+                .payloads(prism_lib::sync::SYNC_STATUS_EVENT)
+                .iter()
+                .filter(|p| p.get("phase").and_then(|v| v.as_str()) == Some("syncing"))
+                .count();
+            if count > syncing_before {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        nudged.is_ok(),
+        "refresh nudge did not trigger a second cycle"
+    );
 
     worker.shutdown();
 }

@@ -15,7 +15,10 @@ const INTERVAL_OPTIONS: readonly IntervalOption[] = [
   { value: 30, label: "Every 30 seconds", hint: "Fastest updates. Best when you're actively reviewing." },
   { value: 60, label: "Every minute", hint: "Recommended. Quick to notice changes without being chatty." },
   { value: 300, label: "Every 5 minutes", hint: "Easy on your network and battery." },
-  { value: 600, label: "Every 10 minutes", hint: "Quietest setting. Great for background." },
+  { value: 600, label: "Every 10 minutes", hint: "Light background polling." },
+  { value: 1800, label: "Every 30 minutes", hint: "Low-touch. Catches changes a few times an hour." },
+  { value: 3600, label: "Every hour", hint: "Quietest auto setting. Great for long sessions." },
+  { value: 0, label: "Manual", hint: "No automatic checks. Use Cmd+R or the Refresh button to sync." },
 ];
 
 const AUTO_ARCHIVE_MIN = 0;
