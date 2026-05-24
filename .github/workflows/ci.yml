@@ -66,6 +66,7 @@ jobs:
           # Mirrors CONTRIBUTING.md → "Scopes". Optional — PRs that don't
           # cleanly map to a scope can omit it. `release` is reserved for
           # the `chore(release): vX.Y.Z` PR opened by prepare-release.yml.
+          # `wiki` is for PRs touching only `docs/wiki/` source.
           scopes: |
             ui
             sync
@@ -80,6 +81,7 @@ jobs:
             adr
             repo
             release
+            wiki
           requireScope: false
           # No subjectPattern: Conventional Commits doesn't restrict case, and
           # CONTRIBUTING.md's own examples include uppercase-led subjects
