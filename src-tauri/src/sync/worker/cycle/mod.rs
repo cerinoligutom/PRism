@@ -43,7 +43,10 @@ use activity::{
     emit_activity_phase_started, emit_activity_pr_fetched, emit_activity_pr_skipped_no_change,
     emit_activity_rate_pause,
 };
-use repos::{pr_detail_marker_bytes, pr_detail_marker_key};
+use repos::{
+    detail_state_appears_empty, pr_detail_marker_bytes, pr_detail_marker_key,
+    pr_detail_repair_marker_key,
+};
 use sweeps::{count_prs_across_repos, run_archive_retention_sweep, run_auto_archive_sweep};
 
 /// Compute the percentage of budget remaining, clamped to 0-100. Returns
@@ -594,6 +597,31 @@ async fn sync_repo(
             });
         }
 
+        // Self-heal probe (issue #397). A prior cycle may have stamped both
+        // cache markers without ever populating `requested_reviewers` /
+        // `reviews` for this PR (transient empty payload, body-hash collision
+        // against a stale cache key, partial failure). When the local detail
+        // tables are empty AND a previous cycle's pre-flight marker is
+        // already in place AND we haven't already attempted a repair this
+        // cache lifetime, force the GraphQL detail fetch + write path so the
+        // rows hydrate from a fresh response. Gating on the existing
+        // pre-flight marker keeps the very first cycle for a PR on the
+        // normal path - state is always empty for a freshly-discovered PR,
+        // and the existing cache logic already runs the full fetch + write.
+        // The repair marker stops the probe from refetching the same
+        // genuinely-empty PR (e.g. a new draft with no reviewers and no
+        // reviews) on every subsequent cycle; it's refreshed on every
+        // successful detail write so it stays in sync with the cache it
+        // gates.
+        let pr_detail_marker = pr_detail_marker_key(pr.id);
+        let detail_repair_marker = pr_detail_repair_marker_key(pr.id);
+        let state_empty = detail_state_appears_empty(&ctx.db, pr.id).map_err(|e| {
+            SyncRepoError::Other(format!("probe detail state PR #{}: {e}", pr.number))
+        })?;
+        let prior_cycle_ran = client.graphql_cache_entry(&pr_detail_marker).is_some();
+        let repair_attempted = client.graphql_cache_entry(&detail_repair_marker).is_some();
+        let force_repair = state_empty && prior_cycle_ran && !repair_attempted;
+
         // Pre-flight skip (issue #232): if discovery just wrote a
         // `pull_requests.updated_at` that matches the previous-cycle marker
         // for this PR, skip the GraphQL PR-detail round trip entirely. The
@@ -601,13 +629,13 @@ async fn sync_repo(
         // recover the "nothing changed" saving REST already gets from ETag
         // 304s. Timeline still runs (REST-conditional, ADR 0004) so the
         // latest-status-change derivation stays current.
-        let pr_detail_marker = pr_detail_marker_key(pr.id);
-        let skip_detail = client
-            .graphql_cache_entry(&pr_detail_marker)
-            .and_then(|entry| entry.body_sha256)
-            .is_some_and(|stored| {
-                stored == crate::github::client::sha256(&pr_detail_marker_bytes(pr.updated_at))
-            });
+        let skip_detail = !force_repair
+            && client
+                .graphql_cache_entry(&pr_detail_marker)
+                .and_then(|entry| entry.body_sha256)
+                .is_some_and(|stored| {
+                    stored == crate::github::client::sha256(&pr_detail_marker_bytes(pr.updated_at))
+                });
 
         let (detail, detail_body) = if skip_detail {
             *detail_cache_skips = detail_cache_skips.saturating_add(1);
@@ -645,19 +673,36 @@ async fn sync_repo(
         // when we actually made the call. On a byte-identical detail body,
         // skip the detail-driven DB writes (the prior cycle's values are
         // still authoritative). Timeline still runs (REST ETag) so the
-        // latest-status-change derivation picks up new events.
+        // latest-status-change derivation picks up new events. When the
+        // self-heal probe (#397) flagged the local state as empty, the cache
+        // hit is overridden so `write_pr_updates` repopulates the missing
+        // `requested_reviewers` / `reviews` rows from the freshly-fetched
+        // detail.
         let detail_for_write = if skip_detail {
             None
         } else {
             let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
             let detail_cache_hit = client.graphql_body_unchanged(&detail_cache_key, &detail_body);
-            if detail_cache_hit {
+            if detail_cache_hit && !force_repair {
                 *detail_cache_skips = detail_cache_skips.saturating_add(1);
                 None
             } else {
                 detail.as_ref()
             }
         };
+
+        // Stamp the repair-attempted marker whenever the self-heal probe
+        // ran the fetch (#397). Refreshing it on every successful detail
+        // write keeps it aligned with the cache it gates - if a later cycle
+        // legitimately writes detail again, the marker survives and the
+        // probe stays quiet. The byte stored is irrelevant; only the
+        // presence of the entry is read by the probe.
+        if force_repair {
+            client.cache_graphql_body(
+                &detail_repair_marker,
+                &pr_detail_marker_bytes(pr.updated_at),
+            );
+        }
 
         // Timeline (REST) — feeds the latest-status-change derivation (ADR 0007).
         let timeline = timeout(
