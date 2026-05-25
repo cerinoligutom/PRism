@@ -65,6 +65,21 @@ let gateEvaluated = false;
 // the entries are stable across the app lifetime.
 const allEntries = parseChangelog(changelogContent);
 
+// Manual-mode entries include the `## [Unreleased]` block (#377). Lazily
+// computed on first manual open so pre-release builds that have no tagged
+// versions still surface meaningful content. Parsed against the same
+// bundled `?raw` source so a single allocation covers every subsequent
+// open in the session.
+let manualEntriesCache: readonly ChangelogEntry[] | null = null;
+function getManualEntries(): readonly ChangelogEntry[] {
+  if (manualEntriesCache === null) {
+    manualEntriesCache = parseChangelog(changelogContent, {
+      includeUnreleased: true,
+    });
+  }
+  return manualEntriesCache;
+}
+
 onMounted(async () => {
   // Load the DB-backed cursor up front. The metadata fetch is fire-and-
   // forget under `useAppMetadata`'s singleton; we wait on it reactively in
@@ -80,20 +95,22 @@ watch(
   },
 );
 
-// Manual-open path (issue #375). The About panel calls
-// `whatsNew.requestManualOpen()` which bumps `requestCount`; we observe
-// the bump here and render the dialog with the full changelog. Skipped
-// when the dialog is already open so a stray double-click doesn't reset
-// the contents mid-read.
+// Manual-open path (issue #375; fixed in #377 to include the Unreleased
+// block). The About panel calls `whatsNew.requestManualOpen()` which bumps
+// `requestCount`; we observe the bump here and render the dialog with the
+// full changelog (Unreleased + every tagged version). Skipped when the
+// dialog is already open so a stray double-click doesn't reset the
+// contents mid-read.
 watch(
   () => whatsNew.requestCount,
   (next, prev) => {
     if (next === prev) return;
-    if (allEntries.length === 0) return;
     if (dialogEntries.value.length > 0) return;
+    const entries = getManualEntries();
+    if (entries.length === 0) return;
     currentVersion.value = metadata.value?.version ?? currentVersion.value;
     dialogIsManual.value = true;
-    dialogEntries.value = allEntries;
+    dialogEntries.value = entries;
   },
 );
 
@@ -152,6 +169,7 @@ async function handleDismiss(): Promise<void> {
     :entries="dialogEntries"
     :current-version="currentVersion"
     :title="dialogIsManual ? 'Changelog' : undefined"
+    :release-url="dialogIsManual ? 'https://github.com/cerinoligutom/PRism/releases' : undefined"
     @dismissed="handleDismiss"
   />
 </template>

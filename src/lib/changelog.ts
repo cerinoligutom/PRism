@@ -8,7 +8,12 @@
  *
  * The parser handles the Keep-a-Changelog 1.1.0 shape that
  * `scripts/stamp-changelog.ts` produces:
- *   `## [Unreleased]`             -> in-flight section, dropped on slice.
+ *   `## [Unreleased]`             -> in-flight section. Dropped by default
+ *                                    (auto-open `sectionsSince` needs a
+ *                                    semver to compare against the cursor);
+ *                                    included when the caller opts in via
+ *                                    `{ includeUnreleased: true }` for the
+ *                                    manual "View changelog" surface (#377).
  *   `## [X.Y.Z] - YYYY-MM-DD`     -> released section, retained.
  * Anything before the first `## ` heading (preamble / front-matter) is
  * ignored. Trailing reference-link definitions (`[X.Y.Z]: https://...`) are
@@ -16,13 +21,32 @@
  * as markdown link references but harmlessly so.
  */
 
+/** Sentinel `version` value the manual-open path uses for the Unreleased
+ *  entry (when `includeUnreleased: true`). Consumers that compose headings
+ *  per entry (notably `WhatsNewDialog`) special-case this string to render
+ *  "## Unreleased" instead of "## vUnreleased - ". */
+export const UNRELEASED_VERSION = "Unreleased";
+
 export interface ChangelogEntry {
-  /** Semver string as it appears between the `[` and `]`, e.g. `0.4.0`. */
+  /** Semver string as it appears between the `[` and `]`, e.g. `0.4.0`.
+   *  Equal to [`UNRELEASED_VERSION`] for the Unreleased entry when the
+   *  caller opted in via `{ includeUnreleased: true }`. */
   readonly version: string;
-  /** Date as it appears after the ` - ` separator, e.g. `2026-05-23`. */
+  /** Date as it appears after the ` - ` separator, e.g. `2026-05-23`.
+   *  Empty string for the Unreleased entry (no date). */
   readonly date: string;
   /** Markdown body between this heading and the next `## ` heading, trimmed. */
   readonly body: string;
+}
+
+export interface ParseChangelogOptions {
+  /** Include the `## [Unreleased]` block as an entry whose `version` is
+   *  [`UNRELEASED_VERSION`] and whose `date` is empty. Off by default so
+   *  the auto-open `sectionsSince` path keeps comparing only semver
+   *  entries; the manual "View changelog" surface (#377) opts in. An empty
+   *  Unreleased body is skipped so a stale heading doesn't render alone
+   *  immediately after a release stamp resets the section. */
+  includeUnreleased?: boolean;
 }
 
 const VERSION_HEADING = /^## \[(\d+\.\d+\.\d+(?:[-+][^\]]+)?)\] - (.+)$/;
@@ -31,12 +55,18 @@ const UNRELEASED_HEADING = /^## \[Unreleased\]/i;
 /**
  * Split a Keep-a-Changelog markdown file into per-version entries. Entries
  * are returned in source order (newest first, matching how the file is
- * maintained); the `[Unreleased]` block is dropped because it doesn't carry
- * a version to compare against. Malformed `## ` headings are skipped.
+ * maintained). Pass `{ includeUnreleased: true }` to retain the
+ * `## [Unreleased]` block as the first entry; default behaviour drops it
+ * because the auto-open slice needs semver-comparable versions. Malformed
+ * `## ` headings are skipped.
  */
-export function parseChangelog(raw: string): ChangelogEntry[] {
+export function parseChangelog(
+  raw: string,
+  options?: ParseChangelogOptions,
+): ChangelogEntry[] {
   const lines = raw.split(/\r?\n/);
   const entries: ChangelogEntry[] = [];
+  const includeUnreleased = options?.includeUnreleased === true;
 
   type Cursor = { version: string; date: string; start: number };
   let cursor: Cursor | null = null;
@@ -44,10 +74,15 @@ export function parseChangelog(raw: string): ChangelogEntry[] {
   const flush = (endExclusive: number): void => {
     if (cursor === null) return;
     const bodyLines = lines.slice(cursor.start, endExclusive);
+    const body = bodyLines.join("\n").trim();
+    // Skip empty Unreleased entries (stamp-changelog leaves a bare heading
+    // immediately after a release promotion). A heading with no body would
+    // render as a dead section in the manual dialog.
+    if (cursor.version === UNRELEASED_VERSION && body === "") return;
     entries.push({
       version: cursor.version,
       date: cursor.date,
-      body: bodyLines.join("\n").trim(),
+      body,
     });
   };
 
@@ -56,7 +91,9 @@ export function parseChangelog(raw: string): ChangelogEntry[] {
 
     if (UNRELEASED_HEADING.test(line)) {
       flush(i);
-      cursor = null;
+      cursor = includeUnreleased
+        ? { version: UNRELEASED_VERSION, date: "", start: i + 1 }
+        : null;
       continue;
     }
 

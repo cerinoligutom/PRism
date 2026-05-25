@@ -13,7 +13,7 @@ import { marked } from "marked";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
-import type { ChangelogEntry } from "@/lib/changelog";
+import { UNRELEASED_VERSION, type ChangelogEntry } from "@/lib/changelog";
 
 /**
  * In-app "What's new" dialog (ADR 0025).
@@ -41,6 +41,13 @@ interface Props {
    * (`What's new in vX.Y.Z`).
    */
   title?: string;
+  /**
+   * Override the GitHub link the footer button opens (#377). Manual opens
+   * pass the releases-index URL because pre-release builds may not have a
+   * `/releases/tag/vX.Y.Z` page for the running version. `undefined` keeps
+   * the auto-open default of the tag-specific release page.
+   */
+  releaseUrl?: string;
 }
 
 const props = defineProps<Props>();
@@ -68,11 +75,20 @@ const concatenatedHtml = computed<string>(() => {
   // in Reka's DialogTitle) typographically distinct from the per-version
   // headings inside the scroll surface.
   //
+  // The Unreleased sentinel (#377) renders as plain `## Unreleased` — no
+  // `v` prefix, no ` - date` suffix — because it isn't a semver entry.
+  //
   // Marked options: GFM on (lists, tables, autolinks for bare URLs); no
   // `breaks` so a single `\n` stays a soft break and blank lines mark
   // paragraph boundaries, matching what `CHANGELOG.md` uses.
   const composed = props.entries
-    .map((entry) => `## v${entry.version} - ${entry.date}\n\n${entry.body}`)
+    .map((entry) => {
+      const heading =
+        entry.version === UNRELEASED_VERSION
+          ? `## Unreleased`
+          : `## v${entry.version} - ${entry.date}`;
+      return `${heading}\n\n${entry.body}`;
+    })
     .join("\n\n");
   const rendered = marked.parse(composed, {
     gfm: true,
@@ -82,13 +98,15 @@ const concatenatedHtml = computed<string>(() => {
   return typeof rendered === "string" ? rendered : "";
 });
 
-const releaseUrl = computed(
-  () => `https://github.com/cerinoligutom/PRism/releases/tag/v${props.currentVersion}`,
+const footerHref = computed<string>(
+  () =>
+    props.releaseUrl ??
+    `https://github.com/cerinoligutom/PRism/releases/tag/v${props.currentVersion}`,
 );
 
 async function openReleasePage(): Promise<void> {
   try {
-    await openUrl(releaseUrl.value);
+    await openUrl(footerHref.value);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn("failed to open release page", err);
