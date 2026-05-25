@@ -327,20 +327,29 @@ watch(
 }
 
 .pr-conversation__body {
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* Wide-viewport layout: each column owns its own scroll so the stats
+   * sidebar stays visible while the active tab scrolls under it. Narrow
+   * viewport (<= 900px) flips this back to a single body scroll, see the
+   * media query below. */
+  overflow: hidden;
 }
 
 .pr-conversation__layout {
   display: grid;
   grid-template-columns: 1fr 320px;
   gap: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 .pr-conversation__main-col {
   padding: 18px 24px 20px;
   border-right: 1px solid var(--border-1);
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pr-conversation__meta-col {
@@ -349,6 +358,8 @@ watch(
   flex-direction: column;
   gap: 18px;
   background: var(--bg-2);
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pr-conversation__col-head {
@@ -373,13 +384,25 @@ watch(
 }
 
 @media (max-width: 900px) {
+  /* Stacked layout reverts to a single body scroll: an inner per-column scroll
+   * would trap the sidebar behind a long active tab on narrow viewports. */
+  .pr-conversation__body {
+    overflow-y: auto;
+  }
+
   .pr-conversation__layout {
     grid-template-columns: 1fr;
+    height: auto;
   }
 
   .pr-conversation__main-col {
     border-right: 0;
     border-bottom: 1px solid var(--border-1);
+    overflow-y: visible;
+  }
+
+  .pr-conversation__meta-col {
+    overflow-y: visible;
   }
 }
 </style>
