@@ -70,10 +70,20 @@ export function formatDurationParts(seconds: number): {
   };
 }
 
-/** "Now" / "12s ago" / "3h ago" / "2d ago" for thread / review timestamps. */
-export function formatRelativeAgo(unixSeconds: number | null): string {
+/**
+ * "Now" / "12s ago" / "3h ago" / "2d ago" for thread / review timestamps.
+ *
+ * Pass `nowS` to drive the label off a reactive clock (e.g. `useNowSeconds`)
+ * so the rendered string updates as time passes. Omitting it falls back to
+ * `Date.now()` for callers that only need a one-shot format.
+ */
+export function formatRelativeAgo(
+  unixSeconds: number | null,
+  nowS?: number,
+): string {
   if (unixSeconds === null) return EM_DASH;
-  const elapsed = secondsSince(unixSeconds);
+  const reference = nowS ?? nowSeconds();
+  const elapsed = Math.max(0, reference - unixSeconds);
   if (elapsed < 10) return "now";
   return `${formatDuration(elapsed)} ago`;
 }

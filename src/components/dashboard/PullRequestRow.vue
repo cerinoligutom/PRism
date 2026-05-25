@@ -186,6 +186,59 @@ const sinceLabel = computed<string>(() =>
   sinceLabelFor(props.pullRequest, nowSeconds.value),
 );
 
+// One-sentence explanation of the since label, surfaced in the time-cell
+// tooltip so the terse chip ("approved", "conflicts", "CI failed") doesn't
+// leave the user guessing what triggered it.
+const sinceExplanation = computed<string>(() => {
+  switch (sinceLabel.value) {
+    case "opened":
+      return "Draft, not yet ready for review.";
+    case "conflicts":
+      return "Has merge conflicts with the base branch.";
+    case "stale":
+      return "No activity in the last 7 days.";
+    case "CI failed":
+      return "One or more CI checks are failing.";
+    case "changes":
+      return "A reviewer requested changes.";
+    case "approved":
+      return "Approved and ready to merge.";
+    case "updated":
+    default:
+      return "Most recent activity on the PR.";
+  }
+});
+
+const updatedAtExact = computed<string>(() =>
+  new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(props.pullRequest.updated_at * 1000)),
+);
+
+const timeCellTooltip = computed<string>(
+  () => `Last updated ${updatedAtExact.value}. ${sinceExplanation.value}`,
+);
+
+// Map the since label to a tone class so the chip under the relative time
+// inherits the same colour language as the rest of the dashboard (success
+// for approved, danger for failure / conflicts / changes-requested, warning
+// for stale). `null` leaves the default muted colour.
+const sinceTone = computed<string | null>(() => {
+  switch (sinceLabel.value) {
+    case "approved":
+      return "pr-row__time-since--success";
+    case "conflicts":
+    case "CI failed":
+    case "changes":
+      return "pr-row__time-since--danger";
+    case "stale":
+      return "pr-row__time-since--warning";
+    default:
+      return null;
+  }
+});
+
 const isStale = computed<boolean>(
   () =>
     nowSeconds.value - props.pullRequest.updated_at > STALE_THRESHOLD_SECONDS,
@@ -582,13 +635,16 @@ function onSelectKey(event: KeyboardEvent): void {
       <CiBadge :ci="pullRequest.ci" />
     </div>
 
-    <div :class="['pr-row__time', isStale && 'pr-row__time--stale']">
-      <PRismRelativeTime
-        :value="pullRequest.updated_at"
-        class="pr-row__time-value"
-      />
-      <span class="pr-row__time-since">{{ sinceLabel }}</span>
-    </div>
+    <PRismTooltip :text="timeCellTooltip" :as-child="true">
+      <div :class="['pr-row__time', isStale && 'pr-row__time--stale']">
+        <PRismRelativeTime
+          :value="pullRequest.updated_at"
+          class="pr-row__time-value"
+          :disable-tooltip="true"
+        />
+        <span :class="['pr-row__time-since', sinceTone]">{{ sinceLabel }}</span>
+      </div>
+    </PRismTooltip>
 
     <PRismTooltip text="Open on GitHub" :as-child="true">
       <button
@@ -1132,6 +1188,13 @@ function onSelectKey(event: KeyboardEvent): void {
   margin-top: 1px;
   white-space: nowrap;
 }
+
+/* Tone modifiers track the same colour language as the row strip + ThreadsBar:
+ * success for approved, danger for the various failure flavours, warning for
+ * stale. Default (no modifier) stays muted. */
+.pr-row__time-since--success { color: var(--success); }
+.pr-row__time-since--danger  { color: var(--danger); }
+.pr-row__time-since--warning { color: var(--warning); }
 
 .pr-row__time--stale .pr-row__time-value {
   color: var(--warning);
