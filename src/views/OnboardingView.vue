@@ -10,6 +10,7 @@ import PRismInput from "@/components/ui/PRismInput.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import { useAccountsStore, type Account, type ValidateTokenResult } from "@/stores/accounts";
 import { useSyncStore, type AccountSyncState } from "@/stores/sync";
+import { useSyncActivityStore } from "@/stores/syncActivity";
 
 type StepIndex = 1 | 2 | 3;
 type TokenFlavour = "fine-grained" | "classic";
@@ -22,6 +23,7 @@ type ValidationState =
 const router = useRouter();
 const accountsStore = useAccountsStore();
 const syncStore = useSyncStore();
+const syncActivityStore = useSyncActivityStore();
 
 const currentStep = ref<StepIndex>(1);
 const submitting = ref(false);
@@ -96,6 +98,36 @@ const syncStateForNewAccount = computed<AccountSyncState | null>(() => {
   return syncStore.accounts.find((a) => a.account_id === newAccount.value!.id) ?? null;
 });
 
+// Latest enrichment progress for the new account, drawn from the activity
+// feed (`sync://activity`). The store is bound by StatusBar at app mount, so
+// we just consume the rolling buffer here. We walk most-recent-first and stop
+// at the first terminal event for our account so progress from a prior cycle
+// doesn't bleed into a new one.
+const enrichmentProgress = computed<{ current: number; total: number } | null>(() => {
+  const id = newAccount.value?.id ?? null;
+  if (id === null) return null;
+  for (const evt of syncActivityStore.events) {
+    if (evt.account_id !== id) continue;
+    if (evt.kind === "cycle_completed" || evt.kind === "cycle_failed") return null;
+    if (evt.kind === "phase_progress" && evt.phase === "enrichment") {
+      return { current: evt.current, total: evt.total };
+    }
+  }
+  return null;
+});
+
+// `prs_visited` from the most-recent `cycle_completed` for the new account.
+// Drives the "N pull requests synced" suffix once the first cycle finishes.
+const lastSyncedCount = computed<number | null>(() => {
+  const id = newAccount.value?.id ?? null;
+  if (id === null) return null;
+  for (const evt of syncActivityStore.events) {
+    if (evt.account_id !== id) continue;
+    if (evt.kind === "cycle_completed") return evt.prs_visited;
+  }
+  return null;
+});
+
 const syncDisplay = computed<{ label: string; spinning: boolean }>(() => {
   const state = syncStateForNewAccount.value;
   const host = newAccount.value?.host ?? "github.com";
@@ -105,10 +137,20 @@ const syncDisplay = computed<{ label: string; spinning: boolean }>(() => {
     return { label: "Starting first sync…", spinning: true };
   }
   if (state.phase === "syncing") {
-    return { label: `Fetching authored PRs from ${host}`, spinning: true };
+    const progress = enrichmentProgress.value;
+    const suffix = progress !== null ? ` (${progress.current} of ${progress.total})` : "";
+    return { label: `Fetching relevant PRs from ${host}${suffix}`, spinning: true };
   }
   if (state.phase === "synced") {
-    return { label: "First sync complete", spinning: false };
+    const count = lastSyncedCount.value;
+    if (count === null) {
+      return { label: "First sync complete", spinning: false };
+    }
+    if (count === 0) {
+      return { label: "First sync complete · no relevant PRs found", spinning: false };
+    }
+    const noun = count === 1 ? "pull request" : "pull requests";
+    return { label: `First sync complete · ${count} ${noun} synced`, spinning: false };
   }
   if (state.phase === "unauthorized") {
     return { label: "Token rejected — re-check the PAT", spinning: false };
@@ -651,7 +693,7 @@ onUnmounted(() => {
         <p class="onboarding-step__lede">
           <strong>{{ newAccount?.login }}</strong> on
           <code>{{ newAccount?.host }}</code> is saved. Until the full org / repo picker
-          lands, every authored PR you can see on github.com appears in the dashboard.
+          lands, every PR you're involved in on github.com appears in the dashboard.
         </p>
 
         <div class="onboarding-sync">
@@ -683,7 +725,7 @@ onUnmounted(() => {
         <div class="onboarding-step__foot">
           <PRismButton @click="handleAddAnother">Add another account</PRismButton>
           <PRismButton variant="primary" size="lg" @click="handleFinish">
-            Open PRism
+            Go to dashboard
           </PRismButton>
         </div>
       </section>
