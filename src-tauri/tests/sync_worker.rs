@@ -2547,3 +2547,69 @@ async fn pr_detail_null_pull_request_emits_diagnostic_activity() {
         "body_prefix should carry the response excerpt: {body_prefix}"
     );
 }
+
+/// Regression for #403: a cycle whose detail response resolves
+/// `repository.pullRequest` to null must leave all three PR-detail cache
+/// markers absent so the next cycle retries on the normal path. Stamping
+/// the markers when `fetched` is `None` (the bug) locks the empty state in
+/// because `write_pr_updates` is a no-op for the detail block.
+#[tokio::test]
+async fn pr_detail_null_pull_request_leaves_cache_markers_unstamped() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+
+    let null_pr_body = r#"{"data":{"repository":{"pullRequest":null}}}"#;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(null_pr_body.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    // Pre-flight marker (issue #232).
+    assert!(
+        harness.factory.etags.get("1:gql:pr-detail:999").is_none(),
+        "pre-flight pr-detail marker must stay absent when pullRequest is null"
+    );
+    // Post-flight body-hash marker (issue #234).
+    assert!(
+        harness
+            .factory
+            .etags
+            .get("1:gql:pr_detail:owner/repo#42")
+            .is_none(),
+        "post-flight body-hash marker must stay absent when pullRequest is null"
+    );
+    // Repair marker (issue #397). Not exercised by this scenario (force_repair
+    // is false here because no prior cycle stamped the pre-flight marker), but
+    // it must remain absent either way.
+    assert!(
+        harness
+            .factory
+            .etags
+            .get("1:gql:pr-detail-repair:999")
+            .is_none(),
+        "repair marker must stay absent when pullRequest is null"
+    );
+}

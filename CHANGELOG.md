@@ -43,5 +43,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Clicking a row in the Notifications inbox now opens the PR in drawer mode as well as route mode; the handler navigates to the matching dashboard view before expanding the drawer so the host is mounted (#400).
 - Sync cycle now surfaces a warn-level activity row + tracing log when the PR-detail GraphQL response resolves `repository.pullRequest` to null, carrying the PR coordinates and a 256-byte body excerpt so the silent miss (which leaves detail-derived columns and the conversation tables empty) is diagnosable without enabling `RUST_LOG` (#402).
 - Removing an account now also purges the `etags` rows the sync worker stamped under that account's key prefix; the accounts DELETE alone left every cached REST + GraphQL entry on disk because `etags` has no foreign key on `accounts` (#405).
+- Sync cycle no longer stamps the pre-flight, post-flight body-hash, or repair cache markers for a PR when the detail GraphQL response resolves `repository.pullRequest` to null; previously all three were written regardless, locking the empty state in so future cycles skipped the fetch and the conversation tables stayed empty forever. The next cycle now retries on the normal path until discovery prunes the relation or GitHub returns the full payload (#403).
 
 ### Security
