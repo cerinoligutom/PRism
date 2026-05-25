@@ -163,11 +163,11 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
   border: 1px solid var(--border-1);
   border-radius: var(--r-2);
   background: var(--bg-1);
-  transition: background 0.12s;
+  transition: border-color 0.12s;
 }
 
 .review-card:hover {
-  background: var(--bg-0);
+  border-color: var(--accent);
 }
 
 .review-card__avatar {

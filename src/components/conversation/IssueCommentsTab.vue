@@ -139,11 +139,11 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
   border: 1px solid var(--border-1);
   border-radius: var(--r-2);
   background: var(--bg-1);
-  transition: background 0.12s;
+  transition: border-color 0.12s;
 }
 
 .issue-comment-card:hover {
-  background: var(--bg-0);
+  border-color: var(--accent);
 }
 
 .issue-comment-card__avatar {
