@@ -708,15 +708,21 @@ async fn sync_repo(
             // Stamp the issue #232 marker so the next cycle's pre-flight
             // comparison sees the freshly-persisted `updated_at`. Falling back
             // to `pr.updated_at` keeps the marker aligned when GraphQL returns
-            // a thin payload (no `updatedAt` field).
-            let marker_for_next_cycle = fetched
-                .as_ref()
-                .and_then(|d| rfc3339_to_unix(&d.updated_at))
-                .unwrap_or(pr.updated_at);
-            client.cache_graphql_body(
-                &pr_detail_marker,
-                &pr_detail_marker_bytes(marker_for_next_cycle),
-            );
+            // a thin payload (no `updatedAt` field). Skip the stamp entirely
+            // when `fetched` is `None` (#403): a null `repository.pullRequest`
+            // means `write_pr_updates` won't touch the detail block, so
+            // leaving the marker absent lets the next cycle retry on the
+            // normal path rather than locking the empty state in.
+            if fetched.is_some() {
+                let marker_for_next_cycle = fetched
+                    .as_ref()
+                    .and_then(|d| rfc3339_to_unix(&d.updated_at))
+                    .unwrap_or(pr.updated_at);
+                client.cache_graphql_body(
+                    &pr_detail_marker,
+                    &pr_detail_marker_bytes(marker_for_next_cycle),
+                );
+            }
             (fetched, body)
         };
 
@@ -730,6 +736,13 @@ async fn sync_repo(
         // `requested_reviewers` / `reviews` rows from the freshly-fetched
         // detail.
         let detail_for_write = if skip_detail {
+            None
+        } else if detail.is_none() {
+            // GraphQL responded with `repository.pullRequest = null` (#403).
+            // Don't stamp the body-hash via `graphql_body_unchanged` here -
+            // that would persist the empty-payload SHA and lock the empty
+            // state in across future cycles. Leave the marker untouched so
+            // the next cycle refetches.
             None
         } else {
             let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
@@ -747,8 +760,11 @@ async fn sync_repo(
         // write keeps it aligned with the cache it gates - if a later cycle
         // legitimately writes detail again, the marker survives and the
         // probe stays quiet. The byte stored is irrelevant; only the
-        // presence of the entry is read by the probe.
-        if force_repair {
+        // presence of the entry is read by the probe. Skip the stamp when
+        // `detail` is `None` (#403): a null `repository.pullRequest` means
+        // the repair didn't actually write anything, so leaving the marker
+        // absent lets the next cycle retry instead of suppressing the probe.
+        if force_repair && detail.is_some() {
             client.cache_graphql_body(
                 &detail_repair_marker,
                 &pr_detail_marker_bytes(pr.updated_at),
