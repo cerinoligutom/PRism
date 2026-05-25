@@ -35,7 +35,7 @@ pub use formatter::format_trigger;
 pub use pending::{PendingPayloadQueue, PendingPayloadQueueHandle};
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};
 pub use sink::{NotificationSink, NotificationSinkHandle, PermissionAsker};
-pub use types::{Notification, NotificationKind, NotificationTrigger};
+pub use types::{Notification, NotificationKind, NotificationSnapshot, NotificationTrigger};
 
 #[cfg(test)]
 mod tests {
@@ -160,6 +160,10 @@ mod tests {
             title: "alice opened PR #42".to_string(),
             body: "Mentioned you in a comment".to_string(),
             payload: json!({ "account_id": 1, "pull_request_id": 100 }),
+            // The recording sink only asserts on title / body / payload, so
+            // we leave the inbox snapshot empty here; persistence wiring is
+            // covered by `notify::runtime` against a real DB.
+            snapshot: None,
         }
     }
 

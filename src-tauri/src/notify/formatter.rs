@@ -18,7 +18,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
-use crate::notify::types::{Notification, NotificationKind, NotificationTrigger};
+use crate::notify::types::{
+    Notification, NotificationKind, NotificationSnapshot, NotificationTrigger,
+};
 
 const EXCERPT_CHAR_LIMIT: usize = 80;
 
@@ -31,11 +33,24 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
         "account_id": trigger.account_id,
         "pull_request_id": trigger.pull_request_id,
     });
+    // Snapshot carried into the persistent inbox row (#378). Cloning is fine -
+    // the dispatch path is per-trigger and the strings are short.
+    let snapshot = NotificationSnapshot {
+        kind: trigger.kind,
+        account_id: trigger.account_id,
+        pull_request_id: Some(trigger.pull_request_id),
+        owner: owner.clone(),
+        repo: repo.clone(),
+        pr_number: number,
+        pr_node_id: None,
+        pr_title: title.clone(),
+    };
     let notification = match trigger.kind {
         NotificationKind::NeedsAttention => Notification {
             title: "Needs your attention".to_string(),
             body: format!("{owner}/{repo} #{number} - {title}"),
             payload,
+            snapshot: Some(snapshot),
         },
         NotificationKind::Mention => {
             // Latest qualifying comment body, trimmed and clipped.
@@ -45,6 +60,7 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
                 title: format!("New mention in {owner}/{repo} #{number}"),
                 body: excerpt,
                 payload,
+                snapshot: Some(snapshot),
             }
         }
     };
