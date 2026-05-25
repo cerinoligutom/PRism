@@ -6,6 +6,7 @@ import type { Router } from "vue-router";
 
 import { useAppearanceStore, type Density } from "@/stores/appearance";
 import { useTauriListener } from "@/composables/useTauriListener";
+import { dashboardRouteName } from "@/router";
 import type { ChipKey, FilterChipCounts } from "@/types/dashboard";
 
 /**
@@ -973,6 +974,47 @@ export const useDashboardStore = defineStore("dashboard", () => {
     expandedPullRequestId.value = pullRequestId;
   }
 
+  /**
+   * Open a PR from an external entry point (desktop notification click,
+   * `prism://` deep link, persistent inbox row click) via the active detail
+   * surface from the appearance store (issue #410).
+   *
+   * Behaviour matches the in-app `openPullRequest` row click:
+   * - `'route'` pushes the named `pr-detail` route with the resolver's view.
+   * - `'drawer'` pushes the matching dashboard route first (the drawer host
+   *   mounts on `DashboardView`), then sets `expandedPullRequestId` so the
+   *   drawer opens on the next paint.
+   *
+   * Sets account scope before routing so the back-navigation lands on a list
+   * that contains the deep-linked row. `setAccountScope` is a no-op when the
+   * scope already matches and triggers a single `load()` otherwise.
+   *
+   * The caller resolves coordinates and applies any side effects it owns
+   * (mark-read on the inbox path, `pr_lookup_by_coordinates` fallback on the
+   * deep-link miss path) before invoking this helper. Returns a Promise so
+   * callers can await the view change when they need to sequence work after
+   * the navigation lands.
+   */
+  async function openPrFromExternal(
+    target: {
+      readonly pullRequestId: number;
+      readonly accountId: number;
+      readonly view: DashboardView;
+    },
+    router: Router,
+  ): Promise<void> {
+    setAccountScope(target.accountId);
+    if (appearance.prDetailSurface === "route") {
+      await router.push({
+        name: "pr-detail",
+        params: { view: target.view, id: target.pullRequestId },
+      });
+      return;
+    }
+    await router.push({ name: dashboardRouteName(target.view) });
+    expandedPullRequestId.value = target.pullRequestId;
+  }
+
   async function bind(): Promise<void> {
     await listener.bind(() =>
       Promise.all([
@@ -1052,6 +1094,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     clearSelection,
     archiveSelected,
     openPullRequest,
+    openPrFromExternal,
     closeExpanded,
     setExpandedPullRequest,
     bind,

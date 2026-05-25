@@ -162,8 +162,31 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     let app = window.app_handle();
     match event {
         WindowEvent::Focused(true) => {
+            // Issue #410 instrumentation: the "click does not open the app"
+            // bug is intermittent. Logging the focus event entry, the queue
+            // length on drain, and each emitted payload makes the dispatch
+            // path observable without leaking PR titles or other content
+            // (only ids cross this boundary).
+            tracing::info!(
+                target: "prism::notify",
+                "notify: main-window focused, draining pending queue",
+            );
             let queue = app.state::<notify::PendingPayloadQueueHandle>();
-            for payload in queue.drain_fresh() {
+            let drained = queue.drain_fresh();
+            tracing::info!(
+                target: "prism::notify",
+                count = drained.len(),
+                "notify: drained pending payloads",
+            );
+            for payload in drained {
+                let account_id = payload.get("account_id").and_then(|v| v.as_i64());
+                let pull_request_id = payload.get("pull_request_id").and_then(|v| v.as_i64());
+                tracing::info!(
+                    target: "prism::notify",
+                    ?account_id,
+                    ?pull_request_id,
+                    "notify: emitting notification://open-pr",
+                );
                 if let Err(err) = app.emit(NOTIFICATION_OPEN_PR_EVENT, &payload) {
                     tracing::warn!(event = NOTIFICATION_OPEN_PR_EVENT, %err, "notify: emit failed");
                 }

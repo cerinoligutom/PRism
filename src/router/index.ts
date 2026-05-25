@@ -3,6 +3,20 @@ import { createRouter, createWebHistory } from "vue-router";
 import DashboardView from "@/views/DashboardView.vue";
 import type { DashboardView as DashboardViewName } from "@/stores/dashboard";
 
+/**
+ * Map a `DashboardView` name to its route name. The `assigned` view is served
+ * under the `dashboard.review-requested` route so the URL slug matches the
+ * sidebar / title vocabulary (see the `/dashboard/review-requested` route
+ * below); every other view shares its name with the route suffix. Callers in
+ * the notification, deep-link, and inbox paths use this when they need to
+ * push to a dashboard route by view name rather than by string literal.
+ */
+export function dashboardRouteName(view: DashboardViewName): string {
+  return view === "assigned"
+    ? "dashboard.review-requested"
+    : `dashboard.${view}`;
+}
+
 // The four dashboard views share the same component and differ only by the
 // `view` route meta. The store reads `to.meta.dashboardView` on each navigation
 // and reloads.
