@@ -1,6 +1,6 @@
 # Roadmap
 
-PRism v1 is delivered across eight milestones. Each milestone is tracked in GitHub; the kanban board view of all milestones is at <https://github.com/users/cerinoligutom/projects/7>.
+PRism v1 is delivered across seven milestones. Each milestone is tracked in GitHub; the kanban board view of all milestones is at <https://github.com/users/cerinoligutom/projects/7>.
 
 | Milestone | Focus |
 |---|---|
@@ -11,9 +11,10 @@ PRism v1 is delivered across eight milestones. Each milestone is tracked in GitH
 | [M5 — Multi-account & GHE](https://github.com/cerinoligutom/PRism/milestone/5) | Multiple PATs, per-account host config, GHE compatibility testing |
 | [M6 — Notifications & polish](https://github.com/cerinoligutom/PRism/milestone/6) | Desktop notifications, in-app badges, settings UI, last-synced indicator, manual refresh, archive bucket, TTL |
 | [M7 — Hardening & launch](https://github.com/cerinoligutom/PRism/milestone/7) | Performance tuning, rate-limit guardrails, error handling, keychain edge cases, cross-platform QA (see [Platform QA](Platform-QA)). Also picks up the cosmetic Team -> Tracked rename (#220) since the current "Team" view is per-repo opt-in, not GitHub-Teams-driven |
-| [M8 — Team view (GitHub Teams integration)](https://github.com/cerinoligutom/PRism/milestone/9) | An actual Teams-driven view: subscribe to GitHub Teams; PRs where a subscribed team is a requested reviewer or where a team member is author/assignee surface here. Distinct from the M7-renamed Tracked view. ADR 0019 pins the data model + match predicate (#221) |
 
 Milestone order is indicative; M1 must land first, but the others overlap.
+
+A dedicated GitHub-Teams-driven view (originally scoped as M8) was deferred during pre-v1 review. Tier 1 (`team-review-requested:org/slug` filter only) returns nothing for orgs that use custom label-fanout review automation - common for any non-trivial review routing - because those workflows request individual users, not teams. Tier 2 (team-member match against `requested_reviewers` and `pull_requests.author_login`) requires per-team-repo enumeration to surface PRs from teams the viewer isn't on, at a material ongoing core-budget cost. The Tracked view (M7) plus org grouping covers the practical team-lead workflow without team plumbing. See milestone [#9](https://github.com/cerinoligutom/PRism/milestone/9) for the full closure rationale; reopen if usage signals warrant.
 
 ## Pre-v1 polish (current focus)
 
