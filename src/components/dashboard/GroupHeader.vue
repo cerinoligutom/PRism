@@ -48,6 +48,20 @@ const repoOnly = computed<string>(() => {
   return slash === -1 ? props.label : props.label.slice(slash + 1).trim();
 });
 
+// Combined tooltip mirrors the PR row's time-cell pattern: label + exact
+// timestamp. `PRismRelativeTime` would otherwise add its own exact-date
+// tooltip on top of this one and the user gets two stacked chips.
+const latestActivityExact = computed<string>(() =>
+  new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(props.latestUpdatedAt * 1000)),
+);
+
+const latestActivityTooltip = computed<string>(
+  () => `Latest activity in this group: ${latestActivityExact.value}`,
+);
+
 function toggle(): void {
   if (!props.collapsible) return;
   internalCollapsed.value = !internalCollapsed.value;
@@ -109,10 +123,10 @@ function onKeydown(event: KeyboardEvent): void {
         <span class="dot" aria-hidden="true"></span>
         {{ failing }} failing
       </span>
-      <PRismTooltip text="Latest activity in this group" :as-child="true">
+      <PRismTooltip :text="latestActivityTooltip" :as-child="true">
         <span class="group-header__metric">
           <span>active</span>
-          <PRismRelativeTime :value="latestUpdatedAt" />
+          <PRismRelativeTime :value="latestUpdatedAt" :disable-tooltip="true" />
         </span>
       </PRismTooltip>
     </span>

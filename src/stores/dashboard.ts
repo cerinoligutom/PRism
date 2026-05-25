@@ -186,8 +186,12 @@ function bucketOrg(
   return group === "repo" ? pr.repo.owner : null;
 }
 
+// Group-bucket aggregation reads `updated_at` directly so the "active X ago"
+// chip in `GroupHeader` matches the freshest row's time cell. Comments + pushes
+// count as activity, which is the intuitive read of the label. The dashboard
+// list sort is a separate concern and uses its own predicate elsewhere.
 function sortTimestamp(pr: DashboardPullRequest): number {
-  return pr.latest_status_change_at ?? pr.updated_at;
+  return pr.updated_at;
 }
 
 export const useDashboardStore = defineStore("dashboard", () => {
