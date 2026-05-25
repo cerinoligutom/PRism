@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import ReauthDialog from "./ReauthDialog.vue";
+import RemoveAccountDialog from "./RemoveAccountDialog.vue";
 import { useAccountsStore, type Account } from "@/stores/accounts";
 
 const accountsStore = useAccountsStore();
@@ -14,6 +15,11 @@ const accountsStore = useAccountsStore();
 // the danger banner's Re-authenticate action; closes via Cancel / Esc /
 // overlay click / successful submit.
 const reauthTarget = ref<Account | null>(null);
+
+// Per-account remove confirmation (issue #386): `window.confirm` is unreliable
+// in the Tauri 2 webview, so the Remove action drives a Reka-based dialog
+// mirroring the re-auth flow.
+const removeTarget = ref<Account | null>(null);
 
 interface ReauthRequiredPayload {
   readonly account_id: number;
@@ -92,21 +98,27 @@ function tokenStatus(account: Account): {
   return { state: "valid", daysRemaining: days };
 }
 
-async function handleRemove(account: Account): Promise<void> {
-  // The schema cascades on `accounts.id` deletion (init.sql, 0002), so the
-  // user's per-account read / archive state in `pull_request_viewer_relations`
-  // is dropped alongside the PAT. Re-adding the same identity later starts
-  // from a clean slate; flag that explicitly so the click isn't surprising.
-  const confirmed = window.confirm(
-    `Remove "${account.label}"? The PAT will be deleted from the OS keychain, `
-      + `and unread / archive state stored locally for this account will be cleared.`,
-  );
-  if (!confirmed) return;
+function openRemove(account: Account): void {
+  removeTarget.value = account;
+}
+
+function closeRemove(): void {
+  removeTarget.value = null;
+}
+
+async function confirmRemove(): Promise<void> {
+  const account = removeTarget.value;
+  if (account === null) return;
   try {
+    // Schema cascades on `accounts.id` deletion (init.sql, 0002), so the
+    // user's per-account read / archive state in `pull_request_viewer_relations`
+    // is dropped alongside the PAT.
     await accountsStore.removeAccount(account.id);
     expiredAccountIds.value.delete(account.id);
   } catch {
-    // store has already populated lastError for the banner
+    // Store has already populated lastError for the banner.
+  } finally {
+    removeTarget.value = null;
   }
 }
 
@@ -192,14 +204,6 @@ onUnmounted(() => {
             PATs are stored exclusively in the OS keychain. PRism never writes them to disk or logs.
           </span>
         </div>
-        <PRismButton
-          v-if="!accountsStore.isEmpty"
-          to="/onboarding"
-          variant="primary"
-          size="sm"
-        >
-          + Add account
-        </PRismButton>
       </div>
 
       <div v-if="accountsStore.loading && accountsStore.isEmpty" class="accounts-panel__loading">
@@ -274,13 +278,19 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="account-card__actions">
-            <PRismButton size="sm" @click="handleRemove(account)">Remove</PRismButton>
+            <PRismButton size="sm" @click="openRemove(account)">Remove</PRismButton>
             <PRismButton size="sm" variant="primary" @click="openReauth(account)">
               Re-auth
             </PRismButton>
           </div>
         </article>
 
+      </div>
+
+      <div v-if="!accountsStore.isEmpty" class="accounts-panel__list-footer">
+        <PRismButton to="/onboarding" variant="primary" size="sm">
+          + Add account
+        </PRismButton>
       </div>
 
       <div v-if="accountsStore.lastError" class="accounts-panel__error">
@@ -292,6 +302,11 @@ onUnmounted(() => {
       :account="reauthTarget"
       @close="closeReauth"
       @success="onReauthSuccess"
+    />
+    <RemoveAccountDialog
+      :account="removeTarget"
+      @close="closeRemove"
+      @confirm="confirmRemove"
     />
   </div>
 </template>
@@ -363,7 +378,6 @@ onUnmounted(() => {
 }
 
 .accounts-panel__section-head-text {
-  flex: 1 1 auto;
   display: flex;
   align-items: baseline;
   gap: var(--s-3);
@@ -414,6 +428,11 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.accounts-panel__list-footer {
+  margin-top: var(--s-4);
+  display: flex;
+  justify-content: flex-end;
+}
 
 .accounts-panel__error {
   margin-top: var(--s-4);
