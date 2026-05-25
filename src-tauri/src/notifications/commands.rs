@@ -50,8 +50,7 @@ pub fn list_notifications(
     db: State<'_, DbHandle>,
 ) -> Result<Vec<Notification>, NotificationsCommandError> {
     let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
-    store::list(&conn, limit, before_id)
-        .map_err(|e| internal(&format!("list_notifications: {e}")))
+    store::list(&conn, limit, before_id).map_err(|e| internal(&format!("list_notifications: {e}")))
 }
 
 /// Drop one inbox row. Returning `()` keeps the parallel with the triage
@@ -69,9 +68,7 @@ pub fn delete_notification(
 
 /// Wipe every inbox row.
 #[tauri::command]
-pub fn clear_all_notifications(
-    db: State<'_, DbHandle>,
-) -> Result<(), NotificationsCommandError> {
+pub fn clear_all_notifications(db: State<'_, DbHandle>) -> Result<(), NotificationsCommandError> {
     let conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
     store::delete_all(&conn)
         .map(|_| ())

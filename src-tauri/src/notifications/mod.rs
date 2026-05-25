@@ -8,9 +8,9 @@
 //! Split into four files:
 //! * [`types`]  - the `Notification` row + `NotificationInsert` snapshot.
 //! * [`store`]  - the SQL writers + readers used by both the dispatch hook
-//!                and the Tauri command surface.
+//!   and the Tauri command surface.
 //! * [`commands`] - the renderer-facing `list_notifications`,
-//!                  `delete_notification`, `clear_all_notifications`.
+//!   `delete_notification`, `clear_all_notifications`.
 //!
 //! The dispatch hook lives in [`crate::notify::runtime`]; the sink inserts a
 //! row via [`store::insert`] before the OS toast fires. An insert failure
