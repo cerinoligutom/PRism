@@ -170,9 +170,7 @@ pub(super) fn emit_activity_pr_detail_empty(
     number: i64,
     body_prefix: &str,
 ) {
-    let message = format!(
-        "GraphQL returned null pullRequest for {owner}/{name}#{number}"
-    );
+    let message = format!("GraphQL returned null pullRequest for {owner}/{name}#{number}");
     record_activity(
         &ctx.activity,
         ctx.emit.as_ref(),
