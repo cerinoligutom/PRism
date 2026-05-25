@@ -6,12 +6,14 @@ import { RouterLink } from "vue-router";
 
 import { useAccountsStore } from "@/stores/accounts";
 import { useDashboardStore, type DashboardView } from "@/stores/dashboard";
+import { useNotificationsStore } from "@/stores/notifications";
 
 // PRism brand mark — the logo carries refraction lines in semantic colours.
 // Kept inline so the strokes inherit `currentColor` from the surrounding nav.
 
 const dashboard = useDashboardStore();
 const accountsStore = useAccountsStore();
+const notifications = useNotificationsStore();
 
 interface NavLink {
   readonly view: DashboardView;
@@ -111,10 +113,14 @@ watch(
 );
 
 onMounted(async () => {
-  await refreshAttention();
+  await Promise.all([refreshAttention(), notifications.loadUnreadCount()]);
   statusUnlisten = await listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
     if (event.payload.phase === "synced") {
       void refreshAttention();
+      // The dispatch hook writes inbox rows during a sync cycle, so a
+      // completed cycle is the right moment to pick up any new unread
+      // notifications without inventing a separate event channel.
+      void notifications.loadUnreadCount();
     }
   });
 });
@@ -187,6 +193,11 @@ onBeforeUnmount(() => {
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5a4.5 4.5 0 019 0v3l1 2H2.5l1-2z" /><path d="M6.5 13.5a1.5 1.5 0 003 0" /></svg>
         </span>
         Notifications
+        <span
+          v-if="notifications.unreadCount > 0"
+          class="count has-attention"
+          :aria-label="`${notifications.unreadCount} unread notifications`"
+        >{{ notifications.unreadCount > 99 ? "99+" : notifications.unreadCount }}</span>
       </RouterLink>
       <RouterLink to="/settings" class="nav-item" :class="{ active: $route.name?.toString().startsWith('settings') }">
         <span class="nav-icon">
