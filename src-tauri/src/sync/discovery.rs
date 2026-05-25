@@ -51,6 +51,19 @@ impl DiscoveryRelation {
             Self::Involves => "is:pr is:open involves:@me sort:updated",
         }
     }
+
+    /// `pull_request_viewer_relations` flag column matching this relation.
+    /// Used by both the cache-miss upsert and the cache-hit re-affirm path
+    /// (issue #396). The returned string is a compile-time constant derived
+    /// from the enum variant, never from user input, so it is safe to splice
+    /// into SQL via `format!`.
+    fn flag_column(self) -> &'static str {
+        match self {
+            Self::Authored => "is_authored",
+            Self::ReviewRequested => "is_review_requested",
+            Self::Involves => "is_involved",
+        }
+    }
 }
 
 /// Outcome summary for one discovery phase. Useful for tests and debug logging.
@@ -134,24 +147,36 @@ impl<'a> DiscoveryAccumulator<'a> {
     }
 
     /// Body-hash cache hit path (issue #234). The page response matched the
-    /// previous cycle's body byte-for-byte, so the relations the per-node
+    /// previous cycle's body byte-for-byte, so the relation rows the per-node
     /// ingest path would have rewritten are already in the DB from last cycle.
-    /// All we need is to lift `relation_observed_at` on the matching relation rows so
-    /// the prune phase doesn't drop them as stale; the heavy upserts are
-    /// elided entirely. The relation flag itself doesn't need re-OR'ing —
-    /// an unchanged response means the same flag set as last cycle, which is
-    /// already on the row. Each entry still counts towards `nodes_seen` /
-    /// `distinct_prs` so the report mirrors the wire-payload shape.
-    fn touch_cached_nodes(&mut self, prs: &[&DiscoveryPullRequest]) -> Result<(), DiscoveryError> {
+    /// Lift `relation_observed_at` so the prune phase doesn't drop them as
+    /// stale, and re-OR the matching relation-flag column (issue #396): the
+    /// row may have been created by a different query that didn't set this
+    /// flag (e.g. `Involves` covering an Authored PR before the Authored
+    /// query first hit, or a transient empty response getting its hash
+    /// cached). Without the OR, the flag is stuck at 0 until the cache key
+    /// is wiped manually. The flag column name is derived from the
+    /// `DiscoveryRelation` enum, never from user input, so splicing it into
+    /// the SQL via `format!` is safe.
+    /// Each entry still counts towards `nodes_seen` / `distinct_prs` so the
+    /// report mirrors the wire-payload shape.
+    fn touch_cached_nodes(
+        &mut self,
+        relation: DiscoveryRelation,
+        prs: &[&DiscoveryPullRequest],
+    ) -> Result<(), DiscoveryError> {
         if prs.is_empty() {
             return Ok(());
         }
-        let conn = self.db.lock().expect("db poisoned");
-        let mut stmt = conn.prepare(
+        let flag_col = relation.flag_column();
+        let sql = format!(
             "UPDATE pull_request_viewer_relations
-                SET relation_observed_at = ?1
-              WHERE account_id = ?2 AND pull_request_id = ?3",
-        )?;
+                SET relation_observed_at = ?1,
+                    {flag_col} = 1
+              WHERE account_id = ?2 AND pull_request_id = ?3"
+        );
+        let conn = self.db.lock().expect("db poisoned");
+        let mut stmt = conn.prepare(&sql)?;
         for pr in prs {
             self.report.nodes_seen += 1;
             stmt.execute(params![
@@ -250,7 +275,7 @@ async fn run_relation_query(
                     _ => None,
                 })
                 .collect();
-            acc.touch_cached_nodes(&prs)?;
+            acc.touch_cached_nodes(relation, &prs)?;
             acc.report.pages_skipped_via_cache += 1;
         } else {
             for node in &data.search.nodes {
@@ -583,6 +608,43 @@ mod tests {
         assert_eq!(authored, 1);
         assert_eq!(requested, 0);
         assert_eq!(involved, 1);
+    }
+
+    #[test]
+    fn touch_cached_nodes_or_sets_relation_flag_for_existing_row() {
+        // Issue #396: the cache-hit path must re-OR the relation flag matching
+        // the current query, not just bump `relation_observed_at`. Otherwise a
+        // row created by a different query (e.g. `Involves` covering an
+        // Authored PR before the Authored cache populated) gets stuck without
+        // its `is_authored` bit. This regression reproduces by seeding a row
+        // with only `is_involved=1`, running `touch_cached_nodes` with the
+        // `Authored` relation, and asserting `is_authored` flips to 1 while
+        // `is_involved` is preserved.
+        let (_dir, db) = fresh_db();
+        let pr = make_pr(700, 11, 110, "owner");
+        upsert_repo(&db, 1, &pr).unwrap();
+        let pr_id = upsert_pull_request(&db, 110, &pr).unwrap();
+        upsert_viewer_relation(&db, 1, pr_id, DiscoveryRelation::Involves, 1000).unwrap();
+
+        let mut acc = DiscoveryAccumulator::new(&db, 1, 2000);
+        acc.touch_cached_nodes(DiscoveryRelation::Authored, &[&pr])
+            .unwrap();
+
+        let (authored, requested, involved, last_seen): (i64, i64, i64, i64) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_authored, is_review_requested, is_involved, relation_observed_at
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = ?1",
+                params![pr_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(authored, 1, "is_authored re-affirmed on cache hit");
+        assert_eq!(requested, 0, "is_review_requested untouched");
+        assert_eq!(involved, 1, "is_involved preserved");
+        assert_eq!(last_seen, 2000, "relation_observed_at advanced");
     }
 
     #[test]
