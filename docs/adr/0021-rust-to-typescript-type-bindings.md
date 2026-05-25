@@ -45,7 +45,7 @@ We will keep **Option 1** through v1 launch.
 We will revisit if any of the following triggers fire post-launch:
 
 - Three or more drift incidents land on main (where "drift incident" = a PR whose review or CI catches a TS / Rust mismatch caused by hand-mirror lag).
-- A new module ships more than ten DTOs at once (e.g. an M8 Teams expansion that adds Team / Membership / Review-request types).
+- A new module ships more than ten DTOs at once (e.g. a future expansion that introduces a substantial new DTO cluster in one go).
 - The frontend grows a second consumer surface (a CLI, a second Tauri window with isolated bindings, etc.) that would benefit from a single source of truth.
 
 When we revisit, the default candidate is **typeshare**:
@@ -72,7 +72,7 @@ When we revisit, the default candidate is **typeshare**:
 
 ### Neutral / follow-ups
 
-- M8 (Teams view) will be the practical proving ground for the trigger. If it adds ten or more DTOs, this ADR gets revisited automatically.
+- The next module that lands a substantial DTO cluster is the natural proving ground for the trigger. If it adds ten or more DTOs in one go, this ADR gets revisited automatically.
 - If a future post-mortem traces an incident to mirror drift, count it against the trigger and flag.
 
 ## References
