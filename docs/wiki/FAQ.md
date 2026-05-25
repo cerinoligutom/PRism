@@ -24,4 +24,4 @@ Yes, via per-account host configuration. See PRD §5.1 and §8.5.
 
 ## How fresh is the data I see?
 
-Default sync interval is 5 minutes, configurable 30 seconds to 10 minutes. The app shows a "last synced N ago" indicator at all times — if sync is failing, you'll see it. See PRD §8.3 and ADR 0004.
+Default sync interval is 5 minutes, configurable from 30 seconds up to 1 hour, plus a Manual option that disables auto-sync entirely (Cmd+R or the Refresh button still trigger a cycle on demand). The app shows a "last synced N ago" indicator at all times — if sync is failing, you'll see it. See PRD §8.3 and ADR 0004.

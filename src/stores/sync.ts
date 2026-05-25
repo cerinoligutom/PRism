@@ -110,6 +110,14 @@ export const useSyncStore = defineStore("sync", () => {
 
   const aggregate = computed<SyncPhase>(() => aggregatePhase(accounts.value));
 
+  /**
+   * `true` when the user has set the sync cadence to Manual (sentinel
+   * `intervalSeconds === 0`, mirroring `auto_archive_days = 0`). The
+   * scheduler parks the per-account loop in this mode; explicit
+   * `refreshNow` calls still trigger a cycle.
+   */
+  const isManual = computed<boolean>(() => intervalSeconds.value === 0);
+
   const latestSyncedAt = computed<string | null>(() => {
     let best: string | null = null;
     for (const a of accounts.value) {
@@ -285,6 +293,7 @@ export const useSyncStore = defineStore("sync", () => {
     minIntervalSeconds,
     maxIntervalSeconds,
     aggregate,
+    isManual,
     latestSyncedAt,
     secondsSinceLastSync,
     nextSyncInSeconds,
