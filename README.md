@@ -1,12 +1,39 @@
+<div align="center">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="120" height="120" fill="none" role="img" aria-label="PRism logo">
+  <line x1="2" y1="16" x2="9.5" y2="16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity="0.55"/>
+  <path d="M16 4 L28 26 L4 26 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none"/>
+  <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="#e85a4f" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="21" y1="19" x2="30" y2="16" stroke="#e6b800" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="#4caf6f" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="22" y1="22" x2="29" y2="26" stroke="#a25fbf" stroke-width="1.6" stroke-linecap="round"/>
+</svg>
+
 # PRism
 
-Cross-platform desktop dashboard for managing GitHub pull requests.
+**Every PR you touch, in one quiet place. See the state, not just the noise.**
 
-PRism gives developers, reviewers, and engineering leads a single focused dashboard for every PR they care about — across repos, orgs, and GitHub accounts — with deeper visibility into conversation state, status timelines, and review signals than GitHub's native UI provides. V1 is **read-only**: PRism observes and surfaces state; review, comment, and merge actions happen on GitHub itself.
+A cross-platform desktop dashboard for managing GitHub pull requests.
+
+[![CI](https://github.com/cerinoligutom/PRism/actions/workflows/ci.yml/badge.svg)](https://github.com/cerinoligutom/PRism/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/cerinoligutom/PRism?include_prereleases&sort=semver&label=release)](https://github.com/cerinoligutom/PRism/releases/latest)
+[![Licence](https://img.shields.io/github/license/cerinoligutom/PRism?label=licence)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-555)](#install)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app/)
+
+[Install](#install) · [First launch](#first-launch) · [Development](#getting-started-development) · [Contributing](#contributing) · [Wiki](https://github.com/cerinoligutom/PRism/wiki)
+
+</div>
+
+---
+
+## About
+
+PRism gives developers, reviewers, and engineering leads a single focused dashboard for every PR they care about, across repos, orgs, and GitHub accounts, with deeper visibility into conversation state, status timelines, and review signals than GitHub's native UI provides. V1 is **read-only**: PRism observes and surfaces state; review, comment, and merge actions happen on GitHub itself.
 
 ## Status
 
-Pre-alpha. M1 (foundations) is in progress — application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
+Pre-alpha. M1 (foundations) is in progress: application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
 
 For v1, github.com is the only validated host; GitHub Enterprise hosts have the wiring in place but are not validated. See ADR [0016](docs/adr/0016-unified-multi-account-dashboard.md).
 
