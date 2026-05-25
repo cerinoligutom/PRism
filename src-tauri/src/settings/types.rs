@@ -84,6 +84,15 @@ pub struct AppSettings {
     /// Clamped to `[0, 365]` by the writer command and by the migration's
     /// CHECK constraint. Issue #333.
     pub auto_archive_days: i64,
+    /// Cap on the row count in `notifications` (ADR 0028 retention
+    /// decision, issue #380). The notifications store prunes after every
+    /// insert: any row not among the newest N (ordered by `created_at DESC,
+    /// id DESC`) is deleted.
+    ///
+    /// Defaults to 500 to match migration 0023's seed. Clamped to
+    /// `[50, 5000]` by the writer command and by the migration's CHECK
+    /// constraint.
+    pub notification_retention_max: i64,
     /// Unix seconds. Updated by the writer command on every change so the
     /// frontend can show "Updated <relative>" affordances if needed.
     pub updated_at: i64,
@@ -105,6 +114,7 @@ impl AppSettings {
                     auto_update_last_check_at,
                     auto_update_last_failure_message,
                     auto_archive_days,
+                    notification_retention_max,
                     updated_at
                FROM app_settings
               WHERE id = 1",
@@ -122,7 +132,8 @@ impl AppSettings {
                     auto_update_last_check_at: row.get(7)?,
                     auto_update_last_failure_message: row.get(8)?,
                     auto_archive_days: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    notification_retention_max: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             },
         )
@@ -173,6 +184,10 @@ mod tests {
         assert_eq!(
             settings.auto_archive_days, 30,
             "auto-archive window defaults to 30 days per ADR-0018 (issue #333)"
+        );
+        assert_eq!(
+            settings.notification_retention_max, 500,
+            "notifications inbox cap defaults to 500 rows per ADR 0028 (issue #380)"
         );
         assert!(settings.updated_at > 0, "updated_at seeded to now()");
     }

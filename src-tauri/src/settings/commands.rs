@@ -37,6 +37,12 @@ use crate::settings::types::{AppSettings, NotificationPermissionState};
 /// a noisy CHECK failure. Issue #333.
 const AUTO_ARCHIVE_DAYS_MAX: i64 = 365;
 
+/// Inclusive bounds on the persisted notifications-inbox row cap (issue
+/// #380). The migration's CHECK constraint enforces the same range; the
+/// writer clamps so an over-eager UI doesn't trip the CHECK.
+const NOTIFICATION_RETENTION_MIN: i64 = 50;
+const NOTIFICATION_RETENTION_MAX: i64 = 5000;
+
 /// Read the singleton `app_settings` row. Called by the Settings panel and
 /// by the frontend's app-level notification preference store.
 ///
@@ -68,6 +74,9 @@ pub async fn update_app_settings(
     // (ADR 0017 decision 5), and letting the panel echo back a stale state
     // would re-prompt the user on every save.
     let auto_archive_days = prefs.auto_archive_days.clamp(0, AUTO_ARCHIVE_DAYS_MAX);
+    let notification_retention_max = prefs
+        .notification_retention_max
+        .clamp(NOTIFICATION_RETENTION_MIN, NOTIFICATION_RETENTION_MAX);
     conn.execute(
         "UPDATE app_settings
             SET notifications_enabled = ?1,
@@ -76,6 +85,7 @@ pub async fn update_app_settings(
                 auto_update_enabled = ?4,
                 auto_update_interval_seconds = ?5,
                 auto_archive_days = ?6,
+                notification_retention_max = ?7,
                 updated_at = strftime('%s', 'now')
           WHERE id = 1",
         rusqlite::params![
@@ -85,6 +95,7 @@ pub async fn update_app_settings(
             prefs.auto_update_enabled as i64,
             prefs.auto_update_interval_seconds,
             auto_archive_days,
+            notification_retention_max,
         ],
     )
     .map_err(|e| format!("update app_settings: {e}"))?;
@@ -226,6 +237,9 @@ mod tests {
     fn invoke_update(db: &DbHandle, prefs: AppSettings) -> Result<AppSettings, String> {
         let conn = db.lock().map_err(|_| "db lock poisoned".to_string())?;
         let auto_archive_days = prefs.auto_archive_days.clamp(0, AUTO_ARCHIVE_DAYS_MAX);
+        let notification_retention_max = prefs
+            .notification_retention_max
+            .clamp(NOTIFICATION_RETENTION_MIN, NOTIFICATION_RETENTION_MAX);
         conn.execute(
             "UPDATE app_settings
                 SET notifications_enabled = ?1,
@@ -234,6 +248,7 @@ mod tests {
                     auto_update_enabled = ?4,
                     auto_update_interval_seconds = ?5,
                     auto_archive_days = ?6,
+                    notification_retention_max = ?7,
                     updated_at = strftime('%s', 'now')
               WHERE id = 1",
             rusqlite::params![
@@ -243,6 +258,7 @@ mod tests {
                 prefs.auto_update_enabled as i64,
                 prefs.auto_update_interval_seconds,
                 auto_archive_days,
+                notification_retention_max,
             ],
         )
         .map_err(|e| format!("update app_settings: {e}"))?;
@@ -317,6 +333,7 @@ mod tests {
             auto_update_last_check_at: Some(42),
             auto_update_last_failure_message: Some("stale failure".into()),
             auto_archive_days: 45,
+            notification_retention_max: 1000,
             updated_at: 0,
         };
         let after = invoke_update(&db, payload).expect("update app_settings");
@@ -347,6 +364,10 @@ mod tests {
         assert_eq!(
             after.auto_archive_days, 45,
             "auto-archive window persists through the writer (issue #333)"
+        );
+        assert_eq!(
+            after.notification_retention_max, 1000,
+            "notifications retention cap persists through the writer (issue #380)"
         );
         assert!(
             after.updated_at > before.updated_at,
@@ -424,6 +445,7 @@ mod tests {
                 auto_update_last_check_at: None,
                 auto_update_last_failure_message: None,
                 auto_archive_days: 30,
+                notification_retention_max: 500,
                 updated_at: 0,
             },
         )
@@ -517,6 +539,28 @@ mod tests {
             auto_update_last_check_at: None,
             auto_update_last_failure_message: None,
             auto_archive_days: value,
+            notification_retention_max: 500,
+            updated_at: 0,
+        }
+    }
+
+    /// Build a payload that mutates `notification_retention_max` to `value`
+    /// while leaving the rest at the migration defaults. Mirrors
+    /// [`payload_with_archive_days`] so the retention clamp tests stay
+    /// noise-free.
+    fn payload_with_retention(value: i64) -> AppSettings {
+        AppSettings {
+            notifications_enabled: true,
+            notify_on_needs_attention: true,
+            notify_on_mention: true,
+            notification_permission_state: NotificationPermissionState::Unprompted,
+            last_seen_version: None,
+            auto_update_enabled: false,
+            auto_update_interval_seconds: 21600,
+            auto_update_last_check_at: None,
+            auto_update_last_failure_message: None,
+            auto_archive_days: 30,
+            notification_retention_max: value,
             updated_at: 0,
         }
     }
@@ -548,5 +592,32 @@ mod tests {
         let db = fresh_db();
         let after = invoke_update(&db, payload_with_archive_days(-7)).expect("update");
         assert_eq!(after.auto_archive_days, 0);
+    }
+
+    #[test]
+    fn update_persists_retention_value_within_bounds() {
+        // Happy path (issue #380): a value inside `[50, 5000]` round-trips
+        // unchanged.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_retention(250)).expect("update");
+        assert_eq!(after.notification_retention_max, 250);
+    }
+
+    #[test]
+    fn update_clamps_retention_above_cap() {
+        // Defence in depth: the migration's CHECK caps at 5000; the writer
+        // clamps so the round-trip doesn't surface a CHECK failure.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_retention(9_999)).expect("update");
+        assert_eq!(after.notification_retention_max, 5000);
+    }
+
+    #[test]
+    fn update_clamps_retention_below_floor() {
+        // The lower bound is 50 (issue #380). Anything smaller clamps up to
+        // 50 so the CHECK constraint isn't tripped.
+        let db = fresh_db();
+        let after = invoke_update(&db, payload_with_retention(10)).expect("update");
+        assert_eq!(after.notification_retention_max, 50);
     }
 }

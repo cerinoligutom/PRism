@@ -32,6 +32,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0020_auto_archive_days.sql"),
     include_str!("../../migrations/0021_notifications.sql"),
     include_str!("../../migrations/0022_notifications_read_at.sql"),
+    include_str!("../../migrations/0023_notification_retention.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -899,6 +900,72 @@ mod tests {
             normalised.contains("where") && normalised.contains("read_at is null"),
             "expected partial index WHERE read_at IS NULL, got: {sql}",
         );
+    }
+
+    #[test]
+    fn notification_retention_max_column_defaults_to_500() {
+        // Migration 0023 (issue #380) adds `notification_retention_max` with
+        // a default of 500 to match ADR 0028's count-cap decision. Every
+        // existing install lands on the same starting cap.
+        let conn = fresh();
+        let cap: i64 = conn
+            .query_row(
+                "SELECT notification_retention_max FROM app_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cap, 500);
+    }
+
+    #[test]
+    fn notification_retention_max_check_rejects_below_floor() {
+        // The migration adds `CHECK (notification_retention_max BETWEEN 50
+        // AND 5000)` so a write that bypasses the writer's clamp can't
+        // smuggle a smaller value into the column.
+        let conn = fresh();
+        let err = conn
+            .execute(
+                "UPDATE app_settings SET notification_retention_max = 49 WHERE id = 1",
+                [],
+            )
+            .expect_err("CHECK must reject 49 (below 50 floor)");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn notification_retention_max_check_rejects_above_cap() {
+        let conn = fresh();
+        let err = conn
+            .execute(
+                "UPDATE app_settings SET notification_retention_max = 5001 WHERE id = 1",
+                [],
+            )
+            .expect_err("CHECK must reject 5001 (above 5000 cap)");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn notification_retention_max_accepts_boundary_values() {
+        let conn = fresh();
+        conn.execute(
+            "UPDATE app_settings SET notification_retention_max = 50 WHERE id = 1",
+            [],
+        )
+        .expect("50 is in range");
+        conn.execute(
+            "UPDATE app_settings SET notification_retention_max = 5000 WHERE id = 1",
+            [],
+        )
+        .expect("5000 is in range");
     }
 
     #[test]
