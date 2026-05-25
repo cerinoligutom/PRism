@@ -74,7 +74,7 @@ export function parseChangelog(
   const flush = (endExclusive: number): void => {
     if (cursor === null) return;
     const bodyLines = lines.slice(cursor.start, endExclusive);
-    const body = bodyLines.join("\n").trim();
+    const body = stripEmptySubsections(bodyLines.join("\n").trim());
     // Skip empty Unreleased entries (stamp-changelog leaves a bare heading
     // immediately after a release promotion). A heading with no body would
     // render as a dead section in the manual dialog.
@@ -145,6 +145,55 @@ export function sectionsSince(
       compareSemver(entry.version, current) <= 0
     );
   });
+}
+
+/**
+ * Drop `### Subsection` blocks whose body is empty (#377). Keep-a-Changelog
+ * sections are formed with the six fixed subheadings (Added / Changed /
+ * Deprecated / Removed / Fixed / Security); `stamp-changelog.ts` re-seeds
+ * every subheading on a fresh `[Unreleased]` block even when most stay
+ * unused, so the rendered dialog would otherwise show bare `Deprecated /
+ * Removed / Security` headings with nothing below them. This walks the body
+ * line-by-line, groups by `### `, and skips groups whose collected lines
+ * trim to the empty string. Lines outside any `### ` group (rare — usually
+ * just a stray trailing newline) pass through unchanged.
+ */
+function stripEmptySubsections(body: string): string {
+  if (body === "") return body;
+  const lines = body.split(/\r?\n/);
+  const out: string[] = [];
+  let pendingHeader: string | null = null;
+  let pendingLines: string[] = [];
+
+  const flushPending = (): void => {
+    if (pendingHeader === null) return;
+    const content = pendingLines.join("\n").trim();
+    if (content.length > 0) {
+      if (out.length > 0) out.push("");
+      out.push(pendingHeader);
+      out.push("");
+      out.push(content);
+    }
+    pendingHeader = null;
+    pendingLines = [];
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("### ")) {
+      flushPending();
+      pendingHeader = line;
+      continue;
+    }
+    if (pendingHeader !== null) {
+      pendingLines.push(line);
+    } else if (line.trim() !== "") {
+      // Pre-subheading body content (rare: a paragraph before any `### `).
+      // Pass through so it isn't lost.
+      out.push(line);
+    }
+  }
+  flushPending();
+  return out.join("\n").trim();
 }
 
 /**
