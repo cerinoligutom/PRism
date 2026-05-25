@@ -313,6 +313,19 @@ function openOnGitHub(event: MouseEvent): void {
   void openUrl(props.pullRequest.url);
 }
 
+// Unravel mirrors GitHub's URL shape (owner/repo/pull/N) on the unravel.sh
+// domain. We don't try to verify the PR is indexed there - a 404 is the
+// caller's problem and not worth a round-trip per row to check.
+const unravelUrl = computed<string>(
+  () =>
+    `https://www.unravel.sh/${props.pullRequest.repo.owner}/${props.pullRequest.repo.name}/pull/${props.pullRequest.number}`,
+);
+
+function openOnUnravel(event: MouseEvent): void {
+  event.stopPropagation();
+  void openUrl(unravelUrl.value);
+}
+
 function onMarkUnread(): void {
   emit("mark-unread", props.pullRequest);
 }
@@ -646,6 +659,28 @@ function onSelectKey(event: KeyboardEvent): void {
       </div>
     </PRismTooltip>
 
+    <PRismTooltip text="Open on Unravel" :as-child="true">
+      <button
+        type="button"
+        class="pr-row__unravel"
+        aria-label="Open on Unravel"
+        @click="openOnUnravel"
+        @keydown.stop
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="287 261 441 447"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <g transform="translate(0 1024) scale(0.1 -0.1)" fill="currentColor" stroke="none">
+            <path d="M4755 7599 c-251 -37 -444 -98 -680 -214 -105 -51 -215 -115 -288 -165 -128 -90 -305 -253 -415 -383 -249 -293 -436 -707 -483 -1067 -17 -130 -17 -551 -1 -665 52 -349 215 -725 439 -1009 78 -98 231 -254 336 -342 518 -434 1260 -593 1959 -418 693 173 1263 680 1511 1344 44 118 102 344 122 479 20 131 20 424 0 574 -50 380 -215 752 -481 1087 -331 415 -869 713 -1419 785 -163 21 -435 18 -600 -6z m465 -350 c55 -6 113 -15 128 -19 l27 -8 -27 -1 c-57 -2 -236 -42 -343 -77 -239 -77 -437 -196 -606 -364 -239 -236 -372 -481 -440 -810 -29 -140 -31 -425 -5 -575 43 -239 152 -466 320 -664 216 -255 493 -416 846 -492 141 -31 424 -33 574 -5 525 97 943 433 1162 936 20 47 38 86 39 88 8 9 -9 -134 -26 -220 -46 -232 -175 -504 -334 -703 -293 -368 -677 -600 -1135 -688 -98 -19 -149 -22 -345 -22 -198 0 -247 3 -350 23 -312 60 -642 220 -877 427 -245 214 -429 491 -528 795 -49 147 -67 246 -79 434 -23 333 35 639 173 922 186 381 482 675 861 855 295 140 650 202 965 168z m764 -434 c268 -48 487 -284 515 -557 33 -333 -163 -622 -479 -705 -87 -23 -253 -22 -340 1 -168 45 -330 178 -407 332 -126 253 -79 552 116 744 162 160 371 225 595 185z" />
+          </g>
+        </svg>
+      </button>
+    </PRismTooltip>
+
     <PRismTooltip text="Open on GitHub" :as-child="true">
       <button
         type="button"
@@ -802,9 +837,9 @@ function onSelectKey(event: KeyboardEvent): void {
 .pr-row {
   position: relative;
   /* Columns: [select] [dot] [state icon + edge] [#num] [title] [accounts] */
-  /* [threads] [reviewers] [ci] [time] [github] [kebab] */
+  /* [threads] [reviewers] [ci] [time] [unravel] [github] [kebab] */
   display: grid;
-  grid-template-columns: 20px 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 28px;
+  grid-template-columns: 20px 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 24px 28px;
   align-items: center;
   gap: 14px;
   padding: 0 var(--s-6) 0 var(--s-3);
@@ -1200,7 +1235,11 @@ function onSelectKey(event: KeyboardEvent): void {
   color: var(--warning);
 }
 
-.pr-row__github {
+/* External-link icon buttons (GitHub + Unravel) share the same chrome:
+ * 24x24 hit area, transparent background, muted by default, brighten on
+ * row hover, fill on button hover / focus. */
+.pr-row__github,
+.pr-row__unravel {
   color: var(--text-faint);
   display: flex;
   align-items: center;
@@ -1217,16 +1256,19 @@ function onSelectKey(event: KeyboardEvent): void {
     background 0.12s;
 }
 
-.pr-row:hover .pr-row__github {
+.pr-row:hover .pr-row__github,
+.pr-row:hover .pr-row__unravel {
   color: var(--text-mute);
 }
 
-.pr-row__github:hover {
+.pr-row__github:hover,
+.pr-row__unravel:hover {
   background: var(--bg-3);
   color: var(--text);
 }
 
-.pr-row__github:focus-visible {
+.pr-row__github:focus-visible,
+.pr-row__unravel:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
   color: var(--text);

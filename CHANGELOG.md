@@ -21,6 +21,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Hover tooltip on the `PRismAvatarStack` overflow pill listing the hidden logins, with one-line / per-line / "...and N more" formatting based on count (#341).
 - "Every 30 minutes", "Every hour", and "Manual" options in Settings -> Sync; Manual (sentinel `sync_interval_seconds = 0`) parks the scheduler so only `Cmd+R` and the Refresh button trigger a cycle, and the status bar shows "On demand" with no "Next in" countdown (#358).
 - Dashboard PR row time cell now self-updates every minute (no more frozen "56s ago"), shows a combined tooltip explaining the last-updated timestamp + the status label, and colour-codes the status chip (green for approved, red for failing / changes / conflicts, yellow for stale). Reviewer summary numbers right-align to the column edge instead of hugging a variable-width avatar stack (#362).
+- "Open on Unravel" button on each PR row, beside "Open on GitHub". Opens `https://www.unravel.sh/{owner}/{repo}/pull/{number}` externally via `tauri-plugin-opener` (#368).
 
 ### Changed
 
