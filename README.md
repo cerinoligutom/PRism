@@ -1,13 +1,9 @@
 <div align="center">
 
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="120" height="120" fill="none" role="img" aria-label="PRism logo">
-  <line x1="2" y1="16" x2="9.5" y2="16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity="0.55"/>
-  <path d="M16 4 L28 26 L4 26 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none"/>
-  <line x1="20.5" y1="17.5" x2="30" y2="11" stroke="#e85a4f" stroke-width="1.6" stroke-linecap="round"/>
-  <line x1="21" y1="19" x2="30" y2="16" stroke="#e6b800" stroke-width="1.6" stroke-linecap="round"/>
-  <line x1="21.5" y1="20.5" x2="30" y2="21" stroke="#4caf6f" stroke-width="1.6" stroke-linecap="round"/>
-  <line x1="22" y1="22" x2="29" y2="26" stroke="#a25fbf" stroke-width="1.6" stroke-linecap="round"/>
-</svg>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/design/logo-dark.svg">
+  <img src="docs/design/logo-light.svg" alt="PRism logo" width="120" height="120">
+</picture>
 
 # PRism
 
