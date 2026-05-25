@@ -34,6 +34,13 @@ interface Props {
   entries: readonly ChangelogEntry[];
   /** Running app version; titles the dialog and the GitHub release link. */
   currentVersion: string;
+  /**
+   * Override the dialog title (issue #375). Manual opens from the About
+   * panel pass "Changelog" because the dialog shows the full file, not a
+   * version slice. `undefined` keeps the auto-open default
+   * (`What's new in vX.Y.Z`).
+   */
+  title?: string;
 }
 
 const props = defineProps<Props>();
@@ -49,7 +56,9 @@ const open = computed<boolean>({
   },
 });
 
-const title = computed(() => `What's new in v${props.currentVersion}`);
+const dialogTitle = computed<string>(
+  () => props.title ?? `What's new in v${props.currentVersion}`,
+);
 
 const concatenatedHtml = computed<string>(() => {
   if (props.entries.length === 0) return "";
@@ -93,7 +102,7 @@ async function openReleasePage(): Promise<void> {
       <DialogOverlay class="whats-new__overlay" />
       <DialogContent class="whats-new">
         <header class="whats-new__header">
-          <DialogTitle class="whats-new__title">{{ title }}</DialogTitle>
+          <DialogTitle class="whats-new__title">{{ dialogTitle }}</DialogTitle>
         </header>
 
         <div class="whats-new__body">

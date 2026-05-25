@@ -16,6 +16,7 @@ import {
 } from "@/lib/changelog";
 import { useAppSettings } from "@/stores/settings";
 import { useConversationStore } from "@/stores/conversation";
+import { useWhatsNewStore } from "@/stores/whatsNew";
 
 useKeyboardShortcuts();
 useNotificationRouter();
@@ -46,8 +47,14 @@ void conversation.bind();
 //      the running version.
 const { metadata } = useAppMetadata();
 const settings = useAppSettings();
+const whatsNew = useWhatsNewStore();
 const dialogEntries = ref<readonly ChangelogEntry[]>([]);
 const currentVersion = ref<string>("");
+// True when the currently-open dialog was triggered manually (issue #375).
+// Manual opens show the full changelog and do not advance the version
+// cursor on dismiss — the cursor's job is "have you seen the most recent
+// bump", not "have you ever looked at the changelog".
+const dialogIsManual = ref<boolean>(false);
 
 // Track whether the gate has already run for this launch. Both inputs
 // arrive asynchronously and might resolve in either order; we only want
@@ -70,6 +77,23 @@ watch(
   () => metadata.value?.version ?? null,
   () => {
     maybeEvaluateGate();
+  },
+);
+
+// Manual-open path (issue #375). The About panel calls
+// `whatsNew.requestManualOpen()` which bumps `requestCount`; we observe
+// the bump here and render the dialog with the full changelog. Skipped
+// when the dialog is already open so a stray double-click doesn't reset
+// the contents mid-read.
+watch(
+  () => whatsNew.requestCount,
+  (next, prev) => {
+    if (next === prev) return;
+    if (allEntries.length === 0) return;
+    if (dialogEntries.value.length > 0) return;
+    currentVersion.value = metadata.value?.version ?? currentVersion.value;
+    dialogIsManual.value = true;
+    dialogEntries.value = allEntries;
   },
 );
 
@@ -103,8 +127,14 @@ onBeforeUnmount(() => {
 });
 
 async function handleDismiss(): Promise<void> {
+  const wasManual = dialogIsManual.value;
+  dialogIsManual.value = false;
   const current = currentVersion.value;
   dialogEntries.value = [];
+  // Manual opens (issue #375) don't advance the version cursor. The
+  // cursor gates the auto-open on version bump; touching it here would
+  // suppress the next legitimate "you upgraded" dialog.
+  if (wasManual) return;
   if (current === "") return;
   try {
     await settings.setLastSeenVersion(current);
@@ -121,6 +151,7 @@ async function handleDismiss(): Promise<void> {
   <WhatsNewDialog
     :entries="dialogEntries"
     :current-version="currentVersion"
+    :title="dialogIsManual ? 'Changelog' : undefined"
     @dismissed="handleDismiss"
   />
 </template>
