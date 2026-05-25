@@ -2348,3 +2348,121 @@ async fn second_cycle_skips_pr_detail_when_updated_at_unchanged() {
     // before the test function returns.
     drop(pr_detail_guard);
 }
+
+/// Issue #397: when both pr_detail cache layers (#232 pre-flight skip and
+/// #234 post-flight body-hash skip) would fire but the local
+/// `requested_reviewers` / `reviews` tables are empty for this PR, the cycle
+/// must self-heal by forcing the detail fetch + write. Reproduces the
+/// real-user bug shape: cycle 1 stamps both markers, a later operation (or
+/// a partial first cycle) leaves the detail tables empty, and every
+/// subsequent cycle short-circuits without ever repopulating them.
+#[tokio::test]
+async fn pr_detail_cache_hit_self_heals_when_requested_reviewers_empty() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+
+    // PrDetail must be hit twice: once for cycle 1 (populates markers +
+    // tables), once for cycle 2 (the self-heal refetch after we wipe the
+    // tables). Without the #397 fix the cache short-circuits and cycle 2
+    // makes zero PrDetail calls, so the test fails on the assertion below.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+
+    let report1 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report1.outcome, CycleOutcome::Completed);
+
+    // Cycle 1 baseline: the detail write populated both tables.
+    let (reviewers1, reviews1): (i64, i64) = {
+        let conn = harness.db.lock().unwrap();
+        let r1 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM requested_reviewers WHERE pull_request_id = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let r2 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviews WHERE pull_request_id = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (r1, r2)
+    };
+    assert!(
+        reviewers1 > 0,
+        "fixture must seed requested_reviewers on cycle 1 (got {reviewers1})"
+    );
+    assert!(
+        reviews1 > 0,
+        "fixture must seed reviews on cycle 1 (got {reviews1})"
+    );
+
+    // Wipe the detail-derived tables to simulate the buggy state: the
+    // cache markers from cycle 1 remain in place (the etag store is shared
+    // across cycles via the harness factory), but the rows that the next
+    // cycle's cache hit would skip rewriting are gone.
+    {
+        let conn = harness.db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM requested_reviewers WHERE pull_request_id = 999",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM reviews WHERE pull_request_id = 999", [])
+            .unwrap();
+    }
+
+    let report2 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report2.outcome, CycleOutcome::Completed);
+
+    // Self-heal: cycle 2's probe spotted the empty tables, ignored both
+    // cache short-circuits, and ran the full write path against the
+    // freshly-fetched detail.
+    let (reviewers2, reviews2): (i64, i64) = {
+        let conn = harness.db.lock().unwrap();
+        let r1 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM requested_reviewers WHERE pull_request_id = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let r2 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reviews WHERE pull_request_id = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (r1, r2)
+    };
+    assert_eq!(
+        reviewers2, reviewers1,
+        "cycle 2 must self-heal requested_reviewers"
+    );
+    assert_eq!(reviews2, reviews1, "cycle 2 must self-heal reviews");
+}

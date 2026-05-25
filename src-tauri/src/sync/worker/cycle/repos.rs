@@ -74,6 +74,43 @@ pub(super) fn pr_detail_marker_bytes(updated_at: i64) -> [u8; 8] {
     updated_at.to_be_bytes()
 }
 
+/// Cache key for the "we tried to repair this PR's detail state" marker
+/// (issue #397). Lives alongside [`pr_detail_marker_key`] so a single
+/// in-memory etag store backs both. The marker stops the self-heal probe
+/// from refetching the same genuinely-empty PR (e.g. a brand-new draft with
+/// no reviewers requested and no reviews submitted) on every cycle.
+pub(super) fn pr_detail_repair_marker_key(pr_id: i64) -> String {
+    format!("pr-detail-repair:{pr_id}")
+}
+
+/// Probe whether the local detail-derived state for a PR looks like it was
+/// never written. A PR that genuinely has reviewers requested or reviews
+/// submitted will have at least one row in either table after a healthy
+/// detail write; the cache-hit short-circuits (issues #232 and #234) are
+/// only sound when those rows are already on disk. Returns `true` only when
+/// both tables are empty for this PR, which is the conservative trigger for
+/// the self-heal refetch.
+pub(super) fn detail_state_appears_empty(
+    db: &DbHandle,
+    pr_id: i64,
+) -> Result<bool, rusqlite::Error> {
+    let conn = crate::db::lock_db(db)?;
+    let has_reviewer: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM requested_reviewers WHERE pull_request_id = ?1)",
+        params![pr_id],
+        |row| row.get::<_, i64>(0).map(|n| n != 0),
+    )?;
+    if has_reviewer {
+        return Ok(false);
+    }
+    let has_review: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM reviews WHERE pull_request_id = ?1)",
+        params![pr_id],
+        |row| row.get::<_, i64>(0).map(|n| n != 0),
+    )?;
+    Ok(!has_review)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
