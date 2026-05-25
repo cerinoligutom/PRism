@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { formatRelativeAgo } from "@/lib/format";
+import { useNowSeconds } from "@/composables/useNowSeconds";
 import PRismTooltip from "./PRismTooltip.vue";
 
 interface Props {
@@ -32,8 +33,11 @@ const unixSeconds = computed<number | null>(() =>
   date.value === null ? null : Math.floor(date.value.getTime() / 1000),
 );
 
+// Drive the label off the shared 60s ticker so rows re-render as time
+// passes, instead of being stuck at whatever value was rendered on mount.
+const now = useNowSeconds();
 const relativeText = computed<string>(() =>
-  unixSeconds.value === null ? "" : formatRelativeAgo(unixSeconds.value),
+  unixSeconds.value === null ? "" : formatRelativeAgo(unixSeconds.value, now.value),
 );
 
 const isoString = computed<string | null>(() => date.value?.toISOString() ?? null);

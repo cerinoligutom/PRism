@@ -200,11 +200,16 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
 </template>
 
 <style scoped>
-/* Content-sized so the tooltip hit area matches the visible avatars; a
- * stretched grid would extend hover events past the rightmost avatar. */
+/* Avatars left, summary right, content-sized children so the avatar tooltip
+ * hit area still matches the visible bounds (flex items don't stretch in the
+ * main axis by default, unlike grid items). `justify-content: space-between`
+ * keeps the summary at a consistent x-position across rows instead of
+ * hugging a variable-width avatar stack. */
 .reviewer-stack {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  width: 100%;
   gap: 6px;
 }
 
