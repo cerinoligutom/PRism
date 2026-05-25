@@ -16,6 +16,7 @@ A cross-platform desktop dashboard for managing GitHub pull requests.
 [![Licence](https://img.shields.io/github/license/cerinoligutom/PRism?label=licence)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-555)](#install)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app/)
+[![Built with Vue](https://img.shields.io/badge/built%20with-Vue%203-4FC08D)](https://vuejs.org/)
 
 [Install](#install) · [First launch](#first-launch) · [Development](#getting-started-development) · [Contributing](#contributing) · [Wiki](https://github.com/cerinoligutom/PRism/wiki)
 
