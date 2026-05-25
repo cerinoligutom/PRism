@@ -136,15 +136,36 @@ impl AccountStore for SqlAccountStore {
     }
 
     fn remove(&self, id: AccountId) -> Result<(), StoreError> {
-        let conn = self.lock()?;
-        let affected = conn
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        // The `etags` table has no FK to `accounts` (issue #405), so the
+        // accounts DELETE alone leaves every cached REST + GraphQL entry the
+        // sync worker stamped for this account on disk. Keys are formatted
+        // `{account_id}:{kind}:{rest}` (see `github::etag::{graphql_key,
+        // rest_key}`), so a LIKE prefix scoped to `{id}:` purges exactly the
+        // affected rows. Account IDs are numeric and `:` is the fixed
+        // separator, so `1:%` matches `1:gql:...` / `1:GET:...` without ever
+        // matching `10:...` or other account-id prefixes.
+        let id_prefix = format!("{}:", id as i64);
+        tx.execute(
+            "DELETE FROM etags WHERE key LIKE ?1 || '%'",
+            params![id_prefix],
+        )
+        .map_err(|e| StoreError::Io(e.to_string()))?;
+        let affected = tx
             .execute("DELETE FROM accounts WHERE id = ?1", params![id as i64])
             .map_err(|e| StoreError::Io(e.to_string()))?;
         if affected == 0 {
-            Err(StoreError::NotFound(id))
-        } else {
-            Ok(())
+            // No matching account; abandon the transaction so the etags
+            // probe (which already ran above with the same id prefix) doesn't
+            // accidentally clear unrelated rows on a typo'd id.
+            tx.rollback().map_err(|e| StoreError::Io(e.to_string()))?;
+            return Err(StoreError::NotFound(id));
         }
+        tx.commit().map_err(|e| StoreError::Io(e.to_string()))?;
+        Ok(())
     }
 
     fn next_id(&self) -> Result<AccountId, StoreError> {
@@ -338,6 +359,78 @@ mod tests {
         let store = fresh_store();
         let err = store.remove(99).expect_err("expected NotFound");
         assert!(matches!(err, StoreError::NotFound(99)));
+    }
+
+    /// Issue #405: `etags` has no FK to `accounts`, so the accounts DELETE
+    /// alone leaves a removed account's cached REST + GraphQL entries on
+    /// disk. `remove` runs a `LIKE '{id}:%'` prefix delete in the same
+    /// transaction so both move together.
+    #[test]
+    fn remove_purges_etags_owned_by_the_account() {
+        let store = fresh_store();
+        let mut second = sample(2, "B");
+        second.login = "grace".into();
+        store.upsert(sample(1, "A")).unwrap();
+        store.upsert(second).unwrap();
+
+        // Seed etag rows under each account's id-prefixed key namespace, plus
+        // one row owned by account 11 to confirm the LIKE pattern doesn't
+        // overrun into id-prefixed neighbours (1: vs 11:).
+        {
+            let conn = store.conn.lock().unwrap();
+            for key in ["1:gql:abc", "1:GET:/repos/o/r", "2:gql:def", "11:gql:xyz"] {
+                conn.execute(
+                    "INSERT INTO etags (key, etag, last_seen_at, body_sha256)
+                         VALUES (?1, 'etag', 0, NULL)",
+                    params![key],
+                )
+                .unwrap();
+            }
+        }
+
+        store.remove(1).unwrap();
+
+        let remaining_keys: Vec<String> = {
+            let conn = store.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT key FROM etags ORDER BY key").unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            remaining_keys,
+            vec!["11:gql:xyz".to_string(), "2:gql:def".to_string()],
+            "only account 1's etag rows should be purged"
+        );
+    }
+
+    /// The NotFound branch leaves the etags table untouched: a typo'd id
+    /// must not silently clear unrelated entries the prefix happens not to
+    /// match. The rollback inside `remove` enforces this.
+    #[test]
+    fn remove_unknown_id_leaves_etags_intact() {
+        let store = fresh_store();
+        store.upsert(sample(1, "A")).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO etags (key, etag, last_seen_at, body_sha256)
+                     VALUES ('1:gql:abc', 'etag', 0, NULL)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let err = store.remove(99).expect_err("expected NotFound");
+        assert!(matches!(err, StoreError::NotFound(99)));
+
+        let count: i64 = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM etags", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count, 1, "etags untouched on NotFound");
     }
 
     #[test]
