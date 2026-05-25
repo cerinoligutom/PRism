@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, nextTick, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import PRismButton from "@/components/ui/PRismButton.vue";
@@ -355,7 +355,6 @@ async function ensureReposHydrated(): Promise<void> {
 
 onMounted(async () => {
   await accounts.refresh();
-  await dashboard.bind();
   const next = routeView();
   if (next !== null) {
     // Use the bare ref so the initial load runs even when the route's view
@@ -368,10 +367,6 @@ onMounted(async () => {
   // dashboard list resolves to empty - no flicker between the "0 tracked"
   // and "tracked but empty" copies.
   await Promise.all([dashboard.load(), ensureReposHydrated()]);
-});
-
-onBeforeUnmount(() => {
-  dashboard.unbind();
 });
 
 watch(() => route.meta?.dashboardView, () => {

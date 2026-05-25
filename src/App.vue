@@ -16,6 +16,7 @@ import {
 } from "@/lib/changelog";
 import { useAppSettings } from "@/stores/settings";
 import { useConversationStore } from "@/stores/conversation";
+import { useDashboardStore } from "@/stores/dashboard";
 import { useWhatsNewStore } from "@/stores/whatsNew";
 
 useKeyboardShortcuts();
@@ -28,6 +29,15 @@ useDeepLinkRouter();
 // teardown releases the registration.
 const conversation = useConversationStore();
 void conversation.bind();
+
+// Same shape for the dashboard store (issue #390). The sidebar count chips
+// read `dashboard.counts`, which is only refreshed when `dashboard.load()`
+// runs. The `sync://status` listener inside the store triggers that refresh
+// per cycle, but it used to be bound by `DashboardView.vue`'s lifecycle - so
+// the counts froze whenever the user was on Settings / Notifications /
+// Onboarding. Binding here keeps the listener alive for the app lifetime.
+const dashboard = useDashboardStore();
+void dashboard.bind();
 
 // In-app "What's new" wiring (ADR 0025).
 //
@@ -141,6 +151,7 @@ async function maybeEvaluateGate(): Promise<void> {
 
 onBeforeUnmount(() => {
   conversation.unbind();
+  dashboard.unbind();
 });
 
 async function handleDismiss(): Promise<void> {
