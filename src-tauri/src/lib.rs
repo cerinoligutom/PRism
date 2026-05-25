@@ -11,6 +11,7 @@
 //! - `triage`: per-account read-state, mention counters, "needs my attention" (M4)
 //! - `settings`: app-wide settings singleton (notification prefs, M6 foundation)
 //! - `notify`: OS notification dispatch sink (M6 plumbing; ADR 0017)
+//! - `notifications`: persistent inbox mirroring dispatched toasts (issue #378)
 //! - `startup`: graceful failure surface for setup-hook + `run()` errors (M7, issue #239)
 //! - `update`: auto-update subsystem (ADR-0024, issue #308)
 //!
@@ -26,6 +27,7 @@ pub mod conversation;
 pub mod dashboard;
 pub mod db;
 pub mod github;
+pub mod notifications;
 pub mod notify;
 pub mod repos;
 pub mod settings;
@@ -96,6 +98,9 @@ pub fn run() {
             dashboard::commands::list_dashboard_pull_requests,
             dashboard::commands::list_dashboard_view_counts,
             dashboard::commands::pr_lookup_by_coordinates,
+            notifications::commands::clear_all_notifications,
+            notifications::commands::delete_notification,
+            notifications::commands::list_notifications,
             repos::commands::list_repos_for_account,
             repos::commands::refresh_account_repos,
             repos::commands::set_repo_tracked,

@@ -57,19 +57,47 @@ pub struct NotificationTrigger {
 
 /// Formatted dispatch unit consumed by [`super::NotificationSink::dispatch`].
 ///
-/// The trigger -> notification formatting step lives in issue #192. Keeping
-/// the boundary explicit means the sink doesn't have to know how triggers
-/// turn into copy, and the emitter doesn't have to know how the OS plugin is
-/// addressed - either side can evolve independently.
+/// The trigger -> notification formatting step lives in
+/// [`super::formatter::format_trigger`]. Keeping the boundary explicit means
+/// the sink doesn't have to know how triggers turn into copy, and the
+/// emitter doesn't have to know how the OS plugin is addressed - either
+/// side can evolve independently.
 ///
 /// `payload` is forwarded to the frontend when the user clicks the toast
 /// (issue #201). Conventionally `{ account_id, pull_request_id }` so the
 /// router can push onto the PR detail surface; the sink enqueues it onto
 /// [`super::pending::PendingPayloadQueue`] before firing the toast and
 /// doesn't otherwise inspect it.
+///
+/// The `snapshot` fields back the persistent inbox (issue #378). The
+/// production sink writes a row into `notifications` from this struct before
+/// firing the OS toast so the user can recover a missed toast at
+/// `/dashboard/notifications`. Inbox insertion is best-effort; a DB failure
+/// is logged but does not block the OS toast (different reliability
+/// requirements).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     pub title: String,
     pub body: String,
     pub payload: serde_json::Value,
+    /// Inbox snapshot pulled from the same lookup the formatter ran for the
+    /// title / body copy. `None` skips the inbox write entirely - useful for
+    /// future trigger paths that intentionally bypass persistence.
+    pub snapshot: Option<NotificationSnapshot>,
+}
+
+/// Snapshot of the source PR carried alongside a [`Notification`] so the
+/// persistent inbox row stays meaningful after the local PR row is pruned.
+/// Mirrors the columns on `notifications` modulo the DB-owned `id` /
+/// `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSnapshot {
+    pub kind: NotificationKind,
+    pub account_id: i64,
+    pub pull_request_id: Option<i64>,
+    pub owner: String,
+    pub repo: String,
+    pub pr_number: i64,
+    pub pr_node_id: Option<String>,
+    pub pr_title: String,
 }

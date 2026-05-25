@@ -178,6 +178,16 @@ onBeforeUnmount(() => {
     </nav>
 
     <div class="sidebar__foot">
+      <RouterLink
+        to="/dashboard/notifications"
+        class="nav-item"
+        active-class="active"
+      >
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5a4.5 4.5 0 019 0v3l1 2H2.5l1-2z" /><path d="M6.5 13.5a1.5 1.5 0 003 0" /></svg>
+        </span>
+        Notifications
+      </RouterLink>
       <RouterLink to="/settings" class="nav-item" :class="{ active: $route.name?.toString().startsWith('settings') }">
         <span class="nav-icon">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M13 8a5 5 0 01-.1 1l1.4 1.1-1 1.7-1.7-.5a5 5 0 01-1.7 1L9.5 14h-2L7 12.3a5 5 0 01-1.7-1l-1.7.5-1-1.7L3 9a5 5 0 01-.1-1 5 5 0 01.1-1L1.6 5.9l1-1.7 1.7.5a5 5 0 011.7-1L6.5 2h2l.5 1.7a5 5 0 011.7 1l1.7-.5 1 1.7L11.9 7c.1.3.1.7.1 1z" /></svg>
@@ -237,5 +247,8 @@ onBeforeUnmount(() => {
   margin-top: auto;
   border-top: 1px solid var(--border-1);
   padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 </style>
