@@ -151,10 +151,22 @@ const DASHBOARD_REFRESH_EVENT = "dashboard://refresh";
 
 const VIEW_LABELS: Record<DashboardView, string> = {
   authored: "Authored by me",
-  assigned: "Assigned to me",
+  assigned: "Review requested",
   watching: "Watching",
   tracked: "Tracked",
   archive: "Archive",
+};
+
+// One-line explainer per view, surfaced as a subtitle under the main title.
+// "Assigned to me" was renamed to "Review requested" because the GitHub
+// vocabulary for `is_review_requested` is "review request", not "assignee"
+// (which is a different field PRism doesn't surface in v1).
+const VIEW_SUBTITLES: Record<DashboardView, string> = {
+  authored: "Pull requests you opened.",
+  assigned: "Pull requests awaiting your review.",
+  watching: "Pull requests you've commented on, reviewed, or been mentioned in.",
+  tracked: "All open pull requests in repositories you follow.",
+  archive: "Pull requests you've archived. Activity moves them back to the active list.",
 };
 
 function bucketKey(pr: DashboardPullRequest, group: DashboardGroup): string {
@@ -320,6 +332,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   );
 
   const viewLabel = computed<string>(() => VIEW_LABELS[view.value]);
+  const viewSubtitle = computed<string>(() => VIEW_SUBTITLES[view.value]);
 
   // Client-side search filter applied AFTER the backend's view + chip + sort
   // pass. The dataset is bounded (a few hundred PRs typical) so the contract
@@ -1012,6 +1025,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setFocusedPullRequest,
     moveFocus,
     viewLabel,
+    viewSubtitle,
     groups,
     visibleRowIds,
     counts,

@@ -21,7 +21,7 @@ interface NavLink {
 
 const links: readonly NavLink[] = [
   { view: "authored", to: "/dashboard/authored", label: "Authored by me" },
-  { view: "assigned", to: "/dashboard/assigned", label: "Assigned to me" },
+  { view: "assigned", to: "/dashboard/review-requested", label: "Review requested" },
   { view: "watching", to: "/dashboard/watching", label: "Watching" },
   { view: "tracked", to: "/dashboard/tracked", label: "Tracked" },
   { view: "archive", to: "/dashboard/archive", label: "Archive" },
