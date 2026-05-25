@@ -8,6 +8,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 import type { ThreadsSummary } from "@/types/dashboard";
 import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
 import ConversationStats from "./ConversationStats.vue";
+import IssueCommentsTab from "./IssueCommentsTab.vue";
 import ReviewsTab from "./ReviewsTab.vue";
 import StatusTimelineTab from "./StatusTimelineTab.vue";
 import ThreadsList from "./ThreadsList.vue";
@@ -18,7 +19,7 @@ interface Props {
 
 const props = defineProps<Props>();
 
-type TabKey = "threads" | "reviews" | "timeline";
+type TabKey = "threads" | "reviews" | "comments" | "timeline";
 
 interface TabSpec {
   readonly key: TabKey;
@@ -65,6 +66,11 @@ const tabs = computed<readonly TabSpec[]>(() => {
       key: "reviews",
       label: "Reviews",
       count: c?.reviews.length ?? null,
+    },
+    {
+      key: "comments",
+      label: "Comments",
+      count: c?.issue_comments.length ?? null,
     },
     {
       key: "timeline",
@@ -178,36 +184,47 @@ watch(
     </div>
 
     <div v-else-if="conversation !== null" class="pr-conversation__body">
-      <section v-if="activeTab === 'threads'" class="pr-conversation__layout">
-        <div class="pr-conversation__threads-col">
-          <div class="pr-conversation__col-head">
-            <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
-          </div>
+      <!-- Stats sidebar stays mounted as the outer right rail so every tab
+           (Threads, Reviews, Comments, Timeline) renders against the same
+           "Conversation stats" surface. The active tab swaps the left column. -->
+      <section class="pr-conversation__layout">
+        <div class="pr-conversation__main-col">
+          <template v-if="activeTab === 'threads'">
+            <div class="pr-conversation__col-head">
+              <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
+            </div>
 
-          <div v-if="conversation.stats.threads_total > 0" class="pr-conversation__rollup">
-            <ThreadsBar :threads="threadsSummaryForBar" />
-          </div>
+            <div v-if="conversation.stats.threads_total > 0" class="pr-conversation__rollup">
+              <ThreadsBar :threads="threadsSummaryForBar" />
+            </div>
 
-          <ThreadsList
-            :threads="conversation.threads"
-            :thread-comments="conversation.thread_comments"
+            <ThreadsList
+              :threads="conversation.threads"
+              :thread-comments="conversation.thread_comments"
+            />
+          </template>
+
+          <ReviewsTab
+            v-else-if="activeTab === 'reviews'"
+            :reviews="conversation.reviews"
           />
+
+          <IssueCommentsTab
+            v-else-if="activeTab === 'comments'"
+            :issue-comments="conversation.issue_comments"
+          />
+
+          <template v-else>
+            <StatusTimelineTab v-if="dashboardRow !== null" :pull-request="dashboardRow" />
+            <div v-else class="pr-conversation__placeholder">
+              Timeline unavailable until the dashboard list has loaded.
+            </div>
+          </template>
         </div>
 
         <aside class="pr-conversation__meta-col">
           <ConversationStats :stats="conversation.stats" />
         </aside>
-      </section>
-
-      <section v-else-if="activeTab === 'reviews'" class="pr-conversation__tab-body">
-        <ReviewsTab :reviews="conversation.reviews" />
-      </section>
-
-      <section v-else class="pr-conversation__tab-body">
-        <StatusTimelineTab v-if="dashboardRow !== null" :pull-request="dashboardRow" />
-        <div v-else class="pr-conversation__placeholder">
-          Timeline unavailable until the dashboard list has loaded.
-        </div>
       </section>
     </div>
 
@@ -320,7 +337,7 @@ watch(
   gap: 0;
 }
 
-.pr-conversation__threads-col {
+.pr-conversation__main-col {
   padding: 18px 24px 20px;
   border-right: 1px solid var(--border-1);
   min-width: 0;
@@ -355,16 +372,12 @@ watch(
   margin-bottom: var(--s-4);
 }
 
-.pr-conversation__tab-body {
-  padding: var(--s-5) var(--s-6) var(--s-6);
-}
-
 @media (max-width: 900px) {
   .pr-conversation__layout {
     grid-template-columns: 1fr;
   }
 
-  .pr-conversation__threads-col {
+  .pr-conversation__main-col {
     border-right: 0;
     border-bottom: 1px solid var(--border-1);
   }
