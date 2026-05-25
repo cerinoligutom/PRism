@@ -20,12 +20,15 @@ interface Segment {
   readonly count: number;
   readonly width: number;
   readonly tooltip: string;
+  readonly label: string;
+  readonly isResolved: boolean;
 }
 
 interface BreakdownRow {
   readonly bucket: Bucket;
   readonly label: string;
   readonly count: number;
+  readonly isResolved: boolean;
 }
 
 /**
@@ -58,7 +61,13 @@ const isMuted = computed<boolean>(() => {
 const segments = computed<readonly Segment[]>(() => {
   const t = props.threads;
   if (t === null || t.total === 0) return [];
-  const raw: { bucket: Bucket; count: number; tooltip: string }[] = (
+  const raw: {
+    bucket: Bucket;
+    count: number;
+    tooltip: string;
+    label: string;
+    isResolved: boolean;
+  }[] = (
     [
       ["unresolved-uninvolved", "Unresolved", t.unresolved_uninvolved],
       ["unresolved-involved", "Unresolved (involved)", t.unresolved_involved],
@@ -70,6 +79,8 @@ const segments = computed<readonly Segment[]>(() => {
       bucket,
       count,
       tooltip: tooltipFor(label, count),
+      label,
+      isResolved: bucket.startsWith("resolved"),
     }))
     .filter((s) => s.count > 0);
 
@@ -99,7 +110,12 @@ const breakdownRows = computed<readonly BreakdownRow[]>(() => {
     ] as const
   )
     .filter(([, , count]) => count > 0)
-    .map(([bucket, label, count]) => ({ bucket, label, count }));
+    .map(([bucket, label, count]) => ({
+      bucket,
+      label,
+      count,
+      isResolved: bucket.startsWith("resolved"),
+    }));
 });
 
 function tooltipFor(label: string, count: number): string {
@@ -113,7 +129,13 @@ function tooltipFor(label: string, count: number): string {
  * single-thread buckets visible without crushing the larger ones to zero.
  */
 function distributeWidths(
-  buckets: readonly { bucket: Bucket; count: number; tooltip: string }[],
+  buckets: readonly {
+    bucket: Bucket;
+    count: number;
+    tooltip: string;
+    label: string;
+    isResolved: boolean;
+  }[],
   total: number,
 ): readonly Segment[] {
   const SLIVER_PCT = 5;
@@ -123,6 +145,8 @@ function distributeWidths(
     bucket: b.bucket,
     count: b.count,
     tooltip: b.tooltip,
+    label: b.label,
+    isResolved: b.isResolved,
     width: SLIVER_PCT + (b.count / total) * remaining,
   }));
 }
@@ -134,13 +158,59 @@ function distributeWidths(
       <PRismTooltip
         v-for="segment in segments"
         :key="segment.bucket"
-        :text="segment.tooltip"
         :as-child="true"
       >
         <div
           :class="['threads-bar__seg-band', `threads-bar__seg-band--${segment.bucket}`]"
           :style="{ width: `${segment.width}%` }"
         ></div>
+        <template #content>
+          <div class="threads-bar__seg-tip">
+            <span
+              :class="[
+                'threads-bar__badge',
+                `threads-bar__badge--${segment.bucket}`,
+              ]"
+              aria-hidden="true"
+            >
+              <svg
+                v-if="segment.isResolved"
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="8" cy="8" r="6.25" />
+                <path d="M5.25 8.25l2 2 3.5-4" />
+              </svg>
+              <svg
+                v-else
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+                />
+              </svg>
+            </span>
+            <div class="threads-bar__seg-tip-text">
+              <div class="threads-bar__seg-tip-label">{{ segment.label }}</div>
+              <div class="threads-bar__seg-tip-count">
+                {{ segment.count }} {{ segment.count === 1 ? "thread" : "threads" }}
+              </div>
+            </div>
+          </div>
+        </template>
       </PRismTooltip>
     </div>
     <div class="threads-bar__nums">
@@ -168,11 +238,41 @@ function distributeWidths(
                 >
                   <span
                     :class="[
-                      'threads-bar__breakdown-dot',
-                      `threads-bar__breakdown-dot--${row.bucket}`,
+                      'threads-bar__badge',
+                      `threads-bar__badge--${row.bucket}`,
                     ]"
                     aria-hidden="true"
-                  ></span>
+                  >
+                    <svg
+                      v-if="row.isResolved"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M5.25 8.25l2 2 3.5-4" />
+                    </svg>
+                    <svg
+                      v-else
+                      width="12"
+                      height="12"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+                      />
+                    </svg>
+                  </span>
                   <span class="threads-bar__breakdown-count">{{ row.count }}</span>
                   <span class="threads-bar__breakdown-label">{{ row.label }}</span>
                 </li>
@@ -296,27 +396,62 @@ function distributeWidths(
   color: var(--text);
 }
 
-.threads-bar__breakdown-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: 0 0 auto;
+/* Bucket badge shared between the per-segment hover tooltip and the
+ * breakdown popup. Visually mirrors the thread-card state badge in
+ * `ThreadsList` (and the legend behind the info button on the conversation
+ * header) so users associate the colour + shape + icon across surfaces. */
+.threads-bar__badge {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-.threads-bar__breakdown-dot--unresolved-uninvolved {
-  background: var(--danger);
+.threads-bar__badge--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.18);
+  color: var(--danger);
 }
 
-.threads-bar__breakdown-dot--unresolved-involved {
-  background: var(--warning);
+.threads-bar__badge--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.2);
+  color: var(--warning);
 }
 
-.threads-bar__breakdown-dot--resolved-uninvolved {
-  background: var(--info);
+.threads-bar__badge--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--info);
 }
 
-.threads-bar__breakdown-dot--resolved-involved {
-  background: var(--success);
+.threads-bar__badge--resolved-involved {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.threads-bar__seg-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.threads-bar__seg-tip-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.threads-bar__seg-tip-label {
+  font-size: var(--fs-12);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.threads-bar__seg-tip-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-faint);
 }
 
 .threads-bar__breakdown-count {
