@@ -11,11 +11,22 @@ use rusqlite::{params, Connection};
 
 use super::types::{Notification, NotificationInsert};
 
-/// Insert one inbox row.
+/// Compile-time fallback for the retention cap, mirroring the migration's
+/// default. Read by [`insert`] when [`load_retention_cap`] fails so a
+/// transient settings-read error never silently disables pruning.
+const DEFAULT_RETENTION_MAX: i64 = 500;
+
+/// Insert one inbox row, then prune the table to the configured retention
+/// cap (ADR 0028, issue #380).
 ///
 /// Called from the dispatch hook with the same `kind` / `title` / `body` /
 /// snapshot the OS toast used. Returns the new row id so test fixtures can
 /// assert against it; the production path discards it.
+///
+/// Retention pruning runs once per insert and uses
+/// `app_settings.notification_retention_max`. If the settings read fails the
+/// pruner falls back to [`DEFAULT_RETENTION_MAX`] and logs - the insert still
+/// succeeds so the OS toast never gets out of sync with the inbox.
 pub fn insert(conn: &Connection, n: &NotificationInsert) -> rusqlite::Result<i64> {
     conn.execute(
         "INSERT INTO notifications
@@ -36,7 +47,49 @@ pub fn insert(conn: &Connection, n: &NotificationInsert) -> rusqlite::Result<i64
             n.body,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    let cap = load_retention_cap(conn).unwrap_or_else(|err| {
+        tracing::warn!(
+            %err,
+            "notifications: retention cap read failed, falling back to default {}",
+            DEFAULT_RETENTION_MAX,
+        );
+        DEFAULT_RETENTION_MAX
+    });
+    if let Err(err) = prune_to_cap(conn, cap) {
+        tracing::warn!(%err, "notifications: prune_to_cap failed, inbox over cap until next insert");
+    }
+    Ok(id)
+}
+
+/// Read the configured retention cap from the singleton `app_settings` row.
+/// The migration's CHECK constraint guarantees the value is in `[50, 5000]`
+/// at rest, so callers never have to re-clamp.
+fn load_retention_cap(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT notification_retention_max FROM app_settings WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// Drop every row except the newest `cap` (ordered by `created_at DESC, id
+/// DESC` so ties on the same second still get a stable head). Returns the
+/// number of rows removed for test assertion.
+///
+/// The `id NOT IN (subquery)` shape mirrors ADR 0028's SQL and reads cleanly
+/// against the existing `idx_notifications_created_at` index. Cheap enough
+/// to run once per dispatch even at the upper cap.
+fn prune_to_cap(conn: &Connection, cap: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM notifications
+          WHERE id NOT IN (
+              SELECT id FROM notifications
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?1
+          )",
+        params![cap],
+    )
 }
 
 /// Read up to `limit` inbox rows, newest first.
@@ -369,5 +422,103 @@ mod tests {
         let unread_row = rows.iter().find(|r| r.id != a).expect("row");
         assert!(read_row.read_at.is_some(), "marked row carries read_at");
         assert_eq!(unread_row.read_at, None, "unread row carries None");
+    }
+
+    /// Bulk-insert `count` rows under the same account/repo coordinates so
+    /// the retention tests don't repeat the seed boilerplate. Each row gets
+    /// a unique `pr_number` derived from the row index plus an explicit
+    /// `created_at` that climbs monotonically - the migration default of
+    /// `strftime('%s', 'now')` collapses too many rows onto the same second
+    /// in this loop, and the prune predicate orders by `created_at DESC, id
+    /// DESC` so ties on the second still survive on id, but climbing the
+    /// timestamp keeps the ordering legible for the assertions.
+    fn seed_many(conn: &Connection, count: i64) -> Vec<i64> {
+        let mut ids = Vec::with_capacity(count as usize);
+        for n in 1..=count {
+            conn.execute(
+                "INSERT INTO notifications
+                    (kind, account_id, pull_request_id,
+                     owner, repo, pr_number, pr_node_id, pr_title,
+                     title, body, created_at)
+                    VALUES ('needs_attention', 1, NULL,
+                            'o', 'a', ?1, NULL, 't',
+                            'Needs your attention', NULL, ?2)",
+                params![n, n],
+            )
+            .unwrap();
+            ids.push(conn.last_insert_rowid());
+        }
+        ids
+    }
+
+    #[test]
+    fn prune_to_cap_drops_oldest_rows_beyond_the_cap() {
+        // Issue #380: insert > cap rows, prune, assert the count lands on
+        // the cap and the dropped rows are the oldest ones. The fixture
+        // inserts 510 rows under a cap of 500.
+        let conn = fresh();
+        let ids = seed_many(&conn, 510);
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
+                .unwrap(),
+            510
+        );
+
+        let removed = prune_to_cap(&conn, 500).unwrap();
+        assert_eq!(removed, 10, "exactly the overflow rows must go");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 500, "the table must settle exactly on the cap");
+
+        // The oldest 10 rows (by created_at ASC, id ASC) were ids[0..10];
+        // none of them must survive.
+        let placeholders = (1..=10)
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT COUNT(*) FROM notifications WHERE id IN ({placeholders})");
+        let survivors: i64 = conn
+            .query_row(
+                &sql,
+                rusqlite::params_from_iter(ids[..10].iter().copied()),
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(survivors, 0, "the oldest 10 rows must be pruned");
+    }
+
+    #[test]
+    fn prune_to_cap_is_a_noop_when_under_the_cap() {
+        let conn = fresh();
+        seed_many(&conn, 100);
+        let removed = prune_to_cap(&conn, 500).unwrap();
+        assert_eq!(removed, 0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn insert_keeps_table_bounded_by_app_settings_cap() {
+        // End-to-end: drop the cap to the floor of 50 via the settings row,
+        // then push 55 notifications through `insert`. The table must never
+        // exceed 50 and the survivors are the newest ones.
+        let conn = fresh();
+        conn.execute(
+            "UPDATE app_settings SET notification_retention_max = 50 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        for n in 1..=55 {
+            insert(&conn, &sample("o", "a", n, "t")).unwrap();
+        }
+        let rows = list(&conn, None, None).unwrap();
+        assert_eq!(rows.len(), 50);
+        // Newest first: the freshest pr_number must be 55, the oldest 6.
+        assert_eq!(rows[0].pr_number, 55);
+        assert_eq!(rows[49].pr_number, 6);
     }
 }
