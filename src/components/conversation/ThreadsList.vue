@@ -244,7 +244,7 @@ async function openCommentOnGitHub(
         @keydown.enter.prevent="toggleExpanded(thread.id)"
         @keydown.space.prevent="toggleExpanded(thread.id)"
       >
-        <PRismTooltip :text="bucketTooltip(thread)" :as-child="true">
+        <PRismTooltip :as-child="true">
           <span
             :class="[
               'thread-card__state',
@@ -284,6 +284,21 @@ async function openCommentOnGitHub(
               />
             </svg>
           </span>
+          <template #content>
+            <div class="thread-state-tip">
+              <span class="thread-state-tip__label">
+                {{ thread.is_resolved ? "Resolved" : "Unresolved" }}
+              </span>
+              <span
+                v-if="thread.is_involved && !thread.is_resolved"
+                class="thread-card__chip thread-card__chip--mine"
+              >INVOLVED</span>
+              <span
+                v-if="thread.is_outdated"
+                class="thread-card__chip thread-card__chip--outdated"
+              >OUTDATED</span>
+            </div>
+          </template>
         </PRismTooltip>
 
         <div class="thread-card__file">
@@ -962,5 +977,80 @@ async function openCommentOnGitHub(
   font-family: var(--font-mono);
   font-size: var(--fs-11);
   color: var(--text-strong);
+}
+</style>
+
+<!--
+  Unscoped twin of the chip + state-badge styles. The state-badge tooltip
+  renders these classes inside `TooltipPortal`, which moves the content out
+  of the scoped CSS attribute boundary - the scoped rules above stop
+  applying once the node is teleported. Duplicating here keeps the inline
+  rendering scoped (still works against the original cascade) and the
+  portaled rendering correct.
+-->
+<style>
+.thread-state-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.thread-state-tip__label {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.thread-state-tip .thread-card__chip,
+.thread-state-legend .thread-card__chip {
+  margin-left: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.thread-state-tip .thread-card__chip--mine,
+.thread-state-legend .thread-card__chip--mine {
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+}
+
+.thread-state-tip .thread-card__chip--outdated,
+.thread-state-legend .thread-card__chip--outdated {
+  background: var(--bg-4);
+  color: var(--text-mute);
+}
+
+.thread-state-legend .thread-card__state {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.thread-state-legend .thread-card__state--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.18);
+  color: var(--danger);
+}
+
+.thread-state-legend .thread-card__state--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.2);
+  color: var(--warning);
+}
+
+.thread-state-legend .thread-card__state--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--info);
+}
+
+.thread-state-legend .thread-card__state--resolved-involved {
+  background: var(--success-bg);
+  color: var(--success);
 }
 </style>
