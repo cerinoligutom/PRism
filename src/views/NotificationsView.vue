@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 
 import NotificationRow from "@/components/notifications/NotificationRow.vue";
@@ -9,6 +9,7 @@ import PRismButton from "@/components/ui/PRismButton.vue";
 import { useAppearanceStore } from "@/stores/appearance";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
+import { useAppSettings } from "@/stores/settings";
 import { useToastStore } from "@/stores/toast";
 
 /**
@@ -39,10 +40,28 @@ const router = useRouter();
 const notifications = useNotificationsStore();
 const dashboard = useDashboardStore();
 const appearance = useAppearanceStore();
+const settings = useAppSettings();
 const toast = useToastStore();
 
 onMounted(async () => {
-  await notifications.load();
+  // Load the settings row alongside the inbox so the cap-reached footer
+  // has a real cap to compare against. The store ignores a duplicate
+  // load if something else got there first.
+  await Promise.all([notifications.load(), settings.load()]);
+});
+
+/**
+ * Whether the inbox is at or near its configured retention cap (ADR 0028,
+ * issue #380). "Near" is anything inside the top 5% so a user sitting on
+ * 480 / 500 sees the footer one notification before the prune kicks in.
+ * The footer is purely informational; the prune itself runs on every
+ * insert from the Rust side.
+ */
+const isAtRetentionCap = computed<boolean>(() => {
+  const cap = settings.notificationRetentionMax;
+  if (cap <= 0) return false;
+  if (notifications.count === 0) return false;
+  return notifications.count >= Math.ceil(cap * 0.95);
 });
 
 async function openNotification(notification: Notification): Promise<void> {
@@ -205,6 +224,14 @@ async function markAllRead(): Promise<void> {
         />
       </li>
     </ul>
+
+    <p
+      v-if="!notifications.isEmpty && isAtRetentionCap"
+      class="notifications-view__cap-footer text-xs text-fg-mute"
+    >
+      Showing latest {{ notifications.count }} notifications - older are
+      dropped automatically.
+    </p>
   </section>
 </template>
 
@@ -293,6 +320,12 @@ async function markAllRead(): Promise<void> {
   font-size: var(--fs-13);
   color: var(--text-mute);
   max-width: 460px;
+  line-height: var(--lh-body);
+}
+
+.notifications-view__cap-footer {
+  margin: var(--s-2) 0 0;
+  text-align: center;
   line-height: var(--lh-body);
 }
 </style>

@@ -56,6 +56,13 @@ export interface AppSettings {
    * archive only). Clamped server-side to `[0, 365]`.
    */
   readonly auto_archive_days: number;
+  /**
+   * Cap on the row count in the persistent notifications inbox (ADR 0028
+   * retention decision, issue #380). Defaults to 500. The Rust store
+   * prunes the table to this value after every insert; the Settings UI
+   * clamps writes to `[50, 5000]` and the server clamps the same range.
+   */
+  readonly notification_retention_max: number;
   /** Unix seconds. Advanced server-side on every write. */
   readonly updated_at: number;
 }
@@ -75,6 +82,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   auto_update_last_check_at: null,
   auto_update_last_failure_message: null,
   auto_archive_days: 30,
+  notification_retention_max: 500,
   updated_at: 0,
 };
 
@@ -91,6 +99,7 @@ export interface AppSettingsUpdate {
   readonly auto_update_enabled: boolean;
   readonly auto_update_interval_seconds: number;
   readonly auto_archive_days: number;
+  readonly notification_retention_max: number;
 }
 
 export const useAppSettings = defineStore("app-settings", () => {
@@ -113,6 +122,9 @@ export const useAppSettings = defineStore("app-settings", () => {
     () => settings.value.auto_update_last_failure_message,
   );
   const autoArchiveDays = computed(() => settings.value.auto_archive_days);
+  const notificationRetentionMax = computed(
+    () => settings.value.notification_retention_max,
+  );
 
   async function load(): Promise<void> {
     loading.value = true;
@@ -141,6 +153,7 @@ export const useAppSettings = defineStore("app-settings", () => {
       auto_update_enabled: prefs.auto_update_enabled,
       auto_update_interval_seconds: prefs.auto_update_interval_seconds,
       auto_archive_days: prefs.auto_archive_days,
+      notification_retention_max: prefs.notification_retention_max,
     };
     lastError.value = null;
     try {
@@ -163,6 +176,7 @@ export const useAppSettings = defineStore("app-settings", () => {
           auto_update_last_failure_message:
             previous.auto_update_last_failure_message,
           auto_archive_days: prefs.auto_archive_days,
+          notification_retention_max: prefs.notification_retention_max,
           updated_at: 0,
         },
       });
@@ -229,6 +243,7 @@ export const useAppSettings = defineStore("app-settings", () => {
     autoUpdateLastCheckAt,
     autoUpdateLastFailureMessage,
     autoArchiveDays,
+    notificationRetentionMax,
     load,
     update,
     setPermissionState,

@@ -105,6 +105,7 @@ async function commitArchiveDays(): Promise<void> {
       auto_update_interval_seconds:
         settings.settings.auto_update_interval_seconds,
       auto_archive_days: next,
+      notification_retention_max: settings.settings.notification_retention_max,
     });
   } catch (caught) {
     archiveError.value = caught instanceof Error ? caught.message : String(caught);

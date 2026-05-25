@@ -38,6 +38,7 @@ async function persistToggle(next: boolean): Promise<void> {
       auto_update_interval_seconds:
         settings.settings.auto_update_interval_seconds,
       auto_archive_days: settings.settings.auto_archive_days,
+      notification_retention_max: settings.settings.notification_retention_max,
     });
   } catch (err) {
     localError.value = err instanceof Error ? err.message : String(err);

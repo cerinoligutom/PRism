@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import {
   isPermissionGranted,
   requestPermission,
@@ -11,6 +11,13 @@ import {
   useAppSettings,
   type NotificationPermissionState,
 } from "@/stores/settings";
+
+// Inbox retention bounds (ADR 0028, issue #380). The Rust writer clamps
+// to the same range and the migration's CHECK constraint mirrors it; the
+// UI clamps here so an out-of-range entry settles to the edge rather than
+// bouncing a CHECK failure back through the toast.
+const RETENTION_MIN = 50;
+const RETENTION_MAX = 5000;
 
 const settingsStore = useAppSettings();
 
@@ -115,6 +122,7 @@ async function persistAll(
     notifications_enabled: boolean;
     notify_on_needs_attention: boolean;
     notify_on_mention: boolean;
+    notification_retention_max: number;
   }>,
 ): Promise<void> {
   const current = settingsStore.settings;
@@ -126,12 +134,16 @@ async function persistAll(
         patch.notify_on_needs_attention ?? current.notify_on_needs_attention,
       notify_on_mention:
         patch.notify_on_mention ?? current.notify_on_mention,
-      // The notifications panel doesn't touch the auto-update or
-      // auto-archive fields; pass through the current values so the
-      // writer round-trips them unchanged.
+      // The auto-update + auto-archive fields belong to other settings
+      // panels; pass them through unchanged so this trigger-toggle write
+      // doesn't stomp on the user's other choices. Retention is owned by
+      // this panel - the writer below picks up whatever's in the patch
+      // or falls back to the current value.
       auto_update_enabled: current.auto_update_enabled,
       auto_update_interval_seconds: current.auto_update_interval_seconds,
       auto_archive_days: current.auto_archive_days,
+      notification_retention_max:
+        patch.notification_retention_max ?? current.notification_retention_max,
     });
   } catch {
     // Store already reverted optimistic state and populated lastError.
@@ -159,8 +171,62 @@ function mapPermission(
   return "unprompted";
 }
 
-onMounted(() => {
-  void settingsStore.load();
+// Inbox retention input. Mirrors the auto-archive numeric-input pattern in
+// SyncSettings.vue: a local buffer string so the user can type "" / "12"
+// without the watcher snapping back, committed on blur or Enter. The
+// store re-syncs the buffer only when the persist isn't in flight.
+const retentionBuffer = ref<string>(String(settingsStore.notificationRetentionMax));
+const retentionPersisting = ref(false);
+const retentionError = ref<string | null>(null);
+
+watch(
+  () => settingsStore.notificationRetentionMax,
+  (next) => {
+    if (!retentionPersisting.value) {
+      retentionBuffer.value = String(next);
+    }
+  },
+);
+
+function clampRetention(raw: string): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) return settingsStore.notificationRetentionMax;
+  if (parsed < RETENTION_MIN) return RETENTION_MIN;
+  if (parsed > RETENTION_MAX) return RETENTION_MAX;
+  return parsed;
+}
+
+async function commitRetention(): Promise<void> {
+  if (retentionPersisting.value) return;
+  const next = clampRetention(retentionBuffer.value);
+  retentionBuffer.value = String(next);
+  if (next === settingsStore.notificationRetentionMax) return;
+  retentionPersisting.value = true;
+  retentionError.value = null;
+  try {
+    await persistAll({ notification_retention_max: next });
+  } catch (caught) {
+    retentionError.value =
+      caught instanceof Error ? caught.message : String(caught);
+  } finally {
+    retentionPersisting.value = false;
+  }
+}
+
+function onRetentionKeydown(event: KeyboardEvent): void {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void commitRetention();
+  }
+}
+
+onMounted(async () => {
+  try {
+    await settingsStore.load();
+    retentionBuffer.value = String(settingsStore.notificationRetentionMax);
+  } catch {
+    // The store populates `lastError`; the placeholder value stays.
+  }
 });
 </script>
 
@@ -247,6 +313,44 @@ onMounted(() => {
         {{ settingsStore.lastError }}
       </p>
     </section>
+
+    <section class="notifications-panel__section">
+      <div class="notifications-panel__section-head">
+        <h3 class="notifications-panel__section-title">Inbox retention</h3>
+        <span class="notifications-panel__section-desc">
+          How many notifications to keep before the oldest are dropped.
+        </span>
+      </div>
+
+      <div class="notifications-panel__retention">
+        <label class="notifications-panel__retention-field">
+          <span class="notifications-panel__retention-label">Keep most recent</span>
+          <span class="notifications-panel__retention-input">
+            <input
+              v-model="retentionBuffer"
+              class="input"
+              type="number"
+              inputmode="numeric"
+              :min="RETENTION_MIN"
+              :max="RETENTION_MAX"
+              step="50"
+              :disabled="retentionPersisting"
+              aria-label="Keep most recent notifications"
+              @blur="commitRetention"
+              @keydown="onRetentionKeydown"
+            />
+            <span class="notifications-panel__retention-unit">notifications</span>
+          </span>
+        </label>
+        <p class="notifications-panel__retention-hint">
+          Older notifications are dropped automatically when this limit is reached.
+        </p>
+        <p class="notifications-panel__retention-help">
+          Minimum {{ RETENTION_MIN }}, maximum {{ RETENTION_MAX }}.
+        </p>
+        <p v-if="retentionError" class="notifications-panel__error">{{ retentionError }}</p>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -332,5 +436,53 @@ onMounted(() => {
  * switch primitive's own disabled state. */
 .set-row--muted {
   opacity: 0.55;
+}
+
+.notifications-panel__retention {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.notifications-panel__retention-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.notifications-panel__retention-label {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  font-weight: 500;
+}
+
+.notifications-panel__retention-input {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.notifications-panel__retention-input .input {
+  width: 96px;
+  text-align: right;
+}
+
+.notifications-panel__retention-unit {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}
+
+.notifications-panel__retention-hint {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.notifications-panel__retention-help {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  line-height: 1.45;
 }
 </style>
