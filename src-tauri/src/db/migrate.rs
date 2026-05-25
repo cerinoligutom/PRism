@@ -31,6 +31,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0019_auto_update_settings.sql"),
     include_str!("../../migrations/0020_auto_archive_days.sql"),
     include_str!("../../migrations/0021_notifications.sql"),
+    include_str!("../../migrations/0022_notifications_read_at.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -166,6 +167,8 @@ mod tests {
             "idx_review_comments_author_login",
             // 0021 persistent notifications inbox (issue #378).
             "idx_notifications_created_at",
+            // 0022 read/unread state (issue #379).
+            "idx_notifications_unread",
         ];
         for name in expected {
             let count: i64 = conn
@@ -772,6 +775,8 @@ mod tests {
             "title",
             "body",
             "created_at",
+            // 0022 read/unread state (issue #379).
+            "read_at",
         ] {
             assert!(
                 names.iter().any(|n| n == col),
@@ -852,6 +857,48 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "inbox rows must cascade with their account");
+    }
+
+    #[test]
+    fn notifications_read_at_defaults_to_null_after_migration_0022() {
+        // Issue #379: the read/unread slice adds `read_at` as nullable. Newly
+        // inserted rows must default to NULL so the dispatch path doesn't have
+        // to know about the column. The partial index keys off `read_at IS
+        // NULL`, so a non-NULL default would silently break the unread count.
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO notifications
+                (kind, account_id, owner, repo, pr_number, pr_title, title)
+                VALUES ('mention', 1, 'owner', 'repo', 42, 't', 'tt');",
+        )
+        .unwrap();
+        let read_at: Option<i64> = conn
+            .query_row("SELECT read_at FROM notifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(read_at, None, "read_at must default to NULL on insert");
+    }
+
+    #[test]
+    fn idx_notifications_unread_is_partial_on_read_at_is_null() {
+        // The partial index keeps the unread count cheap. Assert the WHERE
+        // clause is present in `sqlite_master.sql` so a regression that drops
+        // the predicate (turning it into a full index) trips here.
+        let conn = fresh();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_notifications_unread'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let normalised = sql.to_lowercase();
+        assert!(
+            normalised.contains("where") && normalised.contains("read_at is null"),
+            "expected partial index WHERE read_at IS NULL, got: {sql}",
+        );
     }
 
     #[test]
