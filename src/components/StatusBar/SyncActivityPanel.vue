@@ -121,7 +121,7 @@ function phaseDisplayLabel(phase: SyncPhase): string {
     case "error":
       return "Failed";
     case "unauthorized":
-      return "Reauth";
+      return "Sign in";
     case "rate_limited":
       return "Throttled";
     case "syncing":
