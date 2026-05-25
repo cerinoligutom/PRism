@@ -135,12 +135,15 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
   display: grid;
   grid-template-columns: 28px 1fr;
   gap: var(--s-3);
-  padding: var(--s-4) 0;
-  border-bottom: 1px solid var(--border-1);
+  padding: var(--s-4);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  background: var(--bg-1);
+  transition: background 0.12s;
 }
 
-.issue-comment-card:last-child {
-  border-bottom: 0;
+.issue-comment-card:hover {
+  background: var(--bg-0);
 }
 
 .issue-comment-card__avatar {

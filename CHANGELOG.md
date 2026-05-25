@@ -30,6 +30,7 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Multi-account dashboard rows show the union of involved threads across every tracked account; a thread visible to two accounts counts once and the threads-bar matches the unified view's account scope (#338).
 - Status timeline tab now renders the wider GitHub event set per ADR-0027: label add/remove, assignee add/remove, milestone add/remove, force-pushes, base-branch changes, and lock/unlock (#342).
 - Renamed the "Assigned to me" sidebar entry and view title to "Review requested" so the label matches the underlying `is_review_requested` predicate (and doesn't get confused with GitHub's `assignees` array); route slug is now `/dashboard/review-requested`. Every view also gained a one-line subtitle explaining what's inside (#366).
+- Reviews and Comments tabs in the PR detail view now use the same bordered + filled card chrome as the Threads tab, so each review or comment reads as a self-contained card with hover affordance (#413).
 
 ### Deprecated
 
