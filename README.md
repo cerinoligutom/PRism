@@ -1,12 +1,36 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/design/logo-dark.svg">
+  <img src="docs/design/logo-light.svg" alt="PRism logo" width="120" height="120">
+</picture>
+
 # PRism
 
-Cross-platform desktop dashboard for managing GitHub pull requests.
+**Every PR you touch, in one quiet place. See the state, not just the noise.**
 
-PRism gives developers, reviewers, and engineering leads a single focused dashboard for every PR they care about — across repos, orgs, and GitHub accounts — with deeper visibility into conversation state, status timelines, and review signals than GitHub's native UI provides. V1 is **read-only**: PRism observes and surfaces state; review, comment, and merge actions happen on GitHub itself.
+A cross-platform desktop dashboard for managing GitHub pull requests.
+
+[![CI](https://github.com/cerinoligutom/PRism/actions/workflows/ci.yml/badge.svg)](https://github.com/cerinoligutom/PRism/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/cerinoligutom/PRism?include_prereleases&sort=semver&label=release)](https://github.com/cerinoligutom/PRism/releases/latest)
+[![Licence](https://img.shields.io/github/license/cerinoligutom/PRism?label=licence)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-555)](#install)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB)](https://tauri.app/)
+[![Built with Vue](https://img.shields.io/badge/built%20with-Vue%203-4FC08D)](https://vuejs.org/)
+
+[Install](#install) · [First launch](#first-launch) · [Development](#getting-started-development) · [Contributing](#contributing) · [Wiki](https://github.com/cerinoligutom/PRism/wiki)
+
+</div>
+
+---
+
+## About
+
+PRism gives developers, reviewers, and engineering leads a single focused dashboard for every PR they care about, across repos, orgs, and GitHub accounts, with deeper visibility into conversation state, status timelines, and review signals than GitHub's native UI provides. V1 is **read-only**: PRism observes and surfaces state; review, comment, and merge actions happen on GitHub itself.
 
 ## Status
 
-Pre-alpha. M1 (foundations) is in progress — application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
+Pre-alpha. M1 (foundations) is in progress: application shell is in place; sync, storage, and auth are open issues on the [kanban board](https://github.com/users/cerinoligutom/projects/7).
 
 For v1, github.com is the only validated host; GitHub Enterprise hosts have the wiring in place but are not validated. See ADR [0016](docs/adr/0016-unified-multi-account-dashboard.md).
 
