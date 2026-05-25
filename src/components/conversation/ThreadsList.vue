@@ -552,7 +552,7 @@ async function openCommentOnGitHub(
   border: 1px solid var(--border-1);
   border-radius: var(--r-2);
   background: var(--bg-1);
-  transition: background 0.12s;
+  transition: border-color 0.12s;
 }
 
 .thread-card__file {
@@ -575,7 +575,7 @@ async function openCommentOnGitHub(
 }
 
 .thread-card:hover {
-  background: var(--bg-0);
+  border-color: var(--accent);
 }
 
 .thread-card:focus-visible {
