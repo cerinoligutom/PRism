@@ -51,6 +51,15 @@ export const router = createRouter({
       meta: { dashboardView: "archive" satisfies DashboardViewName },
     },
     {
+      // Issue #378: persistent notifications inbox. Distinct from the four
+      // PR views above - this surface mirrors dispatched OS toasts rather
+      // than reading the PR table directly, so it uses its own view
+      // component instead of `DashboardView`.
+      path: "/dashboard/notifications",
+      name: "dashboard.notifications",
+      component: () => import("@/views/NotificationsView.vue"),
+    },
+    {
       // Detail-surface route host for `prDetailSurface = 'route'`. The view
       // param keeps the back-button breadcrumb honest about which list the
       // user came from; the id resolves the PR.
