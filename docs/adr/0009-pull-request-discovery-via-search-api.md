@@ -5,6 +5,8 @@
 - **Issue:** [#35](https://github.com/cerinoligutom/PRism/issues/35)
 - **Deciders:** @cerinoligutom
 
+> **Post-acceptance terminology update (2026-05-25, issue [#373](https://github.com/cerinoligutom/PRism/issues/373)):** the **"Team view"** referenced throughout this ADR was renamed **"Tracked view"** by issue [#220](https://github.com/cerinoligutom/PRism/issues/220) (M7), and the column `repos.is_team_tracked` was renamed `repos.is_tracked` by [migration 0013](../../src-tauri/migrations/0013_rename_team_tracked.sql). The underlying decision (GraphQL Search for the three user-centric views + REST `/repos/{owner}/{name}/pulls` for the per-repo opt-in view) is unchanged; only the names drifted. A separate, actual GitHub-Teams-driven view was scoped as M8 then deferred during pre-v1 review — see milestone [#9](https://github.com/cerinoligutom/PRism/milestone/9) for the closure rationale. Read the body below with these substitutions in mind: "Team view" → "Tracked view"; "team-tracked" → "tracked"; `is_team_tracked` → `is_tracked`.
+
 ## Context
 
 M2 ships the four sidebar views (Authored / Assigned / Watching / Team). The sync worker built in M1 enriches PRs already in the `pull_requests` table, but there's no discovery step — no code path that asks GitHub which PRs the viewer authored, has been review-requested on, or has touched. Without discovery every view renders empty.
@@ -74,3 +76,6 @@ The Team view does not write to this table — it joins on `repos.is_team_tracke
 - ADR [0004](0004-sync-polling-with-etag.md) — sync polling cadence and rate budget.
 - ADR [0006](0006-graphql-first-rest-fallback.md) — GraphQL-first protocol stance.
 - Contract: [`docs/contracts/dashboard-data.md`](../contracts/dashboard-data.md)
+- Issue [#220](https://github.com/cerinoligutom/PRism/issues/220) — M7 rename of the per-repo opt-in view from "Team" to "Tracked".
+- [Migration 0013](../../src-tauri/migrations/0013_rename_team_tracked.sql) — column rename `repos.is_team_tracked` → `repos.is_tracked`.
+- Milestone [#9](https://github.com/cerinoligutom/PRism/milestone/9) (closed) — deferred M8 "actual" GitHub-Teams-driven view; full rationale on [#221](https://github.com/cerinoligutom/PRism/issues/221).
