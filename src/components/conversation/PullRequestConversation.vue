@@ -197,7 +197,7 @@ watch(
                 <PRismTooltip :as-child="true" side="bottom" align="start">
                   <button
                     type="button"
-                    class="pr-conversation__legend-btn"
+                    class="btn btn-icon btn-sm pr-conversation__legend-btn"
                     aria-label="Thread badge legend"
                   >
                     <svg
@@ -217,7 +217,7 @@ watch(
                     </svg>
                   </button>
                   <template #content>
-                    <div class="thread-state-legend">
+                    <div class="thread-state-legend" role="region" aria-label="Thread badge legend">
                       <div class="thread-state-legend__section-title">State</div>
                       <ul class="thread-state-legend__rows">
                         <li class="thread-state-legend__row">
@@ -507,27 +507,15 @@ watch(
   color: var(--text-faint);
 }
 
+/* Pulls colour towards the accent so it reads as "tap me for help" rather
+ * than the default ghosted icon-button look. Inherits all other chrome from
+ * `.btn.btn-icon.btn-sm` in `primitives.css`. */
 .pr-conversation__legend-btn {
-  background: transparent;
-  border: 0;
-  padding: 2px;
-  border-radius: var(--r-1);
-  color: var(--text-faint);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 0;
+  color: var(--accent);
 }
 
-.pr-conversation__legend-btn:hover {
-  color: var(--text);
-  background: var(--bg-3);
-}
-
-.pr-conversation__legend-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--focus-ring);
+.pr-conversation__legend-btn:hover:not(:disabled) {
+  color: var(--accent-strong);
 }
 
 .pr-conversation__rollup {
