@@ -12,8 +12,29 @@ use crate::sync::activity::{
 
 use super::WorkerContext;
 
+/// User-facing phase label. Mirrors the chip ticker's wording in
+/// `phaseLabelFor` (src/stores/syncActivity.ts) so the panel row and the
+/// chip describe the same frame identically. The internal `as_str()`
+/// equivalent stays lowercase for wire/log compatibility.
+fn phase_display_label(phase: SyncPhaseLabel) -> &'static str {
+    match phase {
+        SyncPhaseLabel::Discovery => "Discovering",
+        SyncPhaseLabel::Enrichment => "Fetching detail",
+        SyncPhaseLabel::Pruning => "Pruning",
+    }
+}
+
+/// Past-tense phase label used by the `... complete - {summary}` row.
+fn phase_completed_label(phase: SyncPhaseLabel) -> &'static str {
+    match phase {
+        SyncPhaseLabel::Discovery => "Discovery",
+        SyncPhaseLabel::Enrichment => "Detail fetch",
+        SyncPhaseLabel::Pruning => "Pruning",
+    }
+}
+
 pub(super) fn emit_activity_cycle_started(ctx: &WorkerContext, account: &Account) {
-    let message = format!("Cycle started for {}", account.login);
+    let message = format!("Sync started for {}", account.login);
     record_activity(
         &ctx.activity,
         ctx.emit.as_ref(),
@@ -34,8 +55,8 @@ pub(super) fn emit_activity_phase_started(
 ) {
     let message = match phase {
         SyncPhaseLabel::Discovery => format!("Discovering for {}", account.login),
-        SyncPhaseLabel::Enrichment => "Fetching pull request detail".to_string(),
-        SyncPhaseLabel::Pruning => "Pruning stale relations".to_string(),
+        SyncPhaseLabel::Enrichment => "Fetching detail".to_string(),
+        SyncPhaseLabel::Pruning => "Pruning".to_string(),
     };
     record_activity(
         &ctx.activity,
@@ -57,7 +78,7 @@ pub(super) fn emit_activity_phase_progress(
     current: u32,
     total: u32,
 ) {
-    let label = phase.as_str();
+    let label = phase_display_label(phase);
     let message = if total > 0 {
         format!("{label} ({current}/{total})")
     } else {
@@ -151,7 +172,7 @@ pub(super) fn emit_activity_phase_completed_with_skips(
     cache_skips: u32,
 ) {
     let summary = summary.into();
-    let message = format!("{} complete - {}", phase.as_str(), summary);
+    let message = format!("{} complete - {}", phase_completed_label(phase), summary);
     record_activity(
         &ctx.activity,
         ctx.emit.as_ref(),
@@ -176,7 +197,7 @@ pub(super) fn emit_activity_cycle_completed(
     summary: impl Into<String>,
 ) {
     let summary = summary.into();
-    let message = format!("Cycle complete for {} - {}", account.login, summary);
+    let message = format!("Sync complete for {} - {}", account.login, summary);
     record_activity(
         &ctx.activity,
         ctx.emit.as_ref(),
@@ -200,7 +221,7 @@ pub(in crate::sync::worker) fn emit_activity_cycle_failed(
     error_message: &str,
 ) {
     let truncated = super::super::short_error_message(error_message);
-    let message = format!("Cycle failed ({error_kind}): {truncated}");
+    let message = format!("Sync failed ({error_kind}): {truncated}");
     record_activity(
         &ctx.activity,
         ctx.emit.as_ref(),
@@ -226,14 +247,11 @@ pub(super) fn emit_activity_rate_pause(
     let reset_in_seconds = reset_in.map(|d| d.as_secs()).unwrap_or(0);
     let message = if reset_in_seconds > 0 {
         format!(
-            "Rate limit guard paused {} ({}% remaining, resets in {}s)",
+            "Paused {} - API budget at {}%, resumes in {}s",
             account.login, pct, reset_in_seconds
         )
     } else {
-        format!(
-            "Rate limit guard paused {} ({}% remaining)",
-            account.login, pct
-        )
+        format!("Paused {} - API budget at {}%", account.login, pct)
     };
     record_activity(
         &ctx.activity,

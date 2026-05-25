@@ -87,7 +87,7 @@ const summary = computed<SummaryLine>(() => {
     case "error":
       return { phase, dotClass: "dot dot-danger", labelClass: "text-danger", label: "Sync failed" };
     case "unauthorized":
-      return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Reauth required" };
+      return { phase, dotClass: "dot dot-warning", labelClass: "text-warning", label: "Sign in again" };
     case "rate_limited":
       return {
         phase,

@@ -106,28 +106,28 @@ const TICKER_MIN_INTERVAL_MS = 250;
 export function phaseLabelFor(event: ActivityEvent, login: string | null): string | null {
   switch (event.kind) {
     case "cycle_started":
-      return login ? `Discovering for ${login}...` : "Discovering...";
+      return login ? `Discovering for ${login}` : "Discovering";
     case "phase_started":
       switch (event.phase) {
         case "discovery":
-          return login ? `Discovering for ${login}...` : "Discovering...";
+          return login ? `Discovering for ${login}` : "Discovering";
         case "enrichment":
-          return "Fetching detail...";
+          return "Fetching detail";
         case "pruning":
-          return "Pruning...";
+          return "Pruning";
       }
       return null;
     case "phase_progress":
       if (event.phase === "enrichment") {
         return event.total > 0
-          ? `Fetching detail (${event.current}/${event.total})...`
-          : `Fetching detail (${event.current})...`;
+          ? `Fetching detail (${event.current}/${event.total})`
+          : `Fetching detail (${event.current})`;
       }
       return null;
     case "pr_fetched":
-      return `Fetching detail (#${event.number})...`;
+      return `Fetching detail (#${event.number})`;
     case "pr_skipped_no_change":
-      return `Skipping #${event.number} (no change)...`;
+      return `Skipped #${event.number} (no change)`;
     case "phase_completed":
     case "cycle_completed":
     case "cycle_failed":
