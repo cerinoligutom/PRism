@@ -26,6 +26,10 @@ pub struct Notification {
     pub body: Option<String>,
     /// Unix seconds. Newest first in `list_notifications`.
     pub created_at: i64,
+    /// Unix seconds the row was marked read. `None` means unread; the row
+    /// click handler and "Mark all as read" both stamp `strftime('%s', 'now')`
+    /// onto this column (ADR 0028 decision 3, issue #379).
+    pub read_at: Option<i64>,
 }
 
 /// Insert payload handed to [`super::store::insert`]. Doesn't carry `id` or

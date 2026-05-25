@@ -44,6 +44,7 @@ function kindLabel(kind: string): string {
 <template>
   <article
     class="notification-row"
+    :class="{ 'notification-row--unread': notification.read_at === null }"
     role="button"
     tabindex="0"
     @click="onOpen(notification)"
@@ -124,6 +125,7 @@ function kindLabel(kind: string): string {
   padding: 12px 16px;
   background: var(--bg-2);
   border: 1px solid var(--border-1);
+  border-left-width: 3px;
   border-radius: var(--r-2);
   cursor: pointer;
   text-align: left;
@@ -132,6 +134,14 @@ function kindLabel(kind: string): string {
 .notification-row:hover {
   background: var(--bg-3);
   border-color: var(--border-2);
+}
+
+.notification-row--unread {
+  border-left-color: var(--accent);
+}
+
+.notification-row--unread:hover {
+  border-left-color: var(--accent);
 }
 
 .notification-row:focus-visible {
