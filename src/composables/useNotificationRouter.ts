@@ -14,7 +14,9 @@ import { useDashboardStore } from "@/stores/dashboard";
  * app, which surfaces as a `WindowEvent::Focused(true)` event on the main
  * window. The Tauri side drains the pending queue on that focus event and
  * emits `notification://open-pr` per payload. This composable listens on
- * that event and pushes onto the existing `pr-detail` route.
+ * that event and routes through the shared `dashboard.openPrFromExternal`
+ * action, which honours the active detail surface (drawer or route) from
+ * the appearance store (issue #410).
  *
  * The plugin's desktop v2.3.3 surface ships no per-notification or global
  * click callback, so the focus-driven replay is the contract-faithful path.
@@ -71,20 +73,21 @@ export function useNotificationRouter(): void {
   async function handleOpenPr(
     payload: NotificationOpenPrPayload,
   ): Promise<void> {
-    // Scope the dashboard to the originating account before the route push
-    // so the back-navigation lands on a list that contains the deep-linked
-    // row. `setAccountScope` is a no-op when the scope already matches and
-    // triggers a single `load()` otherwise; the load can race the route
-    // push, which is fine - the detail view runs its own onMounted load.
-    dashboard.setAccountScope(payload.account_id);
-
     const meta = await resolveMetadata(payload);
     if (meta === null) return;
 
-    void router.push({
-      name: "pr-detail",
-      params: { view: meta.view, id: meta.pull_request_id },
-    });
+    // Route through the shared dashboard store action so the active detail
+    // surface (drawer vs route, per the appearance setting) decides the
+    // target. The helper sets account scope before navigating so the
+    // back-navigation lands on a list that contains the row.
+    await dashboard.openPrFromExternal(
+      {
+        pullRequestId: meta.pull_request_id,
+        accountId: payload.account_id,
+        view: meta.view,
+      },
+      router,
+    );
   }
 
   async function resolveMetadata(

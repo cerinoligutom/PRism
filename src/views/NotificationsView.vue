@@ -6,7 +6,6 @@ import { useRouter } from "vue-router";
 
 import NotificationRow from "@/components/notifications/NotificationRow.vue";
 import PRismButton from "@/components/ui/PRismButton.vue";
-import { useAppearanceStore } from "@/stores/appearance";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
 import { useAppSettings } from "@/stores/settings";
@@ -39,7 +38,6 @@ interface PrLookupErrorPayload {
 const router = useRouter();
 const notifications = useNotificationsStore();
 const dashboard = useDashboardStore();
-const appearance = useAppearanceStore();
 const settings = useAppSettings();
 const toast = useToastStore();
 
@@ -78,21 +76,14 @@ async function openNotification(notification: Notification): Promise<void> {
   // signature - either way the call site stays.
   const match = await lookupPr(notification);
   if (match !== null) {
-    dashboard.setAccountScope(match.account_id);
-    await dashboard.setView(match.view);
-    if (appearance.prDetailSurface === "route") {
-      await router.push({
-        name: "pr-detail",
-        params: { view: match.view, id: match.pull_request_id },
-      });
-      return;
-    }
-    // Drawer surface: `PullRequestDrawer` is mounted from `DashboardView`,
-    // not from this view (issue #400). Push to the matching dashboard route
-    // first so the host exists, then set the expanded id - the store value
-    // survives the navigation, and the drawer opens on the next paint.
-    await router.push({ name: dashboardRouteName(match.view) });
-    dashboard.setExpandedPullRequest(match.pull_request_id);
+    await dashboard.openPrFromExternal(
+      {
+        pullRequestId: match.pull_request_id,
+        accountId: match.account_id,
+        view: match.view,
+      },
+      router,
+    );
     return;
   }
 
@@ -140,15 +131,6 @@ function githubPrUrl(notification: Notification): string {
   const owner = encodeURIComponent(notification.owner);
   const repo = encodeURIComponent(notification.repo);
   return `https://github.com/${owner}/${repo}/pull/${notification.pr_number}`;
-}
-
-function dashboardRouteName(view: PrCoordinatesMatch["view"]): string {
-  // The `assigned` Tauri view name maps to the `review-requested` route
-  // slug (see `src/router/index.ts`); the other three views share their
-  // name with the route suffix.
-  return view === "assigned"
-    ? "dashboard.review-requested"
-    : `dashboard.${view}`;
 }
 
 async function dismissNotification(notification: Notification): Promise<void> {

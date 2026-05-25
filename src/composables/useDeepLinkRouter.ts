@@ -10,7 +10,6 @@ import {
   type DeepLinkTarget,
   type PrCoordinates,
 } from "@/lib/deepLinks";
-import { useAppearanceStore } from "@/stores/appearance";
 import { useDashboardStore } from "@/stores/dashboard";
 
 /**
@@ -54,7 +53,6 @@ interface PrLookupErrorPayload {
 export function useDeepLinkRouter(): void {
   const router = useRouter();
   const dashboard = useDashboardStore();
-  const appearance = useAppearanceStore();
   let unlisten: (() => void) | null = null;
 
   onMounted(async () => {
@@ -108,25 +106,18 @@ export function useDeepLinkRouter(): void {
       return;
     }
 
-    // Align the dashboard scope + view first so the row exists in the
-    // active list when the drawer mounts (or the route lands). The store
-    // load is async; both surfaces run their own load on open, so the
-    // race is benign.
-    dashboard.setAccountScope(match.account_id);
-    await dashboard.setView(match.view);
-
-    if (appearance.prDetailSurface === "route") {
-      void router.push({
-        name: "pr-detail",
-        params: { view: match.view, id: match.pull_request_id },
-      });
-      return;
-    }
-
-    // Drawer surface: open the drawer directly via the store setter. The
-    // in-app row click goes through `openPullRequest`, which needs a full
-    // `DashboardPullRequest` payload we don't have here.
-    dashboard.setExpandedPullRequest(match.pull_request_id);
+    // Route through the shared dashboard store action so the active detail
+    // surface (drawer vs route, per the appearance setting) decides the
+    // target. The helper sets account scope and routes to the matching
+    // dashboard host for the drawer branch.
+    await dashboard.openPrFromExternal(
+      {
+        pullRequestId: match.pull_request_id,
+        accountId: match.account_id,
+        view: match.view,
+      },
+      router,
+    );
   }
 
   async function lookupPr(coords: PrCoordinates): Promise<PrCoordinatesMatch | null> {
