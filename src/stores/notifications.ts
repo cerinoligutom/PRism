@@ -12,6 +12,8 @@ import { invoke } from "@tauri-apps/api/core";
  * the row stays meaningful after a PR prune. `pull_request_id` is the soft
  * link the State-A click path uses to open the local detail surface; it
  * goes `null` when the source PR row is deleted.
+ *
+ * `read_at` is nullable; NULL means unread (ADR 0028 decision 3).
  */
 export interface Notification {
   readonly id: number;
@@ -28,6 +30,8 @@ export interface Notification {
   readonly body: string | null;
   /** Unix seconds. Newest first in the list. */
   readonly created_at: number;
+  /** Unix seconds the row was marked read; `null` while unread. */
+  readonly read_at: number | null;
 }
 
 /**
@@ -41,11 +45,18 @@ export interface Notification {
  * the deleted row is dropped from the in-memory list directly rather than
  * round-tripping the full list. The DB and the in-memory list move
  * together, and the next `load()` reconciles either way.
+ *
+ * Read/unread state (issue #379): `markRead(id)` and `markAllRead()` stamp
+ * `read_at` server-side and mutate the local list in place. `unreadCount`
+ * is computed from the list when the inbox view is mounted; the sidebar
+ * chip reads it via `loadUnreadCount()` so it stays accurate without
+ * having to load the full list.
  */
 export const useNotificationsStore = defineStore("notifications", () => {
   const list = ref<readonly Notification[]>([]);
   const loading = ref(false);
   const lastError = ref<string | null>(null);
+  const unreadCount = ref(0);
 
   const count = computed<number>(() => list.value.length);
   const isEmpty = computed<boolean>(() => list.value.length === 0);
@@ -54,10 +65,15 @@ export const useNotificationsStore = defineStore("notifications", () => {
     loading.value = true;
     lastError.value = null;
     try {
-      list.value = await invoke<Notification[]>("list_notifications", {
+      const rows = await invoke<Notification[]>("list_notifications", {
         limit: null,
         beforeId: null,
       });
+      list.value = rows;
+      unreadCount.value = rows.reduce(
+        (acc, n) => (n.read_at === null ? acc + 1 : acc),
+        0,
+      );
     } catch (err) {
       lastError.value = formatError(err);
     } finally {
@@ -65,11 +81,27 @@ export const useNotificationsStore = defineStore("notifications", () => {
     }
   }
 
+  async function loadUnreadCount(): Promise<void> {
+    try {
+      unreadCount.value = await invoke<number>("unread_notification_count");
+    } catch (err) {
+      // Counts are advisory - on failure the chip drops to zero rather
+      // than holding a stale signal. The lastError surface stays empty so
+      // the inbox view itself doesn't flag a banner over a sidebar miss.
+      console.warn("notifications.loadUnreadCount failed", err);
+      unreadCount.value = 0;
+    }
+  }
+
   async function deleteOne(id: number): Promise<void> {
     lastError.value = null;
     try {
       await invoke<void>("delete_notification", { id });
+      const removed = list.value.find((n) => n.id === id);
       list.value = list.value.filter((n) => n.id !== id);
+      if (removed !== undefined && removed.read_at === null) {
+        unreadCount.value = Math.max(0, unreadCount.value - 1);
+      }
     } catch (err) {
       lastError.value = formatError(err);
       throw new Error(lastError.value);
@@ -82,9 +114,44 @@ export const useNotificationsStore = defineStore("notifications", () => {
     try {
       await invoke<void>("clear_all_notifications");
       list.value = [];
+      unreadCount.value = 0;
     } catch (err) {
       lastError.value = formatError(err);
       throw new Error(lastError.value);
+    }
+  }
+
+  async function markRead(id: number): Promise<void> {
+    const target = list.value.find((n) => n.id === id);
+    if (target === undefined || target.read_at !== null) return;
+    // Optimistically mark locally so the row state updates the moment the
+    // user clicks. The backend write is idempotent so a duplicate land
+    // is a no-op; a failure logs but doesn't roll back - the next sync
+    // cycle's `loadUnreadCount` reconciles.
+    const now = Math.floor(Date.now() / 1000);
+    list.value = list.value.map((n) =>
+      n.id === id ? { ...n, read_at: now } : n,
+    );
+    unreadCount.value = Math.max(0, unreadCount.value - 1);
+    try {
+      await invoke<void>("mark_notification_read", { id });
+    } catch (err) {
+      console.warn("notifications.markRead failed", err);
+    }
+  }
+
+  async function markAllRead(): Promise<void> {
+    if (unreadCount.value === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    list.value = list.value.map((n) =>
+      n.read_at === null ? { ...n, read_at: now } : n,
+    );
+    unreadCount.value = 0;
+    try {
+      await invoke<number>("mark_all_notifications_read");
+    } catch (err) {
+      lastError.value = formatError(err);
+      console.warn("notifications.markAllRead failed", err);
     }
   }
 
@@ -96,11 +163,15 @@ export const useNotificationsStore = defineStore("notifications", () => {
     list,
     loading,
     lastError,
+    unreadCount,
     count,
     isEmpty,
     load,
+    loadUnreadCount,
     deleteOne,
     clearAll,
+    markRead,
+    markAllRead,
     clearError,
   };
 });

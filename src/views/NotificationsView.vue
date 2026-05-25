@@ -46,6 +46,11 @@ onMounted(async () => {
 });
 
 async function openNotification(notification: Notification): Promise<void> {
+  // Mark-on-click (ADR 0028 decision 3, issue #379). Fire-and-forget so
+  // the deep-link work below doesn't wait on the backend write; the store
+  // updates the row locally before the IPC round-trip lands.
+  void notifications.markRead(notification.id);
+
   // State A: try the local lookup against `(host, owner, repo, pr_number)`.
   // The snapshot row doesn't carry the host directly (the v1 surface
   // assumes `github.com`); the lookup matches the host column on the
@@ -132,6 +137,15 @@ async function clearAll(): Promise<void> {
     console.warn("notifications.clearAll failed", err);
   }
 }
+
+async function markAllRead(): Promise<void> {
+  try {
+    await notifications.markAllRead();
+  } catch (err) {
+    toast.show("Couldn't mark notifications as read.", { variant: "danger" });
+    console.warn("notifications.markAllRead failed", err);
+  }
+}
 </script>
 
 <template>
@@ -144,14 +158,24 @@ async function clearAll(): Promise<void> {
           you dismiss them.
         </p>
       </div>
-      <PRismButton
-        variant="ghost"
-        size="sm"
-        :disabled="notifications.count === 0"
-        @click="clearAll"
-      >
-        Clear all
-      </PRismButton>
+      <div class="notifications-view__actions">
+        <PRismButton
+          variant="ghost"
+          size="sm"
+          :disabled="notifications.unreadCount === 0"
+          @click="markAllRead"
+        >
+          Mark all as read
+        </PRismButton>
+        <PRismButton
+          variant="ghost"
+          size="sm"
+          :disabled="notifications.count === 0"
+          @click="clearAll"
+        >
+          Clear all
+        </PRismButton>
+      </div>
     </header>
 
     <div v-if="notifications.loading && notifications.isEmpty" class="notifications-view__status">
@@ -200,6 +224,12 @@ async function clearAll(): Promise<void> {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--s-4);
+}
+
+.notifications-view__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
 
 .notifications-view__title {

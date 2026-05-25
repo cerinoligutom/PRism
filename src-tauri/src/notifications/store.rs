@@ -4,8 +4,8 @@
 //! dispatch) and the [`super::commands`] surface (list / delete / clear).
 //!
 //! All reads return rows newest first - the inbox view scrolls from the
-//! freshest entry down. The `before_id` cursor on [`list`] is the seed for
-//! the follow-up paginated load (#379); v1 uses it only via `limit`.
+//! freshest entry down. The `before_id` cursor on [`list`] seeds a future
+//! paginated load; v1 uses it only via `limit`.
 
 use rusqlite::{params, Connection};
 
@@ -41,8 +41,8 @@ pub fn insert(conn: &Connection, n: &NotificationInsert) -> rusqlite::Result<i64
 
 /// Read up to `limit` inbox rows, newest first.
 ///
-/// `before_id = Some(id)` enables future cursor pagination (#379) by skipping
-/// every row with `id >= before_id`. Both args optional: omit `limit` for the
+/// `before_id = Some(id)` enables future cursor pagination by skipping every
+/// row with `id >= before_id`. Both args optional: omit `limit` for the
 /// full list, omit `before_id` for "from the top".
 pub fn list(
     conn: &Connection,
@@ -52,7 +52,7 @@ pub fn list(
     let mut sql = String::from(
         "SELECT id, kind, account_id, pull_request_id,
                 owner, repo, pr_number, pr_node_id, pr_title,
-                title, body, created_at
+                title, body, created_at, read_at
            FROM notifications",
     );
     let mut binds: Vec<rusqlite::types::Value> = Vec::with_capacity(2);
@@ -84,6 +84,43 @@ pub fn delete_all(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM notifications", [])
 }
 
+/// Mark one row read, stamping `read_at` with the current epoch seconds.
+///
+/// Idempotent: rows whose `read_at` is already non-NULL are skipped via the
+/// `WHERE read_at IS NULL` predicate, so a double-click on the same row
+/// keeps the original read time. Returns the rows actually updated (0 or 1).
+pub fn mark_read(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE notifications
+            SET read_at = strftime('%s', 'now')
+          WHERE id = ?1 AND read_at IS NULL",
+        params![id],
+    )
+}
+
+/// Mark every unread row read in one transaction.
+///
+/// Returns the rows actually updated so the caller can avoid a redundant
+/// refetch when the list was already fully read.
+pub fn mark_all_read(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE notifications
+            SET read_at = strftime('%s', 'now')
+          WHERE read_at IS NULL",
+        [],
+    )
+}
+
+/// Count unread rows. Backed by the partial index on `read_at IS NULL` so the
+/// query stays cheap as the table approaches the count cap (#380).
+pub fn count_unread(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM notifications WHERE read_at IS NULL",
+        [],
+        |row| row.get(0),
+    )
+}
+
 /// Read one row by id. Used by tests; the commands surface only exposes the
 /// list / delete shape. Returns `None` when the row is missing rather than
 /// surfacing rusqlite's `QueryReturnedNoRows`.
@@ -93,7 +130,7 @@ pub fn find(conn: &Connection, id: i64) -> rusqlite::Result<Option<Notification>
     conn.query_row(
         "SELECT id, kind, account_id, pull_request_id,
                 owner, repo, pr_number, pr_node_id, pr_title,
-                title, body, created_at
+                title, body, created_at, read_at
            FROM notifications
           WHERE id = ?1",
         params![id],
@@ -116,6 +153,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification> {
         title: row.get(9)?,
         body: row.get(10)?,
         created_at: row.get(11)?,
+        read_at: row.get(12)?,
     })
 }
 
@@ -188,7 +226,7 @@ mod tests {
 
     #[test]
     fn list_honours_before_id_cursor() {
-        // before_id seeds the follow-up pagination slice (#379). Asserting
+        // before_id seeds the future cursor pagination path. Asserting
         // the predicate now means the contract is locked even before the UI
         // calls it.
         let conn = fresh();
@@ -252,5 +290,84 @@ mod tests {
         let id = insert(&conn, &payload).unwrap();
         let row = find(&conn, id).unwrap().expect("row");
         assert_eq!(row.pull_request_id, Some(100));
+    }
+
+    #[test]
+    fn fresh_row_starts_unread() {
+        let conn = fresh();
+        let id = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        let row = find(&conn, id).unwrap().expect("row");
+        assert_eq!(row.read_at, None, "new rows default to unread");
+    }
+
+    #[test]
+    fn mark_read_stamps_read_at_on_an_unread_row() {
+        let conn = fresh();
+        let id = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        let updated = mark_read(&conn, id).unwrap();
+        assert_eq!(updated, 1);
+        let row = find(&conn, id).unwrap().expect("row");
+        let read_at = row.read_at.expect("read_at populated");
+        assert!(read_at > 0, "read_at carries an epoch timestamp");
+    }
+
+    #[test]
+    fn mark_read_is_idempotent_on_already_read_rows() {
+        // ADR 0028 decision 3: clicking a read row a second time keeps the
+        // original `read_at` rather than overwriting it. The UPDATE skips
+        // via `WHERE read_at IS NULL`.
+        let conn = fresh();
+        let id = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        mark_read(&conn, id).unwrap();
+        let first = find(&conn, id).unwrap().expect("row").read_at;
+        let updated = mark_read(&conn, id).unwrap();
+        assert_eq!(updated, 0, "no rows touched on the second call");
+        let second = find(&conn, id).unwrap().expect("row").read_at;
+        assert_eq!(first, second, "original read_at preserved");
+    }
+
+    #[test]
+    fn mark_read_with_unknown_id_is_a_zero_row_noop() {
+        let conn = fresh();
+        let updated = mark_read(&conn, 999).unwrap();
+        assert_eq!(updated, 0);
+    }
+
+    #[test]
+    fn mark_all_read_returns_only_the_just_marked_count() {
+        let conn = fresh();
+        let a = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        let _b = insert(&conn, &sample("o", "a", 2, "t")).unwrap();
+        let _c = insert(&conn, &sample("o", "a", 3, "t")).unwrap();
+        mark_read(&conn, a).unwrap();
+        let updated = mark_all_read(&conn).unwrap();
+        assert_eq!(updated, 2, "only the two unread rows are touched");
+        assert_eq!(count_unread(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn count_unread_reflects_inserts_and_marks() {
+        let conn = fresh();
+        assert_eq!(count_unread(&conn).unwrap(), 0, "empty table");
+        let a = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        insert(&conn, &sample("o", "a", 2, "t")).unwrap();
+        assert_eq!(count_unread(&conn).unwrap(), 2);
+        mark_read(&conn, a).unwrap();
+        assert_eq!(count_unread(&conn).unwrap(), 1);
+        mark_all_read(&conn).unwrap();
+        assert_eq!(count_unread(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_surfaces_read_at_on_each_row() {
+        let conn = fresh();
+        let a = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+        insert(&conn, &sample("o", "a", 2, "t")).unwrap();
+        mark_read(&conn, a).unwrap();
+        let rows = list(&conn, None, None).unwrap();
+        let read_row = rows.iter().find(|r| r.id == a).expect("row");
+        let unread_row = rows.iter().find(|r| r.id != a).expect("row");
+        assert!(read_row.read_at.is_some(), "marked row carries read_at");
+        assert_eq!(unread_row.read_at, None, "unread row carries None");
     }
 }
