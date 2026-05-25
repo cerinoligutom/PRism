@@ -87,6 +87,11 @@ async function openNotification(notification: Notification): Promise<void> {
       });
       return;
     }
+    // Drawer surface: `PullRequestDrawer` is mounted from `DashboardView`,
+    // not from this view (issue #400). Push to the matching dashboard route
+    // first so the host exists, then set the expanded id - the store value
+    // survives the navigation, and the drawer opens on the next paint.
+    await router.push({ name: dashboardRouteName(match.view) });
     dashboard.setExpandedPullRequest(match.pull_request_id);
     return;
   }
@@ -135,6 +140,15 @@ function githubPrUrl(notification: Notification): string {
   const owner = encodeURIComponent(notification.owner);
   const repo = encodeURIComponent(notification.repo);
   return `https://github.com/${owner}/${repo}/pull/${notification.pr_number}`;
+}
+
+function dashboardRouteName(view: PrCoordinatesMatch["view"]): string {
+  // The `assigned` Tauri view name maps to the `review-requested` route
+  // slug (see `src/router/index.ts`); the other three views share their
+  // name with the route suffix.
+  return view === "assigned"
+    ? "dashboard.review-requested"
+    : `dashboard.${view}`;
 }
 
 async function dismissNotification(notification: Notification): Promise<void> {

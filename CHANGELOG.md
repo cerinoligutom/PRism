@@ -40,5 +40,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Dashboard "Refresh now" / "Try again" buttons trigger a sync cycle instead of re-running the local DB query, matching the `Cmd/Ctrl+R` keyboard binding (#356).
 - Dashboard PR row polish: time column drops the hour remainder past a week (so "120d" no longer wraps), reviewer-stack tooltip hit area matches the visible avatars, and the `changes / approved / total` summary numbers share a single vertical baseline (#360).
 - Group header "active X ago" reflects the latest activity in the group (matches the freshest row and updates when the group filter flips between repo / org / none) and shows a single combined tooltip instead of two stacked chips (#364).
+- Clicking a row in the Notifications inbox now opens the PR in drawer mode as well as route mode; the handler navigates to the matching dashboard view before expanding the drawer so the host is mounted (#400).
 
 ### Security
