@@ -30,6 +30,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0018_last_seen_version.sql"),
     include_str!("../../migrations/0019_auto_update_settings.sql"),
     include_str!("../../migrations/0020_auto_archive_days.sql"),
+    include_str!("../../migrations/0021_notifications.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -121,6 +122,8 @@ mod tests {
             "users",
             // 0012 archive + settings foundation.
             "app_settings",
+            // 0021 persistent notifications inbox.
+            "notifications",
         ];
         for name in expected {
             let count: i64 = conn
@@ -161,6 +164,8 @@ mod tests {
             "idx_relations_archived_at",
             // 0015 dashboard thread_buckets involvement (ADR 0016, issue #231).
             "idx_review_comments_author_login",
+            // 0021 persistent notifications inbox (issue #378).
+            "idx_notifications_created_at",
         ];
         for name in expected {
             let count: i64 = conn
@@ -738,6 +743,115 @@ mod tests {
             [],
         )
         .expect("365 is in range");
+    }
+
+    #[test]
+    fn notifications_table_columns_exist_after_migration_0021() {
+        // Issue #378: the inbox snapshot must survive a PR row prune. Sanity-
+        // check the schema exposes every column the store + commands depend
+        // on so a regression in 0021 trips here rather than mid-feature.
+        let conn = fresh();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('notifications')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for col in [
+            "id",
+            "kind",
+            "account_id",
+            "pull_request_id",
+            "owner",
+            "repo",
+            "pr_number",
+            "pr_node_id",
+            "pr_title",
+            "title",
+            "body",
+            "created_at",
+        ] {
+            assert!(
+                names.iter().any(|n| n == col),
+                "missing notifications column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn notifications_set_null_on_pr_prune() {
+        // ADR-0017 / issue #378: the inbox row must outlive the source PR
+        // so a user who missed the toast can still see the snapshot. The
+        // FK on `pull_request_id` is ON DELETE SET NULL to express that.
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 42, 't', 'open', 'bob',
+                        0, 0, 'main', 'feat');
+             INSERT INTO notifications
+                (id, kind, account_id, pull_request_id,
+                 owner, repo, pr_number, pr_title, title, body)
+                VALUES (1, 'needs_attention', 1, 100,
+                        'owner', 'repo', 42, 't',
+                        'Needs your attention', 'owner/repo #42 - t');",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM pull_requests WHERE id = 100", [])
+            .unwrap();
+
+        let pr_link: Option<i64> = conn
+            .query_row(
+                "SELECT pull_request_id FROM notifications WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pr_link, None,
+            "pull_request_id must be set to NULL when the source PR is pruned",
+        );
+        let snapshot: String = conn
+            .query_row("SELECT pr_title FROM notifications WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(snapshot, "t", "snapshot must survive the prune");
+    }
+
+    #[test]
+    fn notifications_cascade_on_account_delete() {
+        // Removing an account drops the inbox copy with it: the OS toast
+        // already fired in real time, and the snapshot has no useful
+        // surface once its account is gone.
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO notifications
+                (id, kind, account_id,
+                 owner, repo, pr_number, pr_title, title, body)
+                VALUES (1, 'mention', 1,
+                        'owner', 'repo', 42, 't',
+                        'New mention in owner/repo #42', 'note');",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM accounts WHERE id = 1", [])
+            .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "inbox rows must cascade with their account");
     }
 
     #[test]
