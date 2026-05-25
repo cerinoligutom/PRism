@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
 
-type ButtonVariant = "default" | "primary" | "ghost";
+type ButtonVariant = "default" | "primary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
 
 interface Props {
@@ -29,6 +29,7 @@ const classes = computed(() => [
   "btn",
   props.variant === "primary" && "btn-primary",
   props.variant === "ghost" && "btn-ghost",
+  props.variant === "danger" && "btn-danger",
   props.size === "sm" && "btn-sm",
   props.size === "lg" && "btn-lg",
   props.icon && "btn-icon",

@@ -47,6 +47,13 @@
   font-weight: 600;
 }
 .btn.btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
+.btn.btn-danger {
+  background: var(--danger);
+  color: var(--accent-fg);
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn.btn-danger:hover:not(:disabled) { background: oklch(from var(--danger) calc(l + 0.06) c h); }
 .btn.btn-sm { height: 24px; padding: 0 8px; font-size: var(--fs-11); }
 .btn.btn-lg { height: 36px; padding: 0 16px; font-size: var(--fs-13); }
 .btn.btn-icon { width: 28px; padding: 0; }
