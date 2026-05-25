@@ -139,7 +139,7 @@ const syncDisplay = computed<{ label: string; spinning: boolean }>(() => {
   if (state.phase === "syncing") {
     const progress = enrichmentProgress.value;
     const suffix = progress !== null ? ` (${progress.current} of ${progress.total})` : "";
-    return { label: `Fetching authored PRs from ${host}${suffix}`, spinning: true };
+    return { label: `Fetching relevant PRs from ${host}${suffix}`, spinning: true };
   }
   if (state.phase === "synced") {
     const count = lastSyncedCount.value;
@@ -147,7 +147,7 @@ const syncDisplay = computed<{ label: string; spinning: boolean }>(() => {
       return { label: "First sync complete", spinning: false };
     }
     if (count === 0) {
-      return { label: "First sync complete · no authored PRs found", spinning: false };
+      return { label: "First sync complete · no relevant PRs found", spinning: false };
     }
     const noun = count === 1 ? "pull request" : "pull requests";
     return { label: `First sync complete · ${count} ${noun} synced`, spinning: false };
@@ -693,7 +693,7 @@ onUnmounted(() => {
         <p class="onboarding-step__lede">
           <strong>{{ newAccount?.login }}</strong> on
           <code>{{ newAccount?.host }}</code> is saved. Until the full org / repo picker
-          lands, every authored PR you can see on github.com appears in the dashboard.
+          lands, every PR you're involved in on github.com appears in the dashboard.
         </p>
 
         <div class="onboarding-sync">
