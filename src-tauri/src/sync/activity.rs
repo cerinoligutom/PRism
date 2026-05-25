@@ -75,6 +75,18 @@ pub enum ActivityKind {
         name: String,
         url: String,
     },
+    /// GraphQL responded for a PR detail call but `repository.pullRequest`
+    /// resolved to null (issue #402). The detail-derived columns and
+    /// conversation tables stay empty in the DB; this event surfaces the
+    /// silent miss so it can be diagnosed without enabling `RUST_LOG`. The
+    /// truncated `body_prefix` carries the first ~256 bytes of the raw
+    /// GraphQL response so the `errors` array (if any) is visible.
+    PrDetailEmpty {
+        number: i64,
+        owner: String,
+        name: String,
+        body_prefix: String,
+    },
     /// A phase ended cleanly.
     ///
     /// `cache_skips` reports how many GraphQL responses the phase short-circuited

@@ -40,8 +40,8 @@ pub use repos::{list_prs_for_repo, list_repos_for_account, PrRow, RepoRow};
 use activity::{
     emit_activity_cycle_completed, emit_activity_cycle_started, emit_activity_phase_completed,
     emit_activity_phase_completed_with_skips, emit_activity_phase_progress,
-    emit_activity_phase_started, emit_activity_pr_fetched, emit_activity_pr_skipped_no_change,
-    emit_activity_rate_pause,
+    emit_activity_phase_started, emit_activity_pr_detail_empty, emit_activity_pr_fetched,
+    emit_activity_pr_skipped_no_change, emit_activity_rate_pause,
 };
 use repos::{
     detail_state_appears_empty, pr_detail_marker_bytes, pr_detail_marker_key,
@@ -81,6 +81,31 @@ fn under_guard(snap: ResourceSnapshot, guard_pct: u8) -> bool {
 /// matching the wire-form `x-ratelimit-resource` value.
 fn resource_label(resource: RateResource) -> &'static str {
     resource.as_str()
+}
+
+/// Cap on the body excerpt surfaced through the null-detail diagnostic
+/// (#402). Wide enough to carry GitHub's typical `errors` array (one
+/// `message + path + extensions`) without becoming a wall of text in the
+/// activity row.
+const NULL_DETAIL_BODY_PREFIX_LIMIT: usize = 256;
+
+/// Build a UTF-8-lossy excerpt of a GraphQL response body for diagnostic
+/// surfaces. Truncated to [`NULL_DETAIL_BODY_PREFIX_LIMIT`] bytes with an
+/// ellipsis appended when the source overflowed. Used by the null-detail
+/// diagnostic only (#402); the body is sourced from the response we already
+/// hold in memory, so there's no extra read cost.
+fn body_prefix_for_log(body: &bytes::Bytes) -> String {
+    let limit = NULL_DETAIL_BODY_PREFIX_LIMIT;
+    let slice = if body.len() <= limit {
+        &body[..]
+    } else {
+        &body[..limit]
+    };
+    let mut out = String::from_utf8_lossy(slice).into_owned();
+    if body.len() > limit {
+        out.push('\u{2026}');
+    }
+    out
 }
 
 /// Run a single sync cycle for one account. Public for integration tests.
@@ -654,6 +679,32 @@ async fn sync_repo(
             .await
             .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
             .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
+            // Diagnostic (#402): GraphQL responded but `repository.pullRequest`
+            // resolved to null. The detail-derived columns + conversation
+            // tables stay empty in the DB, and the cache markers stamped
+            // below currently lock the empty state in (the marker fix is
+            // tracked separately, #403). Surface the body prefix to the
+            // activity feed AND tracing so the user can see what GitHub
+            // actually sent back without enabling `RUST_LOG`.
+            if fetched.is_none() {
+                let prefix = body_prefix_for_log(&body);
+                tracing::warn!(
+                    account_id = account.id,
+                    owner = %repo.owner,
+                    name = %repo.name,
+                    number = pr.number,
+                    body_prefix = %prefix,
+                    "pr_detail returned null pullRequest"
+                );
+                emit_activity_pr_detail_empty(
+                    ctx,
+                    account,
+                    &repo.owner,
+                    &repo.name,
+                    pr.number,
+                    &prefix,
+                );
+            }
             // Stamp the issue #232 marker so the next cycle's pre-flight
             // comparison sees the freshly-persisted `updated_at`. Falling back
             // to `pr.updated_at` keeps the marker aligned when GraphQL returns

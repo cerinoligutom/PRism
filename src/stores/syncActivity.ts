@@ -53,6 +53,20 @@ export type ActivityKind =
       readonly url: string;
     }
   | {
+      /**
+       * GraphQL responded for a PR detail call but `repository.pullRequest`
+       * came back null (issue #402). The detail-derived columns and
+       * conversation tables stay empty on the affected PR; `body_prefix`
+       * holds the first ~256 bytes of the response so the `errors` array (if
+       * any) is visible in the activity panel.
+       */
+      readonly kind: "pr_detail_empty";
+      readonly number: number;
+      readonly owner: string;
+      readonly name: string;
+      readonly body_prefix: string;
+    }
+  | {
       readonly kind: "phase_completed";
       readonly phase: SyncPhaseLabel;
       readonly summary: string;
@@ -128,6 +142,12 @@ export function phaseLabelFor(event: ActivityEvent, login: string | null): strin
       return `Fetching detail (#${event.number})`;
     case "pr_skipped_no_change":
       return `Skipped #${event.number} (no change)`;
+    case "pr_detail_empty":
+      // Diagnostic event - the cycle is still in flight, but the ticker
+      // doesn't need to chase per-PR misses. The activity panel surfaces
+      // the row with the body excerpt; the live ticker stays on the phase
+      // progress frame.
+      return null;
     case "phase_completed":
     case "cycle_completed":
     case "cycle_failed":
@@ -150,6 +170,7 @@ export function isActiveCycleEvent(event: ActivityEvent): boolean {
     case "phase_progress":
     case "pr_fetched":
     case "pr_skipped_no_change":
+    case "pr_detail_empty":
     case "phase_completed":
       return true;
     case "cycle_completed":
