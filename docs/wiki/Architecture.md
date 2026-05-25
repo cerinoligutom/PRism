@@ -53,7 +53,7 @@ Four built-in views, switchable from the sidebar (PRD §5.2):
 - **Authored by me**
 - **Assigned to me as reviewer** — split into "needs first review" and "needs re-review"
 - **Watching / participated** — auto-tracked involvement
-- **Tracked** — per-repo opt-in for rate-limit safety. The actual Teams-driven view lands in M8.
+- **Tracked** — per-repo opt-in for rate-limit safety. (A dedicated GitHub-Teams-driven view was scoped but deferred; see [Roadmap](Roadmap) for the closure rationale.)
 
 Each view supports grouping (org, repo, org→repo nested, or flat), sorting (newest / oldest / staleness / comment count / composite "needs my attention"), and quick-filter chips (PRD §5.4).
 
