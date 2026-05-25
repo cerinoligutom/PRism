@@ -8,6 +8,7 @@ const SECOND = 1;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
 
 /** Em-dash placeholder used when a numeric stat is null. */
 export const EM_DASH = "—";
@@ -24,7 +25,8 @@ export function secondsSince(unixSeconds: number): number {
 
 /**
  * Render a duration in seconds as a short relative label: `45s`, `12m`,
- * `3h 4m`, `2d 6h`.
+ * `3h 4m`, `2d 6h`, `8d`. Past a week the hour remainder is dropped — it's
+ * noise at that granularity and risks overflowing narrow time columns.
  */
 export function formatDuration(seconds: number): string {
   if (seconds < MINUTE) return `${seconds}s`;
@@ -35,6 +37,7 @@ export function formatDuration(seconds: number): string {
     return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
   }
   const days = Math.floor(seconds / DAY);
+  if (seconds >= WEEK) return `${days}d`;
   const remainder = Math.floor((seconds - days * DAY) / HOUR);
   return remainder > 0 ? `${days}d ${remainder}h` : `${days}d`;
 }
@@ -59,6 +62,7 @@ export function formatDurationParts(seconds: number): {
     };
   }
   const days = Math.floor(seconds / DAY);
+  if (seconds >= WEEK) return { value: `${days}d`, sub: null };
   const remainder = Math.floor((seconds - days * DAY) / HOUR);
   return {
     value: `${days}d`,

@@ -35,5 +35,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 
 - Conversation drawer / route refreshes in place when a sync cycle completes; cached entries for non-visible PRs drop so the next open re-hydrates (#337).
 - Dashboard "Refresh now" / "Try again" buttons trigger a sync cycle instead of re-running the local DB query, matching the `Cmd/Ctrl+R` keyboard binding (#356).
+- Dashboard PR row polish: time column drops the hour remainder past a week (so "120d" no longer wraps), reviewer-stack tooltip hit area matches the visible avatars, and the `changes / approved / total` summary numbers share a single vertical baseline (#360).
 
 ### Security
