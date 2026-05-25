@@ -4,9 +4,18 @@ import { computed, ref } from "vue";
 import PRismButton from "@/components/ui/PRismButton.vue";
 import { useAppMetadata } from "@/composables/useAppMetadata";
 import { useAccountsStore } from "@/stores/accounts";
+import { useWhatsNewStore } from "@/stores/whatsNew";
 
 const { metadata } = useAppMetadata();
 const accounts = useAccountsStore();
+const whatsNew = useWhatsNewStore();
+
+// Issue #375: ask the App-level WhatsNewDialog host to open with the full
+// changelog. The store is a signal-only Pinia store; the dialog itself
+// lives in App.vue.
+function openChangelog(): void {
+  whatsNew.requestManualOpen();
+}
 
 const versionLabel = computed<string>(() =>
   metadata.value === null ? "" : `v${metadata.value.version}`,
@@ -118,6 +127,17 @@ const copyButtonLabel = computed<string>(() => {
           <code>{{ platformLabel || "platform —" }}</code>
         </div>
       </div>
+
+      <div class="about-card__cta">
+        <PRismButton
+          variant="ghost"
+          size="sm"
+          :disabled="metadata === null"
+          @click="openChangelog"
+        >
+          View changelog
+        </PRismButton>
+      </div>
     </section>
 
     <section class="about-panel__section">
@@ -219,6 +239,11 @@ const copyButtonLabel = computed<string>(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.about-card__cta {
+  flex-shrink: 0;
+  align-self: center;
 }
 
 .about-card__name-row {
