@@ -2466,3 +2466,84 @@ async fn pr_detail_cache_hit_self_heals_when_requested_reviewers_empty() {
     );
     assert_eq!(reviews2, reviews1, "cycle 2 must self-heal reviews");
 }
+
+/// Issue #402: when GraphQL responds with `repository.pullRequest = null`
+/// (the silent miss that leaves all detail-derived columns and conversation
+/// tables empty in the DB), the cycle surfaces a warn-level
+/// `pr_detail_empty` activity event carrying the PR coordinates and a
+/// truncated body excerpt. The cycle completes; the diagnostic is the only
+/// observable surface.
+#[tokio::test]
+async fn pr_detail_null_pull_request_emits_diagnostic_activity() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+
+    // GraphQL responds with the canonical "the PR resolved to null" shape:
+    // valid envelope, no errors, but `pullRequest` is null. This is what
+    // GitHub returns for PRs the viewer can't see, deleted PRs, and (per
+    // the bug report) some private-repo PRs even when the token has the
+    // documented scopes.
+    let null_pr_body = r#"{"data":{"repository":{"pullRequest":null}}}"#;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(null_pr_body.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    let kinds = activity_event_kinds(&harness.emit);
+    let empty_count = kinds
+        .iter()
+        .filter(|k| k.as_str() == "pr_detail_empty")
+        .count();
+    assert_eq!(
+        empty_count, 1,
+        "exactly one pr_detail_empty event expected: {kinds:?}"
+    );
+
+    let payload = harness
+        .emit
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| {
+            name == "sync://activity"
+                && payload.get("kind").and_then(|k| k.as_str()) == Some("pr_detail_empty")
+        })
+        .map(|(_, p)| p.clone())
+        .expect("pr_detail_empty payload");
+    assert_eq!(payload.get("owner").and_then(|v| v.as_str()), Some("owner"));
+    assert_eq!(payload.get("name").and_then(|v| v.as_str()), Some("repo"));
+    assert_eq!(payload.get("number").and_then(|v| v.as_i64()), Some(42));
+    assert_eq!(payload.get("level").and_then(|v| v.as_str()), Some("warn"));
+    let body_prefix = payload
+        .get("body_prefix")
+        .and_then(|v| v.as_str())
+        .expect("body_prefix field present");
+    assert!(
+        body_prefix.contains("pullRequest"),
+        "body_prefix should carry the response excerpt: {body_prefix}"
+    );
+}

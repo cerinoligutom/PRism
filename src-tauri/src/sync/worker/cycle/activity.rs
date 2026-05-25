@@ -155,6 +155,42 @@ pub(super) fn emit_activity_pr_skipped_no_change(
     );
 }
 
+/// Emit a warn-level activity row when `pr_detail_with_raw` returned
+/// `repository.pullRequest = null` (issue #402). The detail-derived columns
+/// and conversation tables stay empty on the affected PR; surfacing the
+/// `body_prefix` (first ~256 bytes of the GraphQL response) lets the user
+/// see whatever GitHub put into the `errors` array without enabling
+/// `RUST_LOG`. Sites that call this also emit a `tracing::warn!` so the log
+/// stream carries the same diagnostic.
+pub(super) fn emit_activity_pr_detail_empty(
+    ctx: &WorkerContext,
+    account: &Account,
+    owner: &str,
+    name: &str,
+    number: i64,
+    body_prefix: &str,
+) {
+    let message = format!(
+        "GraphQL returned null pullRequest for {owner}/{name}#{number}"
+    );
+    record_activity(
+        &ctx.activity,
+        ctx.emit.as_ref(),
+        ActivityEventBuilder::new(
+            ActivityLevel::Warn,
+            Some(account.id),
+            ActivityKind::PrDetailEmpty {
+                number,
+                owner: owner.to_string(),
+                name: name.to_string(),
+                body_prefix: body_prefix.to_string(),
+            },
+            message,
+        )
+        .build(),
+    );
+}
+
 pub(super) fn emit_activity_phase_completed(
     ctx: &WorkerContext,
     account: &Account,

@@ -361,6 +361,13 @@ function rowClass(event: ActivityEvent): string[] {
         />
         <div class="activity-row__body">
           <p class="activity-row__message">{{ event.message }}</p>
+          <details
+            v-if="event.kind === 'pr_detail_empty'"
+            class="activity-row__detail"
+          >
+            <summary>Response excerpt</summary>
+            <pre class="activity-row__body-prefix">{{ event.body_prefix }}</pre>
+          </details>
           <p class="activity-row__meta">
             <span>{{ formatRelative(event.timestamp_ms) }}</span>
           </p>
@@ -550,6 +557,36 @@ function rowClass(event: ActivityEvent): string[] {
   margin: 2px 0 0 0;
   color: var(--text-faint);
   font-size: var(--fs-10);
+}
+
+.activity-row__detail {
+  margin: 4px 0 0 0;
+  font-size: var(--fs-10);
+  color: var(--text-mute);
+}
+
+.activity-row__detail summary {
+  cursor: pointer;
+  color: var(--text-faint);
+}
+
+.activity-row__detail summary:hover {
+  color: var(--text);
+}
+
+.activity-row__body-prefix {
+  margin: 4px 0 0 0;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--text-mute);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow: auto;
 }
 
 .activity-row__deeplink {

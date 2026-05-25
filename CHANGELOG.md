@@ -41,5 +41,6 @@ PRs that introduce user-facing changes append entries to the `[Unreleased]` sect
 - Dashboard PR row polish: time column drops the hour remainder past a week (so "120d" no longer wraps), reviewer-stack tooltip hit area matches the visible avatars, and the `changes / approved / total` summary numbers share a single vertical baseline (#360).
 - Group header "active X ago" reflects the latest activity in the group (matches the freshest row and updates when the group filter flips between repo / org / none) and shows a single combined tooltip instead of two stacked chips (#364).
 - Clicking a row in the Notifications inbox now opens the PR in drawer mode as well as route mode; the handler navigates to the matching dashboard view before expanding the drawer so the host is mounted (#400).
+- Sync cycle now surfaces a warn-level activity row + tracing log when the PR-detail GraphQL response resolves `repository.pullRequest` to null, carrying the PR coordinates and a 256-byte body excerpt so the silent miss (which leaves detail-derived columns and the conversation tables empty) is diagnosable without enabling `RUST_LOG` (#402).
 
 ### Security
