@@ -192,7 +192,7 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
 }
 
 .review-card__author {
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text-strong);
 }
@@ -270,7 +270,7 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
    * are owned by `.prism-markdown` (see ThreadsList for the same rationale).
    * Re-asserting them here inflates paragraph gaps and reads as dead space. */
   margin: 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }

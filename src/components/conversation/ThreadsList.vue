@@ -725,7 +725,7 @@ async function openCommentOnGitHub(
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
 }
 
@@ -837,6 +837,7 @@ async function openCommentOnGitHub(
 }
 
 .thread-comment__author {
+  font-size: var(--fs-13);
   color: var(--text-strong);
   font-weight: 500;
 }
@@ -877,7 +878,7 @@ async function openCommentOnGitHub(
    * literal whitespace between `<p>` tags and inflates the line-box, surfacing
    * as huge gaps between paragraphs. Leave only the host-level margin. */
   margin: 2px 0 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }

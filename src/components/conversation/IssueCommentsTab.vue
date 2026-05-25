@@ -168,7 +168,7 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
 }
 
 .issue-comment-card__author {
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text-strong);
 }
@@ -204,7 +204,7 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
 
 .issue-comment-card__text {
   margin: 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }
