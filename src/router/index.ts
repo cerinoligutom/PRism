@@ -20,8 +20,12 @@ export const router = createRouter({
       meta: { dashboardView: "authored" satisfies DashboardViewName },
     },
     {
-      path: "/dashboard/assigned",
-      name: "dashboard.assigned",
+      // URL renamed to "/dashboard/review-requested" so the address-bar slug
+      // matches the sidebar / title vocabulary. Internal `dashboardView` meta
+      // stays `assigned` to avoid a wider rename across the Tauri serde
+      // surface and Rust enum variant.
+      path: "/dashboard/review-requested",
+      name: "dashboard.review-requested",
       component: DashboardView,
       meta: { dashboardView: "assigned" satisfies DashboardViewName },
     },

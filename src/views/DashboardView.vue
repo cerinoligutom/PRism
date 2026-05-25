@@ -403,8 +403,13 @@ watch(
   <section class="dashboard">
     <header class="dashboard__header">
       <div class="dashboard__top-row">
-        <h1 class="dashboard__title">{{ dashboard.viewLabel }}</h1>
-        <span class="dashboard__count mono">{{ countLabel }}</span>
+        <div class="dashboard__heading">
+          <div class="dashboard__title-row">
+            <h1 class="dashboard__title">{{ dashboard.viewLabel }}</h1>
+            <span class="dashboard__count mono">{{ countLabel }}</span>
+          </div>
+          <p class="dashboard__subtitle">{{ dashboard.viewSubtitle }}</p>
+        </div>
         <div class="dashboard__spacer" />
         <DashboardSearch
           :model-value="dashboard.searchQuery"
@@ -711,6 +716,28 @@ watch(
   display: flex;
   align-items: center;
   gap: var(--s-3);
+}
+
+/* Heading wraps the title row + the subtitle so the right-side controls
+ * (search, density, etc.) keep aligning to the centre of the title row,
+ * not to the column's midpoint once the subtitle is in play. */
+.dashboard__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dashboard__title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.dashboard__subtitle {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  line-height: var(--lh-tight);
 }
 
 .dashboard__chips-row {
