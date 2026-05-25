@@ -74,7 +74,9 @@ export function parseChangelog(
   const flush = (endExclusive: number): void => {
     if (cursor === null) return;
     const bodyLines = lines.slice(cursor.start, endExclusive);
-    const body = stripEmptySubsections(bodyLines.join("\n").trim());
+    const body = linkifyIssueRefs(
+      stripEmptySubsections(bodyLines.join("\n").trim()),
+    );
     // Skip empty Unreleased entries (stamp-changelog leaves a bare heading
     // immediately after a release promotion). A heading with no body would
     // render as a dead section in the manual dialog.
@@ -145,6 +147,26 @@ export function sectionsSince(
       compareSemver(entry.version, current) <= 0
     );
   });
+}
+
+/** GitHub web URL the issue/PR-ref linkifier targets. Hardcoded because the
+ *  changelog ships bundled and references PRism's own repo; `/issues/NNN`
+ *  redirects to `/pull/NNN` when NNN is a PR, so a single base covers both. */
+const PRISM_REPO_URL = "https://github.com/cerinoligutom/PRism";
+
+/**
+ * Turn `(#NNN)` / ` #NNN` references into markdown links (#377). The
+ * lookbehind restricts matches to positions preceded by start-of-string,
+ * whitespace, or `(` so we don't break pre-existing `[#NNN](...)` markdown
+ * link syntax or accidentally match inside identifiers like `foo#bar`.
+ * Trailing word boundary stops `#1234abc` from being eaten as `1234`.
+ */
+function linkifyIssueRefs(body: string): string {
+  if (body === "") return body;
+  return body.replace(
+    /(?<=^|[\s(])#(\d+)\b/g,
+    (_match, num: string) => `[#${num}](${PRISM_REPO_URL}/issues/${num})`,
+  );
 }
 
 /**

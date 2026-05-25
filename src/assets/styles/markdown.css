@@ -141,12 +141,19 @@
 .prism-markdown blockquote > :last-child { margin-bottom: 0; }
 
 /* Lists. Padding-left covers both ordered + unordered markers; task-list
- * items zero out the marker so the checkbox stands in. */
+ * items zero out the marker so the checkbox stands in. Tailwind v4's
+ * Preflight resets `ol, ul` to `list-style: none`; restore the markers
+ * explicitly here so markdown body renders look like markdown (#377). */
 .prism-markdown ul,
 .prism-markdown ol {
   margin: 0 0 var(--s-3);
   padding-left: var(--s-5);
 }
+
+.prism-markdown ul { list-style-type: disc; }
+.prism-markdown ol { list-style-type: decimal; }
+.prism-markdown ul ul { list-style-type: circle; }
+.prism-markdown ul ul ul { list-style-type: square; }
 
 .prism-markdown li + li {
   margin-top: 2px;
