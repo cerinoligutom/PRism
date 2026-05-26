@@ -1,0 +1,158 @@
+/* PRism status iconography.
+ *
+ * Consolidates the badge / chip / state-icon classes that fan out across:
+ *   - ThreadsList            (inline thread-card state badge + chips)
+ *   - PullRequestConversation (state-badge + thread-state legend tooltips)
+ *   - ThreadsBar             (per-segment + breakdown tooltips on the row)
+ *   - PullRequestRow         (inline row state badge)
+ *   - DashboardView          (dashboard row icon legend tooltip)
+ *
+ * Lives in a global stylesheet because each consumer's `<style>` block is
+ * scoped to its own component; identical rules would otherwise duplicate
+ * across 4-5 files and inevitably drift. Component-specific layout (legend
+ * rows, tooltip layouts, unread compound overrides) stays in the consuming
+ * components.
+ */
+
+/* ─── Thread bucket badge ─────────────────────────────────────────────── */
+
+.thread-card__state {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.thread-card__state--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.18);
+  color: var(--danger);
+}
+
+.thread-card__state--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.2);
+  color: var(--warning);
+}
+
+.thread-card__state--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--info);
+}
+
+.thread-card__state--resolved-involved {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+/* ─── Thread modifier chip ─────────────────────────────────────────────── */
+
+.thread-card__chip {
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.thread-card__chip--mine {
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+}
+
+.thread-card__chip--outdated {
+  background: var(--bg-4);
+  color: var(--text-mute);
+}
+
+/* Tooltip / legend hosts use flex gap for spacing; reset the chip's inline
+ * left margin so it doesn't double up with the gap. */
+.thread-state-tip .thread-card__chip,
+.thread-state-legend .thread-card__chip,
+.dashboard-legend .thread-card__chip {
+  margin-left: 0;
+}
+
+/* ─── PR row state badge ───────────────────────────────────────────────── */
+
+.pr-row__state {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-1);
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.pr-row__state svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pr-row__state.row-strip-none {
+  background: transparent;
+}
+
+.pr-row__state.row-strip-needs {
+  color: var(--info);
+  background: oklch(from var(--info) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-changes {
+  color: var(--danger);
+  background: oklch(from var(--danger) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-approved {
+  color: var(--success);
+  background: oklch(from var(--success) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-draft {
+  color: var(--text-mute);
+  background: oklch(from var(--text-mute) l c h / 0.18);
+}
+
+.pr-row__state.row-strip-stale {
+  color: var(--warning);
+  background: oklch(from var(--warning) l c h / 0.18);
+}
+
+/* ─── ThreadsBar bucket badge ──────────────────────────────────────────── */
+
+/* Smaller sibling of the thread-card state badge for use in the per-segment
+ * and breakdown tooltips on the dashboard row + PR detail header. */
+.threads-bar__badge {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.threads-bar__badge--unresolved-uninvolved {
+  background: oklch(from var(--danger) l c h / 0.18);
+  color: var(--danger);
+}
+
+.threads-bar__badge--unresolved-involved {
+  background: oklch(from var(--warning) l c h / 0.2);
+  color: var(--warning);
+}
+
+.threads-bar__badge--resolved-uninvolved {
+  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--info);
+}
+
+.threads-bar__badge--resolved-involved {
+  background: var(--success-bg);
+  color: var(--success);
+}

@@ -461,7 +461,7 @@ watch(
               <div class="dashboard-legend__section-title">PR state</div>
               <ul class="dashboard-legend__rows">
                 <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__state row-strip-needs" aria-hidden="true">
+                  <span class="pr-row__state row-strip-needs" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
                       <circle cx="8" cy="8" r="2" />
@@ -470,7 +470,7 @@ watch(
                   <span>Needs your review</span>
                 </li>
                 <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__state row-strip-changes" aria-hidden="true">
+                  <span class="pr-row__state row-strip-changes" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="8" cy="8" r="6.25" />
                       <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
@@ -479,7 +479,7 @@ watch(
                   <span>Changes requested</span>
                 </li>
                 <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__state row-strip-approved" aria-hidden="true">
+                  <span class="pr-row__state row-strip-approved" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="8" cy="8" r="6.25" />
                       <path d="M5.25 8.25l2 2 3.5-4" />
@@ -488,7 +488,7 @@ watch(
                   <span>Approved</span>
                 </li>
                 <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__state row-strip-draft" aria-hidden="true">
+                  <span class="pr-row__state row-strip-draft" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
                       <path d="M10 4l2 2" />
@@ -497,7 +497,7 @@ watch(
                   <span>Draft</span>
                 </li>
                 <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__state row-strip-stale" aria-hidden="true">
+                  <span class="pr-row__state row-strip-stale" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="8" cy="8" r="6.25" />
                       <path d="M8 4.5V8l2.25 1.5" />
@@ -1096,41 +1096,8 @@ watch(
   gap: 8px;
 }
 
-.dashboard-legend__state {
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-1);
-  color: var(--text-faint);
-  flex-shrink: 0;
-}
-
-.dashboard-legend__state.row-strip-needs {
-  color: var(--info);
-  background: oklch(from var(--info) l c h / 0.18);
-}
-
-.dashboard-legend__state.row-strip-changes {
-  color: var(--danger);
-  background: oklch(from var(--danger) l c h / 0.18);
-}
-
-.dashboard-legend__state.row-strip-approved {
-  color: var(--success);
-  background: oklch(from var(--success) l c h / 0.18);
-}
-
-.dashboard-legend__state.row-strip-draft {
-  color: var(--text-mute);
-  background: oklch(from var(--text-mute) l c h / 0.18);
-}
-
-.dashboard-legend__state.row-strip-stale {
-  color: var(--warning);
-  background: oklch(from var(--warning) l c h / 0.18);
-}
+/* `.pr-row__state` shape + variant palettes come from
+ * `assets/styles/pr-status.css` so the legend matches the inline row badge. */
 
 /* Unread cue mirrors the dashboard row's 10px column + 7px centred accent
  * dot so the swatch looks like the real thing. */

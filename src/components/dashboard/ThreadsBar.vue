@@ -396,39 +396,9 @@ function distributeWidths(
   color: var(--text);
 }
 
-/* Bucket badge shared between the per-segment hover tooltip and the
- * breakdown popup. Visually mirrors the thread-card state badge in
- * `ThreadsList` (and the legend behind the info button on the conversation
- * header) so users associate the colour + shape + icon across surfaces. */
-.threads-bar__badge {
-  width: 18px;
-  height: 18px;
-  border-radius: var(--r-1);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.threads-bar__badge--unresolved-uninvolved {
-  background: oklch(from var(--danger) l c h / 0.18);
-  color: var(--danger);
-}
-
-.threads-bar__badge--unresolved-involved {
-  background: oklch(from var(--warning) l c h / 0.2);
-  color: var(--warning);
-}
-
-.threads-bar__badge--resolved-uninvolved {
-  background: oklch(from var(--info) l c h / 0.18);
-  color: var(--info);
-}
-
-.threads-bar__badge--resolved-involved {
-  background: var(--success-bg);
-  color: var(--success);
-}
+/* `.threads-bar__badge` / `--<bucket>` live in
+ * `assets/styles/pr-status.css` so the per-segment / breakdown tooltips and
+ * the dashboard-row legend share the same swatch identity. */
 
 .threads-bar__seg-tip {
   display: flex;

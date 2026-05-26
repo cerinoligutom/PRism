@@ -932,52 +932,9 @@ function onSelectKey(event: KeyboardEvent): void {
   background: var(--accent-strong);
 }
 
-/* State badge. A 22px tinted-square pill with a centred 14px Lucide-style svg.
- * The tinted background carries the colour-coded scan signal; the icon glyph
- * disambiguates on closer look. Same pattern as `.thread-card__state`. */
-.pr-row__state {
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-1);
-  color: var(--text-faint);
-}
-
-.pr-row__state svg {
-  width: 14px;
-  height: 14px;
-}
-
-.pr-row__state.row-strip-none {
-  background: transparent;
-}
-
-.pr-row__state.row-strip-needs {
-  color: var(--info);
-  background: oklch(from var(--info) l c h / 0.18);
-}
-
-.pr-row__state.row-strip-changes {
-  color: var(--danger);
-  background: oklch(from var(--danger) l c h / 0.18);
-}
-
-.pr-row__state.row-strip-approved {
-  color: var(--success);
-  background: oklch(from var(--success) l c h / 0.18);
-}
-
-.pr-row__state.row-strip-draft {
-  color: var(--text-mute);
-  background: oklch(from var(--text-mute) l c h / 0.18);
-}
-
-.pr-row__state.row-strip-stale {
-  color: var(--warning);
-  background: oklch(from var(--warning) l c h / 0.18);
-}
+/* `.pr-row__state` shape + colour variants live in
+ * `assets/styles/pr-status.css` so the dashboard legend tooltip renders the
+ * same swatch without re-declaring the palette. */
 
 .pr-row__num {
   font-family: var(--font-mono);
