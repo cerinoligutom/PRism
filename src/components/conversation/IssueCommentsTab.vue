@@ -135,12 +135,15 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
   display: grid;
   grid-template-columns: 28px 1fr;
   gap: var(--s-3);
-  padding: var(--s-4) 0;
-  border-bottom: 1px solid var(--border-1);
+  padding: var(--s-4);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  background: var(--bg-1);
+  transition: border-color 0.12s;
 }
 
-.issue-comment-card:last-child {
-  border-bottom: 0;
+.issue-comment-card:hover {
+  border-color: var(--accent);
 }
 
 .issue-comment-card__avatar {
@@ -165,7 +168,7 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
 }
 
 .issue-comment-card__author {
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text-strong);
 }
@@ -201,7 +204,7 @@ async function openCommentOnGitHub(url: string | null): Promise<void> {
 
 .issue-comment-card__text {
   margin: 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }

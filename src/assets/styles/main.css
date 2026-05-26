@@ -6,6 +6,7 @@
 
 @import "./tokens.css";
 @import "./primitives.css";
+@import "./pr-status.css";
 
 /* Map design tokens to Tailwind v4 `@theme` so utilities like `bg-surface`,
  * `text-fg-mute`, `text-accent` resolve against the OKLCH-backed CSS vars

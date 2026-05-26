@@ -159,12 +159,15 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
   display: grid;
   grid-template-columns: 28px 1fr;
   gap: var(--s-3);
-  padding: var(--s-4) 0;
-  border-bottom: 1px solid var(--border-1);
+  padding: var(--s-4);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-2);
+  background: var(--bg-1);
+  transition: border-color 0.12s;
 }
 
-.review-card:last-child {
-  border-bottom: 0;
+.review-card:hover {
+  border-color: var(--accent);
 }
 
 .review-card__avatar {
@@ -189,7 +192,7 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
 }
 
 .review-card__author {
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text-strong);
 }
@@ -267,7 +270,7 @@ const orderedReviews = computed<readonly ReviewView[]>(() => {
    * are owned by `.prism-markdown` (see ThreadsList for the same rationale).
    * Re-asserting them here inflates paragraph gaps and reads as dead space. */
   margin: 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }

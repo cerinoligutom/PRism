@@ -434,6 +434,129 @@ watch(
             </svg>
           </button>
         </PRismTooltip>
+        <PRismTooltip :as-child="true" side="bottom" align="end">
+          <button
+            type="button"
+            class="btn btn-icon dashboard__legend-btn"
+            aria-label="Row icon legend"
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6.5" />
+              <line x1="8" y1="11.25" x2="8" y2="7.25" />
+              <circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          <template #content>
+            <div class="dashboard-legend" role="region" aria-label="Row icon legend">
+              <div class="dashboard-legend__section-title">PR state</div>
+              <ul class="dashboard-legend__rows">
+                <li class="dashboard-legend__row">
+                  <span class="pr-row__state row-strip-needs" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
+                      <circle cx="8" cy="8" r="2" />
+                    </svg>
+                  </span>
+                  <span>Needs your review</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="pr-row__state row-strip-changes" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
+                    </svg>
+                  </span>
+                  <span>Changes requested</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="pr-row__state row-strip-approved" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M5.25 8.25l2 2 3.5-4" />
+                    </svg>
+                  </span>
+                  <span>Approved</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="pr-row__state row-strip-draft" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
+                      <path d="M10 4l2 2" />
+                    </svg>
+                  </span>
+                  <span>Draft</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="pr-row__state row-strip-stale" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M8 4.5V8l2.25 1.5" />
+                    </svg>
+                  </span>
+                  <span>Stale (no recent activity)</span>
+                </li>
+              </ul>
+
+              <div class="dashboard-legend__section-title">Unread</div>
+              <ul class="dashboard-legend__rows">
+                <li class="dashboard-legend__row">
+                  <span class="dashboard-legend__unread-swatch" aria-hidden="true">
+                    <span class="dashboard-legend__unread-dot"></span>
+                  </span>
+                  <span>New activity since you last looked</span>
+                </li>
+              </ul>
+
+              <div class="dashboard-legend__section-title">Threads</div>
+              <ul class="dashboard-legend__rows">
+                <li class="dashboard-legend__row">
+                  <span class="threads-bar__badge threads-bar__badge--unresolved-uninvolved" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z" />
+                    </svg>
+                  </span>
+                  <span>Unresolved</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="threads-bar__badge threads-bar__badge--unresolved-involved" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z" />
+                    </svg>
+                  </span>
+                  <span>Unresolved &middot; you're in it</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="threads-bar__badge threads-bar__badge--resolved-uninvolved" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M5.25 8.25l2 2 3.5-4" />
+                    </svg>
+                  </span>
+                  <span>Resolved</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="threads-bar__badge threads-bar__badge--resolved-involved" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="8" cy="8" r="6.25" />
+                      <path d="M5.25 8.25l2 2 3.5-4" />
+                    </svg>
+                  </span>
+                  <span>Resolved &middot; was yours</span>
+                </li>
+              </ul>
+            </div>
+          </template>
+        </PRismTooltip>
       </div>
 
       <div class="dashboard__chips-row">
@@ -918,5 +1041,79 @@ watch(
   font-size: var(--fs-13);
   color: var(--text-mute);
   line-height: var(--lh-body);
+}
+
+/* Mirrors the conversation header legend trigger - accent tint so it reads
+ * as "tap me for help" rather than chrome. Other chrome comes from
+ * `.btn.btn-icon` in `primitives.css`. */
+.dashboard__legend-btn {
+  color: var(--accent);
+}
+
+.dashboard__legend-btn:hover:not(:disabled) {
+  color: var(--accent-strong);
+}
+</style>
+
+<!--
+  Unscoped because Reka's `TooltipPortal` teleports legend content out of
+  the scoped-CSS attribute boundary. Includes duplicated state-badge +
+  unread-dot styles from `PullRequestRow.vue` so the legend renders the
+  same visual identity without having to wait for that component's scoped
+  styles. ThreadsBar bucket badges come from `ThreadsBar.vue`'s own
+  unscoped block (loaded on every PR row).
+-->
+<style>
+.dashboard-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: var(--fs-12);
+  color: var(--text);
+  min-width: 240px;
+}
+
+.dashboard-legend__section-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.dashboard-legend__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dashboard-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* `.pr-row__state` shape + variant palettes come from
+ * `assets/styles/pr-status.css` so the legend matches the inline row badge. */
+
+/* Unread cue mirrors the dashboard row's 10px column + 7px centred accent
+ * dot so the swatch looks like the real thing. */
+.dashboard-legend__unread-swatch {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dashboard-legend__unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-strong);
 }
 </style>

@@ -244,7 +244,7 @@ async function openCommentOnGitHub(
         @keydown.enter.prevent="toggleExpanded(thread.id)"
         @keydown.space.prevent="toggleExpanded(thread.id)"
       >
-        <PRismTooltip :text="bucketTooltip(thread)" :as-child="true">
+        <PRismTooltip :as-child="true">
           <span
             :class="[
               'thread-card__state',
@@ -284,6 +284,21 @@ async function openCommentOnGitHub(
               />
             </svg>
           </span>
+          <template #content>
+            <div class="thread-state-tip">
+              <span class="thread-state-tip__label">
+                {{ thread.is_resolved ? "Resolved" : "Unresolved" }}
+              </span>
+              <span
+                v-if="thread.is_involved && !thread.is_resolved"
+                class="thread-card__chip thread-card__chip--mine"
+              >INVOLVED</span>
+              <span
+                v-if="thread.is_outdated"
+                class="thread-card__chip thread-card__chip--outdated"
+              >OUTDATED</span>
+            </div>
+          </template>
         </PRismTooltip>
 
         <div class="thread-card__file">
@@ -552,7 +567,7 @@ async function openCommentOnGitHub(
   border: 1px solid var(--border-1);
   border-radius: var(--r-2);
   background: var(--bg-1);
-  transition: background 0.12s;
+  transition: border-color 0.12s;
 }
 
 .thread-card__file {
@@ -575,7 +590,7 @@ async function openCommentOnGitHub(
 }
 
 .thread-card:hover {
-  background: var(--bg-0);
+  border-color: var(--accent);
 }
 
 .thread-card:focus-visible {
@@ -595,37 +610,11 @@ async function openCommentOnGitHub(
   opacity: 0.65;
 }
 
-/* State badge - same square-pill pattern as `.pr-row__state` so the
- * conversation surface and the dashboard row share the visual language.
- * Top-aligned with the file-path row via a small margin-top. */
+/* Inline state badge layout. Shape + colour variants live in
+ * `assets/styles/pr-status.css` so the legend tooltips on other surfaces
+ * pick up the same look. Only the alignment offset is local. */
 .thread-card__state {
-  width: 22px;
-  height: 22px;
-  border-radius: var(--r-1);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   margin-top: 2px;
-}
-
-.thread-card__state--unresolved-uninvolved {
-  background: oklch(from var(--danger) l c h / 0.18);
-  color: var(--danger);
-}
-
-.thread-card__state--unresolved-involved {
-  background: oklch(from var(--warning) l c h / 0.2);
-  color: var(--warning);
-}
-
-.thread-card__state--resolved-uninvolved {
-  background: oklch(from var(--info) l c h / 0.18);
-  color: var(--info);
-}
-
-.thread-card__state--resolved-involved {
-  background: var(--success-bg);
-  color: var(--success);
 }
 
 /* Brighter bucket badge for unread threads. The bg alpha jumps from 0.18-0.2
@@ -692,25 +681,9 @@ async function openCommentOnGitHub(
 }
 
 
-.thread-card__chip {
-  margin-left: 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-9);
-  padding: 1px 5px;
-  border-radius: 2px;
-  letter-spacing: 0.5px;
-  flex-shrink: 0;
-}
-
-.thread-card__chip--mine {
-  background: var(--accent-bg);
-  color: var(--accent-strong);
-}
-
-.thread-card__chip--outdated {
-  background: var(--bg-4);
-  color: var(--text-mute);
-}
+/* `.thread-card__chip` / `--mine` / `--outdated` live in
+ * `assets/styles/pr-status.css` so the same chip pill renders identically
+ * inside the state-badge tooltip and the conversation legend popover. */
 
 .thread-card__diff-hunk {
   /* Sits between the file-path row and the snippet; the component's own
@@ -725,7 +698,7 @@ async function openCommentOnGitHub(
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
 }
 
@@ -837,6 +810,7 @@ async function openCommentOnGitHub(
 }
 
 .thread-comment__author {
+  font-size: var(--fs-13);
   color: var(--text-strong);
   font-weight: 500;
 }
@@ -877,7 +851,7 @@ async function openCommentOnGitHub(
    * literal whitespace between `<p>` tags and inflates the line-box, surfacing
    * as huge gaps between paragraphs. Leave only the host-level margin. */
   margin: 2px 0 0;
-  font-size: var(--fs-12);
+  font-size: var(--fs-13);
   color: var(--text);
   word-break: break-word;
 }
@@ -960,6 +934,26 @@ async function openCommentOnGitHub(
 .thread-card__participants-tooltip-login {
   font-family: var(--font-mono);
   font-size: var(--fs-11);
+  color: var(--text-strong);
+}
+</style>
+
+<!--
+  Unscoped because Reka's `TooltipPortal` teleports the state-badge tooltip
+  out of the scoped-CSS attribute boundary. Only the local layout for the
+  tooltip wrapper needs to survive the portal here; the chip + badge classes
+  themselves come from `assets/styles/pr-status.css`.
+-->
+<style>
+.thread-state-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.thread-state-tip__label {
+  font-weight: 600;
   color: var(--text-strong);
 }
 </style>

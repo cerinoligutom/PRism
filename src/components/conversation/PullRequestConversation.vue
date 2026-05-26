@@ -7,6 +7,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 
 import type { ThreadsSummary } from "@/types/dashboard";
 import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
+import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import ConversationStats from "./ConversationStats.vue";
 import IssueCommentsTab from "./IssueCommentsTab.vue";
 import ReviewsTab from "./ReviewsTab.vue";
@@ -191,7 +192,128 @@ watch(
         <div class="pr-conversation__main-col">
           <template v-if="activeTab === 'threads'">
             <div class="pr-conversation__col-head">
-              <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
+              <div class="pr-conversation__col-title-block">
+                <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
+                <PRismTooltip :as-child="true" side="bottom" align="start">
+                  <button
+                    type="button"
+                    class="btn btn-icon btn-sm pr-conversation__legend-btn"
+                    aria-label="Thread badge legend"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="8" cy="8" r="6.5" />
+                      <line x1="8" y1="11.25" x2="8" y2="7.25" />
+                      <circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none" />
+                    </svg>
+                  </button>
+                  <template #content>
+                    <div class="thread-state-legend" role="region" aria-label="Thread badge legend">
+                      <div class="thread-state-legend__section-title">State</div>
+                      <ul class="thread-state-legend__rows">
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__state thread-card__state--unresolved-uninvolved">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+                              />
+                            </svg>
+                          </span>
+                          <span>Unresolved</span>
+                        </li>
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__state thread-card__state--unresolved-involved">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+                              />
+                            </svg>
+                          </span>
+                          <span>Unresolved &middot; you're in it</span>
+                        </li>
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__state thread-card__state--resolved-uninvolved">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <circle cx="8" cy="8" r="6.25" />
+                              <path d="M5.25 8.25l2 2 3.5-4" />
+                            </svg>
+                          </span>
+                          <span>Resolved</span>
+                        </li>
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__state thread-card__state--resolved-involved">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <circle cx="8" cy="8" r="6.25" />
+                              <path d="M5.25 8.25l2 2 3.5-4" />
+                            </svg>
+                          </span>
+                          <span>Resolved &middot; was yours</span>
+                        </li>
+                      </ul>
+                      <div class="thread-state-legend__section-title">Modifier</div>
+                      <ul class="thread-state-legend__rows">
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__chip thread-card__chip--mine">INVOLVED</span>
+                          <span>You're a participant</span>
+                        </li>
+                        <li class="thread-state-legend__row">
+                          <span class="thread-card__chip thread-card__chip--outdated">OUTDATED</span>
+                          <span>Line no longer exists</span>
+                        </li>
+                      </ul>
+                    </div>
+                  </template>
+                </PRismTooltip>
+              </div>
             </div>
 
             <div v-if="conversation.stats.threads_total > 0" class="pr-conversation__rollup">
@@ -327,20 +449,29 @@ watch(
 }
 
 .pr-conversation__body {
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* Wide-viewport layout: each column owns its own scroll so the stats
+   * sidebar stays visible while the active tab scrolls under it. Narrow
+   * viewport (<= 900px) flips this back to a single body scroll, see the
+   * media query below. */
+  overflow: hidden;
 }
 
 .pr-conversation__layout {
   display: grid;
   grid-template-columns: 1fr 320px;
   gap: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 .pr-conversation__main-col {
   padding: 18px 24px 20px;
   border-right: 1px solid var(--border-1);
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pr-conversation__meta-col {
@@ -349,6 +480,8 @@ watch(
   flex-direction: column;
   gap: 18px;
   background: var(--bg-2);
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pr-conversation__col-head {
@@ -360,6 +493,12 @@ watch(
   flex-wrap: wrap;
 }
 
+.pr-conversation__col-title-block {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .pr-conversation__col-title {
   font-family: var(--font-mono);
   font-size: var(--fs-10);
@@ -368,18 +507,81 @@ watch(
   color: var(--text-faint);
 }
 
+/* Pulls colour towards the accent so it reads as "tap me for help" rather
+ * than the default ghosted icon-button look. Inherits all other chrome from
+ * `.btn.btn-icon.btn-sm` in `primitives.css`. */
+.pr-conversation__legend-btn {
+  color: var(--accent);
+}
+
+.pr-conversation__legend-btn:hover:not(:disabled) {
+  color: var(--accent-strong);
+}
+
 .pr-conversation__rollup {
   margin-bottom: var(--s-4);
 }
 
 @media (max-width: 900px) {
+  /* Stacked layout reverts to a single body scroll: an inner per-column scroll
+   * would trap the sidebar behind a long active tab on narrow viewports. */
+  .pr-conversation__body {
+    overflow-y: auto;
+  }
+
   .pr-conversation__layout {
     grid-template-columns: 1fr;
+    height: auto;
   }
 
   .pr-conversation__main-col {
     border-right: 0;
     border-bottom: 1px solid var(--border-1);
+    overflow-y: visible;
   }
+
+  .pr-conversation__meta-col {
+    overflow-y: visible;
+  }
+}
+</style>
+
+<!--
+  Unscoped because Reka's `TooltipPortal` teleports the legend content out of
+  the scoped-CSS attribute boundary (same constraint as the participants /
+  state-badge tooltips in ThreadsList). The badge / chip swatches inside the
+  legend share the unscoped classes declared at the bottom of `ThreadsList.vue`.
+-->
+<style>
+.thread-state-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: var(--fs-12);
+  color: var(--text);
+  min-width: 220px;
+}
+
+.thread-state-legend__section-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-9);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.thread-state-legend__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.thread-state-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>
