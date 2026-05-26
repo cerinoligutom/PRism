@@ -32,6 +32,16 @@ export type DashboardView =
  */
 export type DashboardSort = "updated" | "stale" | "needs-me";
 
+/**
+ * Client-side direction modifier for the active sort. The Tauri command still
+ * owns the underlying ORDER BY (per `DashboardSort`); this just toggles a
+ * post-fetch reversal so the user can flip newest/oldest within each group
+ * without round-tripping the backend. `"desc"` is the natural direction every
+ * sort emits from SQL ("updated" = newest first, etc.); `"asc"` reverses
+ * inside `filteredPullRequests` so the grouped buckets inherit it for free.
+ */
+export type DashboardSortDirection = "asc" | "desc";
+
 export type DashboardGroup = "repo" | "org" | "none";
 
 export type ReviewerState =
@@ -213,6 +223,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const view = ref<DashboardView>("authored");
   const group = ref<DashboardGroup>("repo");
   const sort = ref<DashboardSort>("updated");
+  const sortDirection = ref<DashboardSortDirection>("desc");
   // M4 triage state. `activeChips` uses a Set for cheap toggle semantics; the
   // Tauri command takes the `Array.from(...)` projection. `searchQuery` is a
   // client-side filter (per the contract's "Search semantics") so we don't
@@ -262,13 +273,22 @@ export const useDashboardStore = defineStore("dashboard", () => {
   // starts unfocused rather than inheriting a stale id from the previous one.
   const focusedPullRequestId = ref<number | null>(null);
 
-  // Bulk multi-select state (#331). `selectedRowIds` holds the PR ids the
-  // user has ticked; the dashboard renders a sticky toolbar above the table
-  // while non-empty. `lastSelectedId` anchors Shift+click range extension so
-  // a contiguous slice of `visibleRowIds` flips together. Both reset on
-  // view-switch and after a successful bulk archive.
-  const selectedRowIds = ref<Set<number>>(new Set());
+  // Bulk multi-select state (#331). `selectedRows` keys PR ids to the row
+  // payload so cross-view bulk ops (mark as read, archive selected) can run
+  // against rows the active view has unloaded. The dashboard renders a
+  // sticky toolbar above the table while non-empty. `lastSelectedId`
+  // anchors Shift+click range extension so a contiguous slice of
+  // `visibleRowIds` flips together. Selection persists across view-switches
+  // so the user can stage a batch from multiple sidebar tabs; it resets
+  // after a successful bulk write.
+  const selectedRows = ref<Map<number, DashboardPullRequest>>(new Map());
   const lastSelectedId = ref<number | null>(null);
+
+  const selectedRowIds = computed<ReadonlySet<number>>(() => {
+    const ids = new Set<number>();
+    for (const id of selectedRows.value.keys()) ids.add(id);
+    return ids;
+  });
 
   // Session-local collapsed groups, keyed by the bucket key produced in the
   // `groups` computed. Survives navigation between views (the store lives for
@@ -347,15 +367,21 @@ export const useDashboardStore = defineStore("dashboard", () => {
     const visible = pending.size === 0
       ? pullRequests.value
       : pullRequests.value.filter(dropArchive);
-    if (q === "") return visible;
-    return visible.filter((pr) => {
-      const repoSlug = `${pr.repo.owner}/${pr.repo.name}`.toLowerCase();
-      return (
-        pr.title.toLowerCase().includes(q) ||
-        repoSlug.includes(q) ||
-        pr.author_login.toLowerCase().includes(q)
-      );
-    });
+    const searched = q === ""
+      ? visible
+      : visible.filter((pr) => {
+          const repoSlug = `${pr.repo.owner}/${pr.repo.name}`.toLowerCase();
+          return (
+            pr.title.toLowerCase().includes(q) ||
+            repoSlug.includes(q) ||
+            pr.author_login.toLowerCase().includes(q)
+          );
+        });
+    // Ascending = reverse the natural backend order. The reversal happens
+    // here so the grouped buckets (built off this list) inherit the
+    // direction for free; bucket ordering itself still tracks the freshest
+    // activity descending.
+    return sortDirection.value === "asc" ? [...searched].reverse() : searched;
   });
 
   const groups = computed<DashboardGroupBucket[]>(() => {
@@ -544,9 +570,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // Drop any focused row so the new view doesn't inherit a highlight for
     // a PR that almost certainly isn't in the next list.
     focusedPullRequestId.value = null;
-    // #331: bulk selection is per-view; rows in the next view shouldn't
-    // inherit a multi-select that targets the previous list's PR ids.
-    clearSelection();
+    // Bulk selection survives view switches so a user can stage a batch
+    // across multiple sidebar tabs (selecting in Authored, swinging through
+    // Watching, then marking-read the lot from one toolbar). The selected
+    // payloads ride along in `selectedRows` so the bulk action paths don't
+    // need the previous view's rows to still be in `pullRequests`.
     await load();
   }
 
@@ -560,6 +588,15 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // Sort change re-queries; the backend owns ordering so this is a
     // round-trip, not an in-memory re-sort.
     void load();
+  }
+
+  function setSortDirection(next: DashboardSortDirection): void {
+    if (sortDirection.value === next) return;
+    sortDirection.value = next;
+  }
+
+  function toggleSortDirection(): void {
+    sortDirection.value = sortDirection.value === "desc" ? "asc" : "desc";
   }
 
   function setDensity(next: Density): void {
@@ -723,57 +760,97 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   /**
-   * Toggle the bulk-selection state for one PR id (#331). Updates
+   * Toggle the bulk-selection state for one PR row (#331). Updates
    * `lastSelectedId` so a subsequent Shift+click can extend a range from
-   * here. The replace-the-Set pattern keeps shallow-ref reactivity firing
-   * for the Pinia getters that consume the selection.
+   * here. The full payload rides into `selectedRows` so cross-view bulk
+   * actions still know each row's `account_ids` and URLs after the user
+   * has switched sidebar tabs.
    */
-  function toggleSelection(pullRequestId: number): void {
-    const next = new Set(selectedRowIds.value);
-    if (next.has(pullRequestId)) {
-      next.delete(pullRequestId);
+  function toggleSelection(pr: DashboardPullRequest): void {
+    const next = new Map(selectedRows.value);
+    if (next.has(pr.id)) {
+      next.delete(pr.id);
     } else {
-      next.add(pullRequestId);
+      next.set(pr.id, pr);
     }
-    selectedRowIds.value = next;
-    lastSelectedId.value = pullRequestId;
+    selectedRows.value = next;
+    lastSelectedId.value = pr.id;
   }
 
   /**
-   * Extend the selection between `lastSelectedId` and `toId` along the
+   * Extend the selection between `lastSelectedId` and `pr` along the
    * visible row order (#331). Every id in the slice flips to checked; ids
    * outside the slice keep their existing state so the user can compose
    * multiple ranges. With no anchor yet (`lastSelectedId === null`) this
    * falls back to a plain toggle so the first Shift+click still feels
    * responsive instead of being a silent no-op.
    */
-  function extendSelection(toId: number, orderedIds: readonly number[]): void {
+  function extendSelection(
+    pr: DashboardPullRequest,
+    orderedIds: readonly number[],
+  ): void {
     const anchor = lastSelectedId.value;
     if (anchor === null) {
-      toggleSelection(toId);
+      toggleSelection(pr);
       return;
     }
     const fromIdx = orderedIds.indexOf(anchor);
-    const toIdx = orderedIds.indexOf(toId);
+    const toIdx = orderedIds.indexOf(pr.id);
     if (fromIdx === -1 || toIdx === -1) {
-      toggleSelection(toId);
+      toggleSelection(pr);
       return;
     }
     const [lo, hi] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
-    const next = new Set(selectedRowIds.value);
+    const idToRow = new Map<number, DashboardPullRequest>();
+    for (const row of pullRequests.value) idToRow.set(row.id, row);
+    const next = new Map(selectedRows.value);
     for (let i = lo; i <= hi; i++) {
       const id = orderedIds[i];
-      if (id !== undefined) next.add(id);
+      if (id === undefined) continue;
+      const row = idToRow.get(id);
+      if (row !== undefined) next.set(id, row);
     }
-    selectedRowIds.value = next;
-    lastSelectedId.value = toId;
+    selectedRows.value = next;
+    lastSelectedId.value = pr.id;
+  }
+
+  /**
+   * Add every PR in `rows` to the selection. Used by the group-header
+   * "select all in this group" affordance so a single click stages every
+   * visible row in a bucket. Idempotent for rows already selected.
+   */
+  function selectMany(rows: readonly DashboardPullRequest[]): void {
+    if (rows.length === 0) return;
+    const next = new Map(selectedRows.value);
+    for (const row of rows) next.set(row.id, row);
+    selectedRows.value = next;
+    const last = rows[rows.length - 1];
+    if (last !== undefined) lastSelectedId.value = last.id;
+  }
+
+  /**
+   * Drop every id in `ids` from the selection. Mirrors [`selectMany`] for
+   * the inverse path (clearing a group's selection from the header).
+   */
+  function deselectMany(ids: readonly number[]): void {
+    if (ids.length === 0) return;
+    const next = new Map(selectedRows.value);
+    let touched = false;
+    for (const id of ids) {
+      if (next.delete(id)) touched = true;
+    }
+    if (!touched) return;
+    selectedRows.value = next;
+    if (lastSelectedId.value !== null && !next.has(lastSelectedId.value)) {
+      lastSelectedId.value = null;
+    }
   }
 
   function clearSelection(): void {
-    if (selectedRowIds.value.size === 0 && lastSelectedId.value === null) {
+    if (selectedRows.value.size === 0 && lastSelectedId.value === null) {
       return;
     }
-    selectedRowIds.value = new Set();
+    selectedRows.value = new Map();
     lastSelectedId.value = null;
   }
 
@@ -791,16 +868,17 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * the dispatch completes (matching the acceptance criterion).
    */
   async function archiveSelected(): Promise<void> {
-    if (selectedRowIds.value.size === 0) return;
-    const selectedIds = Array.from(selectedRowIds.value);
+    if (selectedRows.value.size === 0) return;
+    const selectedIds = Array.from(selectedRows.value.keys());
     // Group the selected PR ids by relation owner so each account gets one
     // batched invoke. Rows with no `account_ids` (Tracked-view PRs with no
     // relation in unified scope) can't archive - they're skipped silently
     // for the same reason the per-row `canArchive` guard hides the menu
-    // entry on them.
+    // entry on them. Reads from `selectedRows` instead of `pullRequests` so
+    // rows the user staged from a different view (now unloaded) still
+    // contribute their `account_ids` to the fan-out.
     const byAccount = new Map<number, number[]>();
-    for (const row of pullRequests.value) {
-      if (!selectedRowIds.value.has(row.id)) continue;
+    for (const row of selectedRows.value.values()) {
       for (const accountId of row.account_ids) {
         const list = byAccount.get(accountId);
         if (list === undefined) byAccount.set(accountId, [row.id]);
@@ -848,6 +926,35 @@ export const useDashboardStore = defineStore("dashboard", () => {
     } finally {
       await load();
       inFlightArchiveBatches -= 1;
+    }
+  }
+
+  /**
+   * Mark every currently-selected PR as read. Reads from `selectedRows` so
+   * the action works across view switches - a PR staged in Authored still
+   * marks-read after the user has flipped to Watching. Fans the write out
+   * per PR with `account_id: null` so the Rust command settles every
+   * relation owner in one transaction, matching the per-row "Mark unread"
+   * path in reverse.
+   *
+   * Optimistic flip: every selected row's `unread` /
+   * `mentioned_count_unread` clears locally before the round-trip lands so
+   * the dots disappear in the same paint as the click. The post-write
+   * reload reconciles `needs_attention` and any race-window state.
+   */
+  async function markSelectedRead(): Promise<void> {
+    if (selectedRows.value.size === 0) return;
+    const selectedIds = Array.from(selectedRows.value.keys());
+    for (const id of selectedIds) markRowReadOptimistically(id);
+    try {
+      await Promise.allSettled(
+        selectedIds.map((pullRequestId) =>
+          invoke("mark_pr_read", { pullRequestId, accountId: null }),
+        ),
+      );
+      clearSelection();
+    } finally {
+      await load();
     }
   }
 
@@ -1051,6 +1158,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     view,
     group,
     sort,
+    sortDirection,
     activeChips,
     searchQuery,
     chipCounts,
@@ -1075,6 +1183,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setView,
     setGroup,
     setSort,
+    setSortDirection,
+    toggleSortDirection,
     setDensity,
     setAccountScope,
     toggleChip,
@@ -1087,12 +1197,16 @@ export const useDashboardStore = defineStore("dashboard", () => {
     unarchive,
     archiveError,
     dismissArchiveError,
+    selectedRows,
     selectedRowIds,
     lastSelectedId,
     toggleSelection,
     extendSelection,
+    selectMany,
+    deselectMany,
     clearSelection,
     archiveSelected,
+    markSelectedRead,
     openPullRequest,
     openPrFromExternal,
     closeExpanded,

@@ -2,9 +2,13 @@
 import { computed, nextTick, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { openUrl } from "@tauri-apps/plugin-opener";
+
 import PRismButton from "@/components/ui/PRismButton.vue";
 import PullRequestRow from "@/components/dashboard/PullRequestRow.vue";
-import GroupHeader from "@/components/dashboard/GroupHeader.vue";
+import GroupHeader, {
+  type GroupSelectionState,
+} from "@/components/dashboard/GroupHeader.vue";
 import DensityToggle from "@/components/dashboard/DensityToggle.vue";
 import GroupSelector from "@/components/dashboard/GroupSelector.vue";
 import SortSelector from "@/components/dashboard/SortSelector.vue";
@@ -22,8 +26,10 @@ import { useSyncStore } from "@/stores/sync";
 import {
   useDashboardStore,
   type DashboardGroup,
+  type DashboardGroupBucket,
   type DashboardPullRequest,
   type DashboardSort,
+  type DashboardSortDirection,
   type DashboardView as DashboardViewName,
 } from "@/stores/dashboard";
 import type { AccountMarker, ChipKey } from "@/types/dashboard";
@@ -206,6 +212,10 @@ function onSortUpdate(value: DashboardSort): void {
   dashboard.setSort(value);
 }
 
+function onSortDirectionUpdate(value: DashboardSortDirection): void {
+  dashboard.setSortDirection(value);
+}
+
 function onSearchUpdate(value: string): void {
   dashboard.setSearchQuery(value);
 }
@@ -264,10 +274,10 @@ function onUnarchive(pr: DashboardPullRequest): void {
  */
 function onToggleSelect(pr: DashboardPullRequest, shiftKey: boolean): void {
   if (shiftKey) {
-    dashboard.extendSelection(pr.id, dashboard.visibleRowIds);
+    dashboard.extendSelection(pr, dashboard.visibleRowIds);
     return;
   }
-  dashboard.toggleSelection(pr.id);
+  dashboard.toggleSelection(pr);
 }
 
 function onCancelSelection(): void {
@@ -278,10 +288,73 @@ function onArchiveSelected(): void {
   void dashboard.archiveSelected();
 }
 
+function onMarkSelectedRead(): void {
+  void dashboard.markSelectedRead();
+}
+
+/**
+ * Resolve the tri-state for a bucket's select-all checkbox by comparing the
+ * bucket's row ids against the live selection set. `"some"` covers any
+ * partial overlap so the indeterminate dash renders correctly when the
+ * user has flipped individual rows ahead of the group action.
+ */
+function bucketSelectionState(
+  bucket: DashboardGroupBucket,
+): GroupSelectionState {
+  if (bucket.items.length === 0) return "none";
+  const selected = selectedRowIdsSet.value;
+  let hit = 0;
+  for (const item of bucket.items) {
+    if (selected.has(item.id)) hit += 1;
+  }
+  if (hit === 0) return "none";
+  if (hit === bucket.items.length) return "all";
+  return "some";
+}
+
+function onBucketToggleSelectAll(
+  bucket: DashboardGroupBucket,
+  next: boolean,
+): void {
+  if (next) {
+    dashboard.selectMany(bucket.items);
+    return;
+  }
+  dashboard.deselectMany(bucket.items.map((item) => item.id));
+}
+
+/**
+ * Open every PR in the bucket on Unravel. The URL mirrors GitHub's shape
+ * on the unravel.sh host - same convention as the per-row Unravel button
+ * in `PullRequestRow.vue`. We don't probe the index ahead of time; a 404
+ * stays the caller's problem rather than a per-row round-trip.
+ *
+ * Sequential awaits so the OS receives URLs in the bucket's rendered
+ * order; the items list is already sorted via `filteredPullRequests` and
+ * its direction modifier, so the resulting tab order mirrors what the
+ * user sees on screen.
+ */
+async function onBucketOpenAllUnravel(
+  bucket: DashboardGroupBucket,
+): Promise<void> {
+  for (const item of bucket.items) {
+    const url = `https://www.unravel.sh/${item.repo.owner}/${item.repo.name}/pull/${item.number}`;
+    await openUrl(url);
+  }
+}
+
+async function onBucketOpenAllGitHub(
+  bucket: DashboardGroupBucket,
+): Promise<void> {
+  for (const item of bucket.items) {
+    await openUrl(item.url);
+  }
+}
+
 const selectedCount = computed<number>(() => dashboard.selectedRowIds.size);
 const hasSelection = computed<boolean>(() => selectedCount.value > 0);
 const selectedRowIdsSet = computed<ReadonlySet<number>>(
-  () => dashboard.selectedRowIds as ReadonlySet<number>,
+  () => dashboard.selectedRowIds,
 );
 
 /**
@@ -586,7 +659,9 @@ watch(
         <span class="dashboard__chips-label dashboard__chips-label--gap">SORT</span>
         <SortSelector
           :model-value="(dashboard.sort as DashboardSort)"
+          :direction="(dashboard.sortDirection as DashboardSortDirection)"
           @update:model-value="onSortUpdate"
+          @update:direction="onSortDirectionUpdate"
         />
         <div class="dashboard__chips-spacer" />
         <PRismTooltip
@@ -725,12 +800,20 @@ watch(
         v-if="hasSelection && !isArchive"
         class="dashboard__bulk-toolbar"
         role="region"
-        aria-label="Bulk archive selection"
+        aria-label="Bulk selection actions"
       >
         <span class="dashboard__bulk-count">
           {{ selectedCount === 1 ? "1 selected" : `${selectedCount} selected` }}
         </span>
         <div class="dashboard__bulk-actions">
+          <PRismButton
+            variant="ghost"
+            size="sm"
+            :disabled="isFetching"
+            @click="onMarkSelectedRead"
+          >
+            Mark as read
+          </PRismButton>
           <PRismButton
             variant="primary"
             size="sm"
@@ -757,7 +840,12 @@ watch(
           :failing="bucket.failingCount"
           :latest-updated-at="bucket.latestUpdatedAt"
           :collapsed="isGroupCollapsed(bucket.key)"
+          :selectable="!isArchive"
+          :selection-state="bucketSelectionState(bucket)"
           @update:collapsed="(value: boolean) => dashboard.setGroupCollapsed(bucket.key, value)"
+          @toggle-select-all="(value: boolean) => onBucketToggleSelectAll(bucket, value)"
+          @open-all-unravel="() => { void onBucketOpenAllUnravel(bucket); }"
+          @open-all-github="() => { void onBucketOpenAllGitHub(bucket); }"
         />
         <TransitionGroup
           v-show="!isGroupCollapsed(bucket.key)"
