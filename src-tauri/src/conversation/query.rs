@@ -29,10 +29,12 @@ pub fn list_pr_threads(
     pull_request_id: i64,
     account_id: Option<i64>,
 ) -> Result<Vec<PullRequestThread>, rusqlite::Error> {
-    // The `LEFT JOIN users` resolves the head-comment author's avatar URL
-    // (ADR 0013). The join is via `t.head_comment_author_login`; threads that
-    // pre-date the M3 sync or whose head author has never been seen produce a
-    // NULL `avatar_url`, which the frontend renders as the initials fallback.
+    // ADR 0029: the head-comment snapshot now lives in `review_comments` and
+    // is resolved via a correlated subquery (`head_id`) that picks the oldest
+    // comment in the thread by `created_at` (ties break on `id` for stable
+    // ordering). The `LEFT JOIN review_comments head` carries the head row's
+    // author / body / created_at; the `LEFT JOIN users` then resolves the
+    // author's avatar URL (ADR 0013).
     //
     // The `LEFT JOIN pull_request_viewer_relations rel` carries the active
     // account's `read_at` watermark so the `unread` projection can compare it
@@ -55,9 +57,9 @@ pub fn list_pr_threads(
             t.created_at,
             t.resolved_at,
             t.last_reply_at,
-            t.head_comment_author_login,
-            t.head_comment_body_text,
-            t.head_comment_created_at,
+            head.author_login AS head_comment_author_login,
+            head.body         AS head_comment_body_text,
+            head.created_at   AS head_comment_created_at,
             u.avatar_url AS head_author_avatar_url,
             CASE
                 WHEN ?2 IS NULL THEN 0
@@ -73,7 +75,7 @@ pub fn list_pr_threads(
             CASE
                 WHEN ?2 IS NULL THEN 0
                 WHEN COALESCE(t.last_reply_at,
-                              t.head_comment_created_at,
+                              head.created_at,
                               t.created_at,
                               0)
                      > COALESCE(rel.read_at, 0) THEN 1
@@ -81,7 +83,14 @@ pub fn list_pr_threads(
             END AS unread,
             t.diff_hunk
         FROM review_threads t
-        LEFT JOIN users u ON u.login = t.head_comment_author_login
+        LEFT JOIN review_comments head
+               ON head.id = (
+                    SELECT c.id FROM review_comments c
+                     WHERE c.review_thread_id = t.id
+                     ORDER BY c.created_at ASC, c.id ASC
+                     LIMIT 1
+                  )
+        LEFT JOIN users u ON u.login = head.author_login
         LEFT JOIN pull_request_viewer_relations rel
                ON rel.pull_request_id = t.pull_request_id
               AND rel.account_id      = ?2

@@ -90,10 +90,10 @@ pub fn run() {
             auth::commands::remove_account,
             auth::commands::update_token,
             auth::commands::validate_token_cmd,
-            conversation::commands::fetch_pr_conversation,
             conversation::commands::get_pr_conversation_stats,
             conversation::commands::list_pr_threads,
             conversation::commands::list_pr_timeline_events,
+            conversation::commands::load_pr_conversation,
             dashboard::commands::get_pr_route_metadata,
             dashboard::commands::list_dashboard_pull_requests,
             dashboard::commands::list_dashboard_view_counts,
@@ -237,12 +237,6 @@ fn run_setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         etag_store,
     ));
     let account_store = auth_state.store.clone();
-    // Hoist the factory + store into Tauri-managed state so the
-    // conversation hydrator (`fetch_pr_conversation`) can build a
-    // per-account client without going through the worker handle. The
-    // worker shares the same Arcs.
-    app.manage::<conversation::commands::ClientFactoryHandle>(client_factory.clone());
-    app.manage::<conversation::commands::AccountStoreHandle>(account_store.clone());
 
     // Activity buffer - shared between the worker (writes) and the
     // Tauri command (reads). Issue #122 / `docs/contracts/sync-observability.md`.

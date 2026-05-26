@@ -19,7 +19,7 @@ mod tests;
 mod timeline;
 mod users;
 
-use reviews::{write_review_threads, write_reviews};
+use reviews::{write_issue_comments, write_review_threads, write_reviews};
 use timeline::{qualifying_event_wire_name, write_timeline_events};
 use users::write_user_avatars;
 
@@ -138,6 +138,9 @@ pub fn write_pr_updates(
                 "UPDATE pull_requests SET issue_comments_count = ?1 WHERE id = ?2",
                 params![ic.total_count, pr_id],
             )?;
+            // ADR 0029: sync owns `issue_comments` persistence so the mention
+            // scan + the conversation drawer see fresh bodies on every cycle.
+            write_issue_comments(&tx, pr_id, &ic.nodes)?;
         }
     }
 

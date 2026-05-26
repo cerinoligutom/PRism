@@ -1,6 +1,6 @@
 # 0010 — Conversation-depth storage and hydration
 
-- **Status:** Accepted
+- **Status:** Accepted (Comment-body hydration superseded by [ADR 0029](0029-sync-owns-conversation-persistence.md); dashboard rollup superseded in part by [ADR 0012](0012-threads-bar-four-state-and-outdated-counted.md) and [ADR 0016](0016-unified-multi-account-dashboard.md))
 - **Date:** 2026-05-20
 - **Issue:** [#68](https://github.com/cerinoligutom/PRism/issues/68)
 - **Deciders:** @cerinoligutom
@@ -58,6 +58,8 @@ Three storage decisions need pinning before the M3 wave-2 implementers branch ou
 > **Superseded in part by [ADR 0012](0012-threads-bar-four-state-and-outdated-counted.md).** The three rollup columns above are replaced by the four-bucket `threads_(un)resolved_(un)involved` columns; the pre-aggregate-at-write-time pattern itself stays in force.
 
 **Comment-body hydration.** Capped + lazy.
+
+> **Superseded by [ADR 0029](0029-sync-owns-conversation-persistence.md).** Sync now owns `review_comments` and `issue_comments` writes; the lazy `fetch_pr_conversation` path was deleted. The drawer reads from cache.
 
 - The sync cycle's `PR_DETAIL_QUERY` pulls `reviewThreads(first:100)` with `comments(first:1)` head + `totalCount`, `reviews(first:30)` with bodies, and `issueComments(first:50).totalCount`. Head-comment snapshot columns on `review_threads` carry the row preview.
 - A new Tauri command `fetch_pr_conversation(pull_request_id)` issues `PR_COMMENTS_QUERY` (a separate GraphQL string defined by M3-B) to pull full comment bodies + issue-comment bodies. Called by the drawer / route on mount; results persisted into `review_comments` and `issue_comments`.

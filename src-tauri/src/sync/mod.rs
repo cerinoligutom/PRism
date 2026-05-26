@@ -35,8 +35,8 @@ pub use discovery::{
     DiscoveryRelation, DiscoveryReport,
 };
 pub use events::{
-    SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, SYNC_ACTIVITY_EVENT,
-    SYNC_ERROR_EVENT, SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
+    SyncErrorPayload, SyncRateLimitPayload, SyncStatusPayload, DASHBOARD_REFRESH_EVENT,
+    SYNC_ACTIVITY_EVENT, SYNC_ERROR_EVENT, SYNC_RATE_LIMIT_EVENT, SYNC_STATUS_EVENT,
 };
 pub use scheduler::{
     clamp_interval_secs, read_persisted_interval, write_persisted_interval, SchedulerConfig,

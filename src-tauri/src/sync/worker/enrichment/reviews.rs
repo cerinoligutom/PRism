@@ -1,15 +1,28 @@
 //! Per-PR review thread + review writes. Both follow the upsert + prune
 //! pattern: every node_id in the latest payload becomes a row, any node_id
 //! not present is deleted.
+//!
+//! ADR 0029: this module is also the canonical writer for `review_comments`.
+//! The per-thread comments arriving in `PR_DETAIL_QUERY` are upserted via
+//! `conversation::writer::upsert_review_comment` after the thread row exists,
+//! and the head comment's `diff_hunk` is propagated onto `review_threads`.
+//! Issue comments land via `write_issue_comments` from the same transaction.
 
 use rusqlite::params;
 
 use super::super::{rfc3339_to_unix, unix_now};
+use crate::conversation::writer::{
+    update_thread_diff_hunk, upsert_issue_comment, upsert_review_comment,
+};
 
-/// Upsert per-thread state. Tracks transitions on `is_resolved` so
-/// `resolved_at` is set when a thread becomes resolved and cleared when it
-/// flips back. Prunes any prior thread for this PR whose `node_id` is absent
-/// from the fetched set; cascading deletes on `review_comments` follow.
+/// Upsert per-thread state AND every comment in each thread. Tracks
+/// transitions on `is_resolved` so `resolved_at` is set when a thread becomes
+/// resolved and cleared when it flips back. Prunes any prior thread for this
+/// PR whose `node_id` is absent from the fetched set; cascading deletes on
+/// `review_comments` follow. Comments themselves are upsert-only — a comment
+/// deleted in-place on GitHub stays locally until its thread is pruned (the
+/// payload caps at the first 100 comments per thread, so per-comment pruning
+/// would wrongly drop reply pages beyond the cap).
 pub(super) fn write_review_threads(
     tx: &rusqlite::Transaction<'_>,
     pr_id: i64,
@@ -46,8 +59,6 @@ pub(super) fn write_review_threads(
     for thread in threads {
         let head = thread.comments.nodes.first();
         let head_created_at = head.and_then(|c| rfc3339_to_unix(&c.created_at));
-        let head_author = head.and_then(|c| c.author.as_ref().map(|a| a.login.as_str()));
-        let head_body = head.map(|c| c.body_text.as_str());
         // `PullRequestReviewThread` has no `url` field on GitHub's GraphQL
         // schema (issue #115). The thread permalink is the head comment's
         // url; absent a head comment, leave the column NULL.
@@ -72,16 +83,16 @@ pub(super) fn write_review_threads(
         // covers head + replies; one comment means zero replies.
         let reply_count = (thread.comments.total_count - 1).max(0);
 
-        // The unique constraint on review_threads.node_id is a partial index
-        // (WHERE node_id IS NOT NULL from migration 0004). SQLite requires the
-        // ON CONFLICT target to repeat the WHERE clause for partial indexes.
+        // ADR 0029: the `head_comment_*` denorm columns are gone; the
+        // conversation read query derives the head from `review_comments`
+        // directly. `last_reply_at` keeps the head's createdAt as its seed
+        // because v1's stats math reads it for the threads-bar timestamp.
         tx.execute(
             "INSERT INTO review_threads
                 (pull_request_id, node_id, is_resolved, is_outdated, path,
                  line, start_line, original_line, created_at, resolved_at,
-                 last_reply_at, reply_count, head_comment_author_login,
-                 head_comment_body_text, head_comment_created_at, url)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 last_reply_at, reply_count, url)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(node_id) WHERE node_id IS NOT NULL DO UPDATE SET
                 pull_request_id = excluded.pull_request_id,
                 is_resolved = excluded.is_resolved,
@@ -94,9 +105,6 @@ pub(super) fn write_review_threads(
                 resolved_at = excluded.resolved_at,
                 last_reply_at = excluded.last_reply_at,
                 reply_count = excluded.reply_count,
-                head_comment_author_login = excluded.head_comment_author_login,
-                head_comment_body_text = excluded.head_comment_body_text,
-                head_comment_created_at = excluded.head_comment_created_at,
                 url = COALESCE(excluded.url, review_threads.url)",
             params![
                 pr_id,
@@ -111,17 +119,45 @@ pub(super) fn write_review_threads(
                 resolved_at,
                 head_created_at,
                 reply_count,
-                head_author,
-                head_body,
-                head_created_at,
                 head_url,
             ],
         )?;
+
+        // Resolve the just-written thread's local rowid so `review_comments`
+        // can FK-reference it. The thread row is guaranteed to exist at this
+        // point (the upsert above either inserted or matched on `node_id`).
+        let local_thread_id: i64 = tx.query_row(
+            "SELECT id FROM review_threads WHERE node_id = ?1",
+            params![thread.id],
+            |r| r.get(0),
+        )?;
+
+        // Propagate the head comment's `diff_hunk` onto the thread row so the
+        // conversation surface can render the diff context once per thread
+        // (every comment in a thread shares the same hunk). The
+        // `COALESCE(?, diff_hunk)` form keeps a previously-persisted value if
+        // a later payload happens to omit the field.
+        if let Some(head) = thread.comments.nodes.first() {
+            update_thread_diff_hunk(tx, local_thread_id, head.diff_hunk.as_deref())?;
+        }
+
+        // Upsert every comment node arriving in the payload. The query caps
+        // at `first: 100` per thread; threads with more comments paginate
+        // their tail beyond the cap, matching the lazy hydrator's prior
+        // coverage. See ADR 0029.
+        for comment in &thread.comments.nodes {
+            upsert_review_comment(tx, local_thread_id, comment)?;
+        }
     }
 
     // Pruning: any thread row left in the snapshot wasn't present in the
     // latest fetch, so the thread has been removed on GitHub. Comments
     // cascade via the existing FK.
+    //
+    // ADR 0029 cap: the cycle's `pr_detail_extend_pages` follows up to 4
+    // pages of `reviewThreads`, so PRs with >400 threads (vanishingly rare)
+    // will see threads on pages 5+ pruned as "absent". Documented as a known
+    // truncation, not a bug — the cap is well above v1 reality.
     for stale in existing.keys() {
         tx.execute(
             "DELETE FROM review_threads
@@ -138,6 +174,21 @@ struct ExistingThread {
     is_resolved: bool,
     resolved_at: Option<i64>,
     created_at: Option<i64>,
+}
+
+/// Upsert every PR-level issue comment from the cycle payload. Upsert-only,
+/// for the same reason `write_review_threads` doesn't prune review_comments:
+/// the payload caps at the first 100 issue comments, so per-row pruning would
+/// wrongly drop comments on later pages.
+pub(super) fn write_issue_comments(
+    tx: &rusqlite::Transaction<'_>,
+    pr_id: i64,
+    comments: &[crate::github::graphql::IssueCommentNode],
+) -> Result<(), rusqlite::Error> {
+    for comment in comments {
+        upsert_issue_comment(tx, pr_id, comment)?;
+    }
+    Ok(())
 }
 
 /// Upsert submitted reviews and prune any prior row whose `node_id` is absent

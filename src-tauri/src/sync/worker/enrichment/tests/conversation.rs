@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::github::graphql::{
-    CommentConnection as GqlCommentConnection, IssueCommentConnection, PageInfo,
-    PullRequestReviewConnection, PullRequestReviewNode, ReviewThread,
+    IssueCommentConnection, PageInfo, PullRequestReviewConnection, PullRequestReviewNode,
+    ReviewCommentConnection, ReviewCommentNode, ReviewThread,
 };
 
 pub(super) struct ThreadSpec<'a> {
@@ -73,15 +73,21 @@ impl<'a> ThreadSpec<'a> {
 
 pub(super) fn thread(spec: ThreadSpec<'_>) -> ReviewThread {
     let head_url = spec.head_url.map(str::to_string);
-    let head_node = spec
-        .head
-        .map(|(id, login, created_at)| crate::github::graphql::Comment {
-            id: id.into(),
-            url: head_url,
-            author: Some(Actor::new(login)),
-            body_text: "head body".into(),
-            created_at: created_at.into(),
-        });
+    let head_node = spec.head.map(|(id, login, created_at)| ReviewCommentNode {
+        id: id.into(),
+        url: head_url,
+        database_id: None,
+        author: Some(Actor::new(login)),
+        body: "head body".into(),
+        body_html: None,
+        body_text: "head body".into(),
+        created_at: created_at.into(),
+        path: None,
+        line: None,
+        original_line: None,
+        side: None,
+        diff_hunk: None,
+    });
     ReviewThread {
         id: spec.node_id.into(),
         is_resolved: spec.is_resolved,
@@ -90,8 +96,12 @@ pub(super) fn thread(spec: ThreadSpec<'_>) -> ReviewThread {
         line: spec.line,
         start_line: spec.start_line,
         original_line: spec.original_line,
-        comments: GqlCommentConnection {
+        comments: ReviewCommentConnection {
             total_count: spec.total_count,
+            page_info: PageInfo {
+                has_next_page: false,
+                end_cursor: None,
+            },
             nodes: head_node.into_iter().collect(),
         },
     }
@@ -106,8 +116,12 @@ fn empty_thread(node_id: &str, path: &str) -> ReviewThread {
         line: None,
         start_line: None,
         original_line: None,
-        comments: GqlCommentConnection {
+        comments: ReviewCommentConnection {
             total_count: 0,
+            page_info: PageInfo {
+                has_next_page: false,
+                end_cursor: None,
+            },
             nodes: vec![],
         },
     }
@@ -167,15 +181,11 @@ fn write_pr_updates_upserts_review_threads_with_line_range_and_head_snapshot() {
         Option<i64>,
         Option<i64>,
         i64,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
     );
     let row: Row = conn
         .query_row(
             "SELECT node_id, is_resolved, is_outdated, path, line, start_line,
-                    original_line, created_at, resolved_at, last_reply_at, reply_count,
-                    head_comment_author_login, head_comment_body_text, head_comment_created_at
+                    original_line, created_at, resolved_at, last_reply_at, reply_count
                FROM review_threads
               WHERE pull_request_id = ?1 AND node_id = 'PRRT_1'",
             params![pr_id],
@@ -192,9 +202,6 @@ fn write_pr_updates_upserts_review_threads_with_line_range_and_head_snapshot() {
                     r.get(8)?,
                     r.get(9)?,
                     r.get(10)?,
-                    r.get(11)?,
-                    r.get(12)?,
-                    r.get(13)?,
                 ))
             },
         )
@@ -212,9 +219,25 @@ fn write_pr_updates_upserts_review_threads_with_line_range_and_head_snapshot() {
     assert_eq!(row.8, None); // resolved_at — unresolved on first write.
     assert_eq!(row.9, rfc3339_to_unix("2026-05-18T10:00:00Z"));
     assert_eq!(row.10, 2); // reply_count = totalCount(3) - 1
-    assert_eq!(row.11.as_deref(), Some("alice"));
-    assert_eq!(row.12.as_deref(), Some("head body"));
-    assert_eq!(row.13, rfc3339_to_unix("2026-05-18T10:00:00Z"));
+
+    // ADR 0029: the head comment metadata now lives in `review_comments`,
+    // not denormalised onto review_threads. Verify the head comment row was
+    // persisted by sync (per write_review_threads).
+    let head: (String, String, i64) = conn
+        .query_row(
+            "SELECT c.author_login, c.body, c.created_at
+               FROM review_comments c
+               JOIN review_threads t ON t.id = c.review_thread_id
+              WHERE t.node_id = 'PRRT_1'
+              ORDER BY c.created_at ASC, c.id ASC
+              LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(head.0, "alice");
+    assert_eq!(head.1, "head body");
+    assert_eq!(Some(head.2), rfc3339_to_unix("2026-05-18T10:00:00Z"));
 }
 
 #[test]
@@ -572,7 +595,14 @@ fn write_pr_updates_writes_issue_comments_count() {
     let detail = detail_with_threads(
         empty_review_threads(),
         None,
-        Some(IssueCommentConnection { total_count: 17 }),
+        Some(IssueCommentConnection {
+            total_count: 17,
+            page_info: PageInfo {
+                has_next_page: false,
+                end_cursor: None,
+            },
+            nodes: vec![],
+        }),
     );
     write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
 

@@ -9,14 +9,12 @@ pub mod queries;
 
 pub use client::{PrCoord, TimelinePage};
 pub use queries::{
-    Actor, Comment, CommentConnection, DiscoveryData, DiscoveryNode, DiscoveryPullRequest,
-    DiscoveryRepository, DiscoverySearch, IssueCommentConnection, IssueCommentNode,
-    IssueCommentNodeConnection, PageInfo, PrCommentsData, PrCommentsRepository, PrCommit,
-    PrCommitConnection, PrCommitNode, PrDetailData, PrTimelineData, PullRequestComments,
-    PullRequestDetail, PullRequestReviewConnection, PullRequestReviewNode, PullRequestTimeline,
-    RequestedReviewer, ReviewCommentConnection, ReviewCommentNode, ReviewRequest,
-    ReviewRequestConnection, ReviewThread, ReviewThreadComments, ReviewThreadCommentsConnection,
-    ReviewThreadConnection, StatusCheckContext, StatusCheckContexts, StatusCheckRollup,
-    TimelineConnection, TimelineEvent, DISCOVERY_QUERY, PR_COMMENTS_QUERY, PR_DETAIL_QUERY,
+    Actor, DiscoveryData, DiscoveryNode, DiscoveryPullRequest, DiscoveryRepository,
+    DiscoverySearch, IssueCommentConnection, IssueCommentNode, PageInfo, PrCommit,
+    PrCommitConnection, PrCommitNode, PrDetailData, PrTimelineData, PullRequestDetail,
+    PullRequestReviewConnection, PullRequestReviewNode, PullRequestTimeline, RequestedReviewer,
+    ReviewCommentConnection, ReviewCommentNode, ReviewRequest, ReviewRequestConnection,
+    ReviewThread, ReviewThreadConnection, StatusCheckContext, StatusCheckContexts,
+    StatusCheckRollup, TimelineConnection, TimelineEvent, DISCOVERY_QUERY, PR_DETAIL_QUERY,
     PR_TIMELINE_QUERY,
 };

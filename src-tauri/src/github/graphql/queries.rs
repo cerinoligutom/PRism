@@ -1,14 +1,14 @@
 //! GraphQL query strings and response types.
 //!
-//! Four queries ship in v1:
+//! Three queries ship in v1:
 //!
-//! 1. `PR_DETAIL_QUERY` - full PR shape with `reviewThreads.isResolved`, which is
-//!    the only place GitHub exposes thread resolution state (ADR 0006).
+//! 1. `PR_DETAIL_QUERY` - full PR shape with review-thread resolution state,
+//!    comment bodies (text + HTML + diff hunk), and issue-comment bodies. Sync
+//!    paginates the two outer connections to keep the conversation tables
+//!    current per ADR 0029.
 //! 2. `PR_TIMELINE_QUERY` - the timeline event types listed in ADR 0007, plus
 //!    cursors for pagination.
-//! 3. `PR_COMMENTS_QUERY` - the lazy-hydration query M3 uses to pull full thread
-//!    and issue-comment bodies on drawer / route open (ADR 0010).
-//! 4. `DISCOVERY_QUERY` - the search-API call the discovery phase fans out three
+//! 3. `DISCOVERY_QUERY` - the search-API call the discovery phase fans out three
 //!    times per account per cycle to enumerate Authored / Assigned / Watching
 //!    PRs (ADR 0009).
 //!
@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 /// PR detail. Includes review thread resolution state, which is GraphQL-only.
 pub const PR_DETAIL_QUERY: &str = r#"
-query PrDetail($owner: String!, $name: String!, $number: Int!) {
+query PrDetail($owner: String!, $name: String!, $number: Int!, $threadsAfter: String, $issueCommentsAfter: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id
@@ -65,7 +65,7 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           }
         }
       }
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $threadsAfter) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -75,14 +75,22 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           line
           startLine
           originalLine
-          comments(first: 1) {
+          comments(first: 100) {
             totalCount
+            pageInfo { hasNextPage endCursor }
             nodes {
               id
               url
+              databaseId
               author { login avatarUrl }
+              body
+              bodyHTML
               bodyText
               createdAt
+              path
+              line
+              originalLine
+              diffHunk
             }
           }
         }
@@ -98,8 +106,19 @@ query PrDetail($owner: String!, $name: String!, $number: Int!) {
           author { login avatarUrl }
         }
       }
-      issueComments: comments(first: 50) {
+      issueComments: comments(first: 100, after: $issueCommentsAfter) {
         totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          url
+          databaseId
+          author { login avatarUrl }
+          body
+          bodyHTML
+          bodyText
+          createdAt
+        }
       }
     }
   }
@@ -140,59 +159,6 @@ query PrTimeline($owner: String!, $name: String!, $number: Int!, $after: String)
           ... on MergedEvent { createdAt actor { login avatarUrl } }
           ... on ClosedEvent { createdAt actor { login avatarUrl } }
           ... on ReopenedEvent { createdAt actor { login avatarUrl } }
-        }
-      }
-    }
-  }
-}
-"#;
-
-/// Full thread + issue-comment bodies for the lazy hydrator (M3, ADR 0010).
-///
-/// Called once per `fetch_pr_conversation` invocation. The sync cycle pulls a
-/// head-comment snapshot via `PR_DETAIL_QUERY`; this query fills in the rest of
-/// the conversation when the drawer / route opens. Capped at 100 threads per
-/// page x 100 comments per thread + 100 issue comments per page (the lazy
-/// hydrator caps total pulls at 200 comments / 200 issue comments per the
-/// contract).
-pub const PR_COMMENTS_QUERY: &str = r#"
-query PrComments($owner: String!, $name: String!, $number: Int!, $threadsAfter: String, $issueCommentsAfter: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $threadsAfter) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          comments(first: 100) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              url
-              databaseId
-              author { login avatarUrl }
-              body
-              bodyHTML
-              bodyText
-              createdAt
-              path
-              line
-              originalLine
-              diffHunk
-            }
-          }
-        }
-      }
-      issueComments: comments(first: 100, after: $issueCommentsAfter) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          url
-          databaseId
-          author { login }
-          body
-          bodyHTML
-          bodyText
-          createdAt
         }
       }
     }
@@ -385,29 +351,7 @@ pub struct ReviewThread {
     pub start_line: Option<i64>,
     #[serde(default)]
     pub original_line: Option<i64>,
-    pub comments: CommentConnection,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CommentConnection {
-    pub total_count: i64,
-    pub nodes: Vec<Comment>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Comment {
-    pub id: String,
-    /// GitHub permalink for the comment. Surfaced so the sync worker can derive
-    /// the thread's permalink from the head comment (review threads themselves
-    /// have no `url` field on GitHub's GraphQL schema). See issue #115.
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub author: Option<Actor>,
-    pub body_text: String,
-    pub created_at: String,
+    pub comments: ReviewCommentConnection,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -439,10 +383,18 @@ pub struct PullRequestReviewNode {
     pub author: Option<Actor>,
 }
 
+/// PR-level issue comments connection. `total_count` drives the
+/// `pull_requests.issue_comments_count` rollup; `nodes` carry the bodies sync
+/// persists into the `issue_comments` table. See ADR 0029.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueCommentConnection {
+    /// `#[serde(default)]` because legacy payloads / fixtures may omit it;
+    /// sync's `PR_DETAIL_QUERY` requests it explicitly.
+    #[serde(default)]
     pub total_count: i64,
+    pub page_info: PageInfo,
+    pub nodes: Vec<IssueCommentNode>,
 }
 
 /// Author / actor surfaced by GraphQL. `avatar_url` is populated by every
@@ -476,44 +428,22 @@ pub struct PageInfo {
     pub end_cursor: Option<String>,
 }
 
-// ===== PR comments (lazy hydration) =====
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct PrCommentsData {
-    pub repository: Option<PrCommentsRepository>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct PrCommentsRepository {
-    #[serde(rename = "pullRequest")]
-    pub pull_request: Option<PullRequestComments>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PullRequestComments {
-    pub review_threads: ReviewThreadCommentsConnection,
-    pub issue_comments: IssueCommentNodeConnection,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewThreadCommentsConnection {
-    pub page_info: PageInfo,
-    pub nodes: Vec<ReviewThreadComments>,
-}
-
-/// One review thread, paired with the hydrated comment array.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewThreadComments {
-    pub id: String,
-    pub comments: ReviewCommentConnection,
-}
+// ===== Review and issue comment payloads =====
+//
+// ADR 0029: these types now serve `PR_DETAIL_QUERY` directly — the lazy
+// hydrator wrappers (`PrCommentsData`, `PullRequestComments`,
+// `ReviewThreadCommentsConnection`, `ReviewThreadComments`) were retired with
+// the consolidation.
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewCommentConnection {
+    /// `totalCount` of comments in the thread. Drives the per-thread
+    /// `reply_count` denorm column. `#[serde(default)]` because legacy
+    /// payloads / fixtures may omit it; sync's `PR_DETAIL_QUERY` requests it
+    /// explicitly.
+    #[serde(default)]
+    pub total_count: i64,
     pub page_info: PageInfo,
     pub nodes: Vec<ReviewCommentNode>,
 }
@@ -555,13 +485,6 @@ pub struct ReviewCommentNode {
     /// #162.
     #[serde(default)]
     pub diff_hunk: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct IssueCommentNodeConnection {
-    pub page_info: PageInfo,
-    pub nodes: Vec<IssueCommentNode>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -788,19 +711,43 @@ mod tests {
 
     #[test]
     fn pr_detail_query_includes_conversation_depth_fields() {
-        // Thread line range + comments.totalCount + head comment shape.
+        // Thread line range + comments full field set + paginated issueComments.
         for field in [
             "line",
             "startLine",
             "originalLine",
-            "comments(first: 1)",
+            "comments(first: 100)",
             "reviews(first: 30)",
             "submittedAt",
-            "issueComments: comments(first: 50)",
+            "issueComments: comments(first: 100",
+            // ADR 0029: full comment fields land in the detail cycle so sync
+            // owns `review_comments` / `issue_comments` persistence.
+            "diffHunk",
+            "bodyHTML",
+            "bodyText",
+            "databaseId",
         ] {
             assert!(
                 PR_DETAIL_QUERY.contains(field),
                 "pr detail query missing conversation-depth field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_detail_query_threads_off_a_cursor_for_pagination() {
+        // ADR 0029: sync paginates when a PR carries more than 100 threads or
+        // more than 100 issue comments. The query opens cursor variables for
+        // both connections so the worker can drive a page loop.
+        for fragment in [
+            "$threadsAfter: String",
+            "$issueCommentsAfter: String",
+            "after: $threadsAfter",
+            "after: $issueCommentsAfter",
+        ] {
+            assert!(
+                PR_DETAIL_QUERY.contains(fragment),
+                "pr detail query missing pagination fragment: {fragment}"
             );
         }
     }
@@ -811,18 +758,18 @@ mod tests {
         // GitHub GraphQL schema (issue #115). The thread's permalink is
         // derived from the head comment's `url` at write time.
         let after_thread_open = PR_DETAIL_QUERY
-            .split("reviewThreads(first: 100)")
+            .split("reviewThreads(first: 100, after: $threadsAfter)")
             .nth(1)
             .expect("query opens reviewThreads block");
         let thread_block = after_thread_open
             .split("reviews(first: 30)")
             .next()
             .expect("query closes the thread block before reviews");
-        // The block contains `comments(first: 1)` whose selection includes
+        // The block contains `comments(first: 100)` whose selection includes
         // `url`. Strip that out before asserting no thread-level `url`.
         let head_comment_open = thread_block
-            .find("comments(first: 1)")
-            .expect("thread carries a comments(first:1) selection");
+            .find("comments(first: 100)")
+            .expect("thread carries a comments(first: 100) selection");
         let pre_head = &thread_block[..head_comment_open];
         assert!(
             !pre_head.contains("url"),
@@ -831,15 +778,16 @@ mod tests {
     }
 
     #[test]
-    fn pr_detail_query_selects_url_on_head_comment() {
-        // The thread permalink now comes from the head comment.
+    fn pr_detail_query_selects_url_on_thread_comments() {
+        // Each thread comment carries a permalink (used by review_comments.url
+        // and by the thread-level permalink derivation).
         let head_block = PR_DETAIL_QUERY
-            .split("comments(first: 1)")
+            .split("comments(first: 100)")
             .nth(1)
-            .expect("query carries comments(first: 1)");
+            .expect("query carries comments(first: 100)");
         assert!(
             head_block.contains("url"),
-            "head comment selection must include `url`"
+            "thread comments selection must include `url`"
         );
     }
 
@@ -855,10 +803,12 @@ mod tests {
             "originalLine": 41,
             "comments": {
                 "totalCount": 3,
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
                 "nodes": [{
                     "id": "PRRC_1",
                     "url": "https://github.com/owner/repo/pull/1#discussion_r1",
                     "author": { "login": "alice" },
+                    "body": "Looks good",
                     "bodyText": "Looks good",
                     "createdAt": "2026-05-19T10:00:00Z"
                 }]
@@ -884,10 +834,11 @@ mod tests {
         let json = serde_json::json!({
             "id": "PRRC_legacy",
             "author": { "login": "alice" },
+            "body": "head body",
             "bodyText": "head body",
             "createdAt": "2026-05-19T10:00:00Z"
         });
-        let comment: Comment = serde_json::from_value(json).unwrap();
+        let comment: ReviewCommentNode = serde_json::from_value(json).unwrap();
         assert!(comment.url.is_none());
     }
 
@@ -924,10 +875,30 @@ mod tests {
     }
 
     #[test]
-    fn issue_comment_connection_deserialises_total_count_only() {
-        let json = serde_json::json!({ "totalCount": 17 });
+    fn issue_comment_connection_deserialises_full_shape() {
+        // ADR 0029: sync's `PR_DETAIL_QUERY` now selects `totalCount`, `pageInfo`,
+        // and `nodes` on the issueComments connection so the worker can both
+        // refresh `pull_requests.issue_comments_count` and persist the bodies
+        // into `issue_comments` in one cycle.
+        let json = serde_json::json!({
+            "totalCount": 17,
+            "pageInfo": { "hasNextPage": false, "endCursor": null },
+            "nodes": [{
+                "id": "IC_1",
+                "url": "https://github.com/owner/repo/pull/1#issuecomment-9001",
+                "databaseId": 9001,
+                "author": { "login": "bob" },
+                "body": "looks good",
+                "bodyHTML": "<p>looks good</p>",
+                "bodyText": "looks good",
+                "createdAt": "2026-05-19T11:00:00Z"
+            }]
+        });
         let ic: IssueCommentConnection = serde_json::from_value(json).unwrap();
         assert_eq!(ic.total_count, 17);
+        assert!(!ic.page_info.has_next_page);
+        assert_eq!(ic.nodes.len(), 1);
+        assert_eq!(ic.nodes[0].database_id, Some(9001));
     }
 
     #[test]
@@ -1089,29 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn pr_comments_query_includes_threads_and_issue_comments() {
-        for field in [
-            "reviewThreads(first: 100",
-            "issueComments: comments(first: 100",
-            "comments(first: 100)",
-            "databaseId",
-            "bodyText",
-            "originalLine",
-            // Comment-level permalinks for both review and issue comments
-            // (issue #115).
-            "url",
-            // Unified-diff hunk for the file-context block above each
-            // thread card (issue #162).
-            "diffHunk",
-        ] {
-            assert!(
-                PR_COMMENTS_QUERY.contains(field),
-                "pr comments query missing field: {field}"
-            );
-        }
-    }
-
-    #[test]
     fn review_comment_node_deserialises_with_diff_hunk() {
         let json = serde_json::json!({
             "id": "PRRC_1",
@@ -1140,74 +1088,6 @@ mod tests {
     }
 
     #[test]
-    fn pr_comments_data_deserialises_full_payload() {
-        let json = serde_json::json!({
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "pageInfo": { "hasNextPage": false, "endCursor": null },
-                        "nodes": [{
-                            "id": "PRRT_1",
-                            "comments": {
-                                "pageInfo": { "hasNextPage": false, "endCursor": null },
-                                "nodes": [{
-                                    "id": "PRRC_1",
-                                    "url": "https://github.com/owner/repo/pull/1#discussion_r4242",
-                                    "databaseId": 4242,
-                                    "author": { "login": "alice" },
-                                    "body": "**hello**",
-                                    "bodyText": "hello",
-                                    "createdAt": "2026-05-19T10:00:00Z",
-                                    "path": "src/lib.rs",
-                                    "line": 12,
-                                    "originalLine": 10
-                                }]
-                            }
-                        }]
-                    },
-                    "issueComments": {
-                        "pageInfo": { "hasNextPage": true, "endCursor": "c1" },
-                        "nodes": [{
-                            "id": "IC_1",
-                            "url": "https://github.com/owner/repo/pull/1#issuecomment-9001",
-                            "databaseId": 9001,
-                            "author": { "login": "bob" },
-                            "body": "looks good",
-                            "bodyText": "looks good",
-                            "createdAt": "2026-05-19T11:00:00Z"
-                        }]
-                    }
-                }
-            }
-        });
-        let parsed: PrCommentsData = serde_json::from_value(json).unwrap();
-        let pr = parsed.repository.unwrap().pull_request.unwrap();
-        assert_eq!(pr.review_threads.nodes.len(), 1);
-        assert_eq!(pr.review_threads.nodes[0].comments.nodes.len(), 1);
-        let c = &pr.review_threads.nodes[0].comments.nodes[0];
-        assert_eq!(c.database_id, Some(4242));
-        assert_eq!(c.path.as_deref(), Some("src/lib.rs"));
-        assert_eq!(
-            c.url.as_deref(),
-            Some("https://github.com/owner/repo/pull/1#discussion_r4242")
-        );
-        // `side` lives on PullRequestReviewThread.diffSide, not on the
-        // comment; this query no longer requests it, so the field is None
-        // and the DB column stays NULL until a future query pulls diffSide.
-        assert_eq!(c.side, None);
-        assert_eq!(pr.issue_comments.nodes.len(), 1);
-        assert_eq!(
-            pr.issue_comments.nodes[0].url.as_deref(),
-            Some("https://github.com/owner/repo/pull/1#issuecomment-9001")
-        );
-        assert!(pr.issue_comments.page_info.has_next_page);
-        assert_eq!(
-            pr.issue_comments.page_info.end_cursor.as_deref(),
-            Some("c1")
-        );
-    }
-
-    #[test]
     fn pr_detail_query_selects_body_html_on_reviews() {
         // ADR 0014 / issue #138: pre-rendered HTML for review summary bodies.
         let reviews_block = PR_DETAIL_QUERY
@@ -1221,14 +1101,14 @@ mod tests {
     }
 
     #[test]
-    fn pr_comments_query_selects_body_html_on_review_and_issue_comments() {
-        // bodyHTML appears in both the per-thread comments selection and the
-        // PR-level issueComments selection so the lazy hydrator can persist
-        // GitHub's pre-rendered HTML alongside the markdown body.
-        assert_eq!(
-            PR_COMMENTS_QUERY.matches("bodyHTML").count(),
-            2,
-            "PR_COMMENTS_QUERY should select bodyHTML on both review + issue comments"
+    fn pr_detail_query_selects_body_html_on_review_and_issue_comments() {
+        // ADR 0029: PR_DETAIL_QUERY now selects `bodyHTML` in three places —
+        // review summary bodies (`reviews(first: 30)`), per-thread comments,
+        // and PR-level issue comments. Sync persists each so the drawer
+        // renders from cache without a follow-up GraphQL round-trip.
+        assert!(
+            PR_DETAIL_QUERY.matches("bodyHTML").count() >= 3,
+            "PR_DETAIL_QUERY should select bodyHTML on reviews + review comments + issue comments"
         );
     }
 

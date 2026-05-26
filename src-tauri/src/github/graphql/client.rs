@@ -24,7 +24,8 @@ pub struct PrCoord<'a> {
 }
 
 impl GitHubClient {
-    /// Fetch the PR detail payload (including review-thread resolution state).
+    /// Fetch the first page of the PR detail payload (review-thread state,
+    /// up to 100 threads + 100 issue comments).
     pub async fn pr_detail(
         &self,
         coord: PrCoord<'_>,
@@ -48,10 +49,109 @@ impl GitHubClient {
                     "owner": coord.owner,
                     "name": coord.name,
                     "number": coord.number,
+                    "threadsAfter": serde_json::Value::Null,
+                    "issueCommentsAfter": serde_json::Value::Null,
                 }),
             )
             .await?;
         Ok((data.repository.and_then(|r| r.pull_request), body))
+    }
+
+    /// Fetch a single follow-up page of the PR detail. Used by
+    /// [`pr_detail_extend_pages`] to drain remaining thread / issue-comment
+    /// pages after the first call landed. `threads_after` / `issues_after`
+    /// drive the two paginated connections independently — pass `None` for a
+    /// connection that has already been drained.
+    async fn pr_detail_page(
+        &self,
+        coord: PrCoord<'_>,
+        threads_after: Option<&str>,
+        issues_after: Option<&str>,
+    ) -> Result<Option<PullRequestDetail>, GitHubError> {
+        let data: PrDetailData = self
+            .post_graphql(
+                PR_DETAIL_QUERY,
+                json!({
+                    "owner": coord.owner,
+                    "name": coord.name,
+                    "number": coord.number,
+                    "threadsAfter": threads_after,
+                    "issueCommentsAfter": issues_after,
+                }),
+            )
+            .await?;
+        Ok(data.repository.and_then(|r| r.pull_request))
+    }
+
+    /// Walk the remaining `reviewThreads` and `issueComments` pages and merge
+    /// them into `detail`. The first page lands via [`pr_detail`] /
+    /// [`pr_detail_with_raw`]; this method is a no-op when both connections
+    /// already report `hasNextPage = false`. Stops at `max_pages` per
+    /// connection as a defensive backstop — ADR 0029 sets four for the v1
+    /// surface, well above any realistic PR.
+    ///
+    /// The merge is append-only: each follow-up page returns distinct thread
+    /// nodes / distinct issue-comment nodes, and per-thread comments are
+    /// already capped at `first: 100` on the first page (ADR 0029 doesn't
+    /// paginate inside a thread).
+    pub async fn pr_detail_extend_pages(
+        &self,
+        coord: PrCoord<'_>,
+        detail: &mut PullRequestDetail,
+        max_pages: usize,
+    ) -> Result<(), GitHubError> {
+        let mut threads_cursor = next_cursor(&detail.review_threads.page_info);
+        let mut issues_cursor = detail
+            .issue_comments
+            .as_ref()
+            .and_then(|ic| next_cursor(&ic.page_info));
+        let mut iterations = 0usize;
+        while iterations < max_pages && (threads_cursor.is_some() || issues_cursor.is_some()) {
+            let Some(next) = self
+                .pr_detail_page(
+                    coord.clone(),
+                    threads_cursor.as_deref(),
+                    issues_cursor.as_deref(),
+                )
+                .await?
+            else {
+                break;
+            };
+
+            if threads_cursor.is_some() {
+                detail
+                    .review_threads
+                    .nodes
+                    .extend(next.review_threads.nodes);
+                detail.review_threads.page_info = next.review_threads.page_info;
+                threads_cursor = next_cursor(&detail.review_threads.page_info);
+            }
+
+            if issues_cursor.is_some() {
+                match (detail.issue_comments.as_mut(), next.issue_comments) {
+                    (Some(into), Some(from)) => {
+                        into.nodes.extend(from.nodes);
+                        into.page_info = from.page_info;
+                        issues_cursor = next_cursor(&into.page_info);
+                    }
+                    (None, Some(from)) => {
+                        // First page didn't carry an issueComments block but a
+                        // follow-up did. Defensive: graft the page in.
+                        detail.issue_comments = Some(from);
+                        issues_cursor = detail
+                            .issue_comments
+                            .as_ref()
+                            .and_then(|ic| next_cursor(&ic.page_info));
+                    }
+                    _ => {
+                        issues_cursor = None;
+                    }
+                }
+            }
+
+            iterations += 1;
+        }
+        Ok(())
     }
 
     /// Fetch a single page of timeline events.
@@ -146,4 +246,12 @@ impl GitHubClient {
 pub struct TimelinePage {
     pub events: Vec<TimelineEvent>,
     pub next_cursor: Option<String>,
+}
+
+fn next_cursor(page_info: &crate::github::graphql::PageInfo) -> Option<String> {
+    if page_info.has_next_page {
+        page_info.end_cursor.clone()
+    } else {
+        None
+    }
 }

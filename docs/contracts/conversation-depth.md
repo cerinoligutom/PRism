@@ -1,5 +1,10 @@
 # Conversation depth interface contract
 
+> **Amended by [ADR 0029](../adr/0029-sync-owns-conversation-persistence.md) (2026-05-26).**
+> The "Comment-fetch strategy is capped + lazy" decision below is superseded: sync's `PR_DETAIL_QUERY` now fetches every comment field (`body`, `bodyHTML`, `bodyText`, `diffHunk`, `databaseId`, `path`, `line`, `originalLine`) for both `reviewThreads.comments` and `issueComments`, and persists them into `review_comments` / `issue_comments` from inside the cycle transaction. The lazy hydrator (`fetch_pr_conversation`, `PR_COMMENTS_QUERY`) is gone; the drawer reads the cached `HydratedConversation` via `load_pr_conversation` (a synchronous DB read). The `review_threads.head_comment_*` denorm columns dropped in migration 0024 — the read query derives the head from `review_comments ORDER BY created_at ASC LIMIT 1`. Sync emits a single `dashboard://refresh` event at end of cycle; the dashboard and conversation stores listen on that one signal.
+>
+> Until this contract is rewritten end-to-end (tracked separately), prefer the ADR for the current shape; the sections below that describe `PR_COMMENTS_QUERY`, `fetch_pr_conversation`, the lazy-hydrator atomicity contract, and the `head_comment_*` columns describe the M3 design that ADR 0029 retired.
+
 This document is the shared interface contract for **M3: per-thread state, comment-type breakdown, conversation stats, per-thread previews**. It pins the schema additions, GraphQL query updates, sync-cycle changes, Tauri command shape, conversation-stats math, frontend component interfaces, and the file-ownership map for the three Wave-2 back-end issues and three Wave-3 front-end issues that fan out from it.
 
 If you're implementing any M3 issue, **read this end-to-end before writing code**. Anything ambiguous is a spec bug — open a PR or comment on the issue to refine the contract rather than silently diverging.

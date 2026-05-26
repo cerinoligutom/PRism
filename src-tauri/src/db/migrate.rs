@@ -33,6 +33,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0021_notifications.sql"),
     include_str!("../../migrations/0022_notifications_read_at.sql"),
     include_str!("../../migrations/0023_notification_retention.sql"),
+    include_str!("../../migrations/0024_drop_review_thread_head_denorm.sql"),
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -250,9 +251,6 @@ mod tests {
             "resolved_at",
             "last_reply_at",
             "reply_count",
-            "head_comment_author_login",
-            "head_comment_body_text",
-            "head_comment_created_at",
             "line",
             "start_line",
             "url",
@@ -270,6 +268,29 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == col),
                 "missing review_threads column: {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_0024_drops_review_thread_head_denorm_columns() {
+        let conn = fresh();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('review_threads')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for dropped in [
+            "head_comment_author_login",
+            "head_comment_body_text",
+            "head_comment_created_at",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == dropped),
+                "review_threads still carries dropped column: {dropped}"
             );
         }
     }

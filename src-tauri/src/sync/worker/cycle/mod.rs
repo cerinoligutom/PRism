@@ -464,6 +464,11 @@ fn finish_completed(
         }
     });
     emit_status(&ctx.emit, &state);
+    // ADR 0029: one refresh signal for every cache-mutating write. The sync
+    // cycle wrote thread / comment / issue-comment rows; the dashboard and
+    // conversation surfaces listen on this event to re-read.
+    ctx.emit
+        .emit(crate::sync::DASHBOARD_REFRESH_EVENT, &serde_json::Value::Null);
 }
 
 /// Per-bucket "before the cycle" view used to compute `requests_made` after
@@ -662,23 +667,53 @@ async fn sync_repo(
                     stored == crate::github::client::sha256(&pr_detail_marker_bytes(pr.updated_at))
                 });
 
-        let (detail, detail_body) = if skip_detail {
+        let (detail, detail_body, paginated) = if skip_detail {
             *detail_cache_skips = detail_cache_skips.saturating_add(1);
-            (None, bytes::Bytes::new())
+            (None, bytes::Bytes::new(), false)
         } else {
             // PR detail (GraphQL) — primary surface per ADR 0006.
             // Wrapped in `timeout` so a hung upstream call doesn't stall the loop.
-            let (fetched, body) = timeout(
+            let pr_coord = crate::github::graphql::PrCoord {
+                owner: &repo.owner,
+                name: &repo.name,
+                number: pr.number,
+            };
+            let (mut fetched, body) = timeout(
                 Duration::from_secs(30),
-                client.pr_detail_with_raw(crate::github::graphql::PrCoord {
-                    owner: &repo.owner,
-                    name: &repo.name,
-                    number: pr.number,
-                }),
+                client.pr_detail_with_raw(pr_coord.clone()),
             )
             .await
             .map_err(|_| SyncRepoError::Other(format!("pr_detail timeout for #{}", pr.number)))?
             .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
+
+            // ADR 0029 defensive backstop: walk additional `reviewThreads` /
+            // `issueComments` pages so PRs with >100 threads or >100 issue
+            // comments still sync their full conversation. Capped at 4 pages
+            // per connection. Skip when the first page was null (#403).
+            let mut paginated = false;
+            if let Some(detail) = fetched.as_mut() {
+                let needs_more = detail.review_threads.page_info.has_next_page
+                    || detail
+                        .issue_comments
+                        .as_ref()
+                        .map(|ic| ic.page_info.has_next_page)
+                        .unwrap_or(false);
+                if needs_more {
+                    paginated = true;
+                    timeout(
+                        Duration::from_secs(60),
+                        client.pr_detail_extend_pages(pr_coord.clone(), detail, 4),
+                    )
+                    .await
+                    .map_err(|_| {
+                        SyncRepoError::Other(format!(
+                            "pr_detail pagination timeout for #{}",
+                            pr.number
+                        ))
+                    })?
+                    .map_err(|err| SyncRepoError::from_err_for(err, RateResource::Graphql))?;
+                }
+            }
             // Diagnostic (#402): GraphQL responded but `repository.pullRequest`
             // resolved to null. The detail-derived columns + conversation
             // tables stay empty in the DB, and the cache markers stamped
@@ -723,18 +758,24 @@ async fn sync_repo(
                     &pr_detail_marker_bytes(marker_for_next_cycle),
                 );
             }
-            (fetched, body)
+            (fetched, body, paginated)
         };
 
         // Post-flight body-hash cache (ADR 0004, issue #234): only relevant
-        // when we actually made the call. On a byte-identical detail body,
-        // skip the detail-driven DB writes (the prior cycle's values are
-        // still authoritative). Timeline still runs (REST ETag) so the
-        // latest-status-change derivation picks up new events. When the
-        // self-heal probe (#397) flagged the local state as empty, the cache
-        // hit is overridden so `write_pr_updates` repopulates the missing
-        // `requested_reviewers` / `reviews` rows from the freshly-fetched
-        // detail.
+        // when we actually made the call AND the response fit in one page.
+        // On a byte-identical detail body, skip the detail-driven DB writes
+        // (the prior cycle's values are still authoritative). Timeline still
+        // runs (REST ETag) so the latest-status-change derivation picks up
+        // new events. When the self-heal probe (#397) flagged the local state
+        // as empty, the cache hit is overridden so `write_pr_updates`
+        // repopulates the missing `requested_reviewers` / `reviews` rows from
+        // the freshly-fetched detail.
+        //
+        // ADR 0029: paginated responses bypass the cache. `detail_body` only
+        // captures page 1; a page-1 byte-identical match against the previous
+        // cycle would wrongly skip the writes for the merged-in page 2+
+        // threads / issue comments. Pagination is rare (PRs >100 threads or
+        // >100 issue comments) so the extra write cost is bounded.
         let detail_for_write = if skip_detail {
             None
         } else if detail.is_none() {
@@ -744,6 +785,8 @@ async fn sync_repo(
             // state in across future cycles. Leave the marker untouched so
             // the next cycle refetches.
             None
+        } else if paginated {
+            detail.as_ref()
         } else {
             let detail_cache_key = format!("pr_detail:{}/{}#{}", repo.owner, repo.name, pr.number);
             let detail_cache_hit = client.graphql_body_unchanged(&detail_cache_key, &detail_body);

@@ -1322,10 +1322,12 @@ fn pr_detail_body_with_threads_at(
                     "originalLine": null,
                     "comments": {{
                         "totalCount": {total_count},
+                        "pageInfo": {{ "hasNextPage": false, "endCursor": null }},
                         "nodes": [{{
                             "id": "{node_id}_C1",
                             "url": "https://github.com/owner/repo/pull/42#discussion_r{node_id}",
                             "author": {{ "login": "alice" }},
+                            "body": "head body",
                             "bodyText": "head body",
                             "createdAt": "2026-05-18T10:00:00Z"
                         }}]
@@ -1388,7 +1390,11 @@ fn pr_detail_body_with_threads_at(
                             "nodes": [{}]
                         }},
                         "reviews": {{ "nodes": [{}] }},
-                        "issueComments": {{ "totalCount": {issue_comments_total} }}
+                        "issueComments": {{
+                            "totalCount": {issue_comments_total},
+                            "pageInfo": {{ "hasNextPage": false, "endCursor": null }},
+                            "nodes": []
+                        }}
                     }}
                 }}
             }}
@@ -1637,6 +1643,154 @@ async fn conversation_depth_persists_mixed_thread_states_and_prunes_on_next_cycl
         )
         .unwrap();
     assert_eq!(issue_count, 8);
+}
+
+/// ADR 0029 regression: a single sync cycle must populate `review_comments`
+/// from `PR_DETAIL_QUERY`'s expanded payload, so the dashboard threads-bar
+/// involvement bucket reads correctly without the user ever opening the
+/// drawer. The user-reported bug was a thread the viewer had commented on
+/// rendering red (`unresolved-uninvolved`) instead of orange
+/// (`unresolved-involved`) post-sync because the comments table was empty
+/// until the lazy hydrator ran.
+#[tokio::test]
+async fn sync_cycle_persists_review_comments_so_involvement_bucket_lights_up() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    // Pre-seed the viewer relation so the dashboard query has a row to project
+    // (discovery is mocked empty to keep the cycle focused on enrichment).
+    harness
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at, needs_attention)
+                VALUES (1, 999, 1, 0, 0, strftime('%s','now'), 0)",
+            [],
+        )
+        .unwrap();
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    // One unresolved thread whose head comment is authored by `alice` — the
+    // viewer. Sync must persist the comment row so the involvement EXISTS in
+    // the dashboard query fires for thread + account `alice`.
+    let body = pr_detail_body_with_threads_and_issue_comments(
+        &[ThreadFixture {
+            node_id: "PRRT_alice_authored",
+            is_resolved: false,
+            is_outdated: false,
+            path: "src/lib.rs",
+            line: Some(1),
+            total_count: 1,
+        }],
+        &[],
+        0,
+    );
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(rate_headers(4999, 5000).set_body_raw(body.into_bytes(), "application/json"))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    // The head comment must have landed in `review_comments` with `alice` as
+    // author — this is the row the dashboard's involvement EXISTS targets.
+    let alice_comments: i64 = harness
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM review_comments c
+              JOIN review_threads t ON t.id = c.review_thread_id
+             WHERE t.pull_request_id = 999 AND c.author_login = 'alice'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(alice_comments, 1, "sync must persist the head comment row");
+
+    // Dashboard query: the threads rollup for this PR should report the
+    // thread under `unresolved_involved`, not `unresolved_uninvolved`.
+    let rows = {
+        let conn = harness.db.lock().unwrap();
+        prism_lib::dashboard::query::list_pull_requests(
+            &conn,
+            prism_lib::dashboard::DashboardView::Authored,
+            prism_lib::dashboard::DashboardSort::Updated,
+            Some(1),
+            &[],
+        )
+        .unwrap()
+    };
+    let pr = rows
+        .iter()
+        .find(|p| p.id == 999)
+        .expect("PR 999 in authored view");
+    let threads = pr.threads.as_ref().expect("threads rollup populated");
+    assert_eq!(threads.total, 1);
+    assert_eq!(
+        threads.unresolved_involved, 1,
+        "viewer authored the head comment - bucket must be involved"
+    );
+    assert_eq!(threads.unresolved_uninvolved, 0);
+}
+
+/// ADR 0029: the sync worker emits `dashboard://refresh` at the end of each
+/// successful cycle so the frontend stores can collapse to one listener.
+#[tokio::test]
+async fn sync_cycle_emits_dashboard_refresh_event_on_success() {
+    let server = MockServer::start().await;
+    let harness = setup_harness(&server);
+    let account = seed_account(&harness, 1, "alice");
+    seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
+
+    mount_empty_discovery(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("PrDetail"))
+        .respond_with(
+            rate_headers(4999, 5000)
+                .set_body_raw(PR_DETAIL_FIXTURE.as_bytes().to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/42/timeline"))
+        .respond_with(rate_headers(4998, 5000).set_body_raw(
+            REST_TIMELINE_FIXTURE.as_bytes().to_vec(),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let ctx = harness.ctx();
+    let client = harness.factory.build(&account).unwrap();
+    let report = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report.outcome, CycleOutcome::Completed);
+
+    assert_eq!(
+        harness.emit.count("dashboard://refresh"),
+        1,
+        "successful cycle must emit exactly one dashboard://refresh event",
+    );
 }
 
 /// Two-cycle integration: the persisted timeline must wipe-and-rewrite cleanly
