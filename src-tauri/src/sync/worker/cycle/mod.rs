@@ -467,8 +467,10 @@ fn finish_completed(
     // ADR 0029: one refresh signal for every cache-mutating write. The sync
     // cycle wrote thread / comment / issue-comment rows; the dashboard and
     // conversation surfaces listen on this event to re-read.
-    ctx.emit
-        .emit(crate::sync::DASHBOARD_REFRESH_EVENT, &serde_json::Value::Null);
+    ctx.emit.emit(
+        crate::sync::DASHBOARD_REFRESH_EVENT,
+        &serde_json::Value::Null,
+    );
 }
 
 /// Per-bucket "before the cycle" view used to compute `requests_made` after
