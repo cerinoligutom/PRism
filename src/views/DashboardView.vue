@@ -17,6 +17,7 @@ import DashboardSearch from "@/components/dashboard/DashboardSearch.vue";
 import FilteredEmptyState from "@/components/dashboard/FilteredEmptyState.vue";
 import AccountPicker from "@/components/dashboard/AccountPicker.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import PRismPopover from "@/components/ui/PRismPopover.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
@@ -507,7 +508,7 @@ watch(
             </svg>
           </button>
         </PRismTooltip>
-        <PRismTooltip :as-child="true" side="bottom" align="end">
+        <PRismPopover :as-child="true" side="bottom" align="end">
           <button
             type="button"
             class="btn btn-icon dashboard__legend-btn"
@@ -627,9 +628,27 @@ watch(
                   <span>Resolved &middot; was yours</span>
                 </li>
               </ul>
+
+              <div class="dashboard-legend__section-title">Colour key</div>
+              <ul class="dashboard-legend__rows">
+                <li class="dashboard-legend__row">
+                  <span class="legend-swatch-pair" aria-hidden="true">
+                    <span class="legend-swatch legend-swatch--warning"></span>
+                    <span class="legend-swatch legend-swatch--success"></span>
+                  </span>
+                  <span>Warm &middot; involves you</span>
+                </li>
+                <li class="dashboard-legend__row">
+                  <span class="legend-swatch-pair" aria-hidden="true">
+                    <span class="legend-swatch legend-swatch--danger"></span>
+                    <span class="legend-swatch legend-swatch--info"></span>
+                  </span>
+                  <span>Cool &middot; others only</span>
+                </li>
+              </ul>
             </div>
           </template>
-        </PRismTooltip>
+        </PRismPopover>
       </div>
 
       <div class="dashboard__chips-row">

@@ -99,8 +99,8 @@
 }
 
 .pr-row__state.row-strip-needs {
-  color: var(--info);
-  background: oklch(from var(--info) l c h / 0.18);
+  color: var(--warning);
+  background: oklch(from var(--warning) l c h / 0.18);
 }
 
 .pr-row__state.row-strip-changes {
@@ -119,8 +119,8 @@
 }
 
 .pr-row__state.row-strip-stale {
-  color: var(--warning);
-  background: oklch(from var(--warning) l c h / 0.18);
+  color: var(--text-faint);
+  background: oklch(from var(--text-faint) l c h / 0.18);
 }
 
 /* ─── ThreadsBar bucket badge ──────────────────────────────────────────── */
@@ -155,4 +155,37 @@
 .threads-bar__badge--resolved-involved {
   background: var(--success-bg);
   color: var(--success);
+}
+
+/* ─── Colour-key swatches (legend footers) ─────────────────────────────── */
+
+/* The dashboard / conversation legends explain the shared colour language:
+ * warm (orange + green) = involves you, cool (red + blue) = others only. */
+.legend-swatch-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.legend-swatch--danger {
+  background: var(--danger);
+}
+
+.legend-swatch--warning {
+  background: var(--warning);
+}
+
+.legend-swatch--info {
+  background: var(--info);
+}
+
+.legend-swatch--success {
+  background: var(--success);
 }
