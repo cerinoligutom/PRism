@@ -11,6 +11,7 @@ import {
 } from "reka-ui";
 
 import PullRequestConversation from "./PullRequestConversation.vue";
+import PullRequestExternalLinks from "@/components/PullRequestExternalLinks.vue";
 import { useDashboardStore } from "@/stores/dashboard";
 
 interface Props {
@@ -69,6 +70,13 @@ const titleLine = computed<string>(() => row.value?.title ?? "Pull request");
             <span class="pr-drawer__crumb mono">{{ headerLine }}</span>
             <DialogTitle class="pr-drawer__title">{{ titleLine }}</DialogTitle>
           </div>
+          <PullRequestExternalLinks
+            v-if="row !== null"
+            :owner="row.repo.owner"
+            :repo="row.repo.name"
+            :number="row.number"
+            :url="row.url"
+          />
           <button
             type="button"
             class="btn btn-icon btn-ghost"

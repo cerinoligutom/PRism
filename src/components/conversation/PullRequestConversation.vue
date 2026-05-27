@@ -7,7 +7,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 
 import type { ThreadsSummary } from "@/types/dashboard";
 import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
-import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import PRismPopover from "@/components/ui/PRismPopover.vue";
 import ConversationStats from "./ConversationStats.vue";
 import IssueCommentsTab from "./IssueCommentsTab.vue";
 import ReviewsTab from "./ReviewsTab.vue";
@@ -194,7 +194,7 @@ watch(
             <div class="pr-conversation__col-head">
               <div class="pr-conversation__col-title-block">
                 <span class="pr-conversation__col-title">Conversation · {{ threadsSummary }}</span>
-                <PRismTooltip :as-child="true" side="bottom" align="start">
+                <PRismPopover :as-child="true" side="bottom" align="start">
                   <button
                     type="button"
                     class="btn btn-icon btn-sm pr-conversation__legend-btn"
@@ -310,9 +310,26 @@ watch(
                           <span>Line no longer exists</span>
                         </li>
                       </ul>
+                      <div class="thread-state-legend__section-title">Colour key</div>
+                      <ul class="thread-state-legend__rows">
+                        <li class="thread-state-legend__row">
+                          <span class="legend-swatch-pair" aria-hidden="true">
+                            <span class="legend-swatch legend-swatch--warning"></span>
+                            <span class="legend-swatch legend-swatch--success"></span>
+                          </span>
+                          <span>Warm &middot; involves you</span>
+                        </li>
+                        <li class="thread-state-legend__row">
+                          <span class="legend-swatch-pair" aria-hidden="true">
+                            <span class="legend-swatch legend-swatch--danger"></span>
+                            <span class="legend-swatch legend-swatch--info"></span>
+                          </span>
+                          <span>Cool &middot; others only</span>
+                        </li>
+                      </ul>
                     </div>
                   </template>
-                </PRismTooltip>
+                </PRismPopover>
               </div>
             </div>
 

@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import PullRequestConversation from "@/components/conversation/PullRequestConversation.vue";
+import PullRequestExternalLinks from "@/components/PullRequestExternalLinks.vue";
 import {
   useDashboardStore,
   type DashboardView as DashboardViewName,
@@ -112,6 +113,13 @@ onMounted(async () => {
         <span class="pr-detail__crumb mono">{{ headerCrumb }}</span>
         <h1 v-if="headerTitle !== ''" class="pr-detail__title">{{ headerTitle }}</h1>
       </div>
+      <PullRequestExternalLinks
+        v-if="row !== null"
+        :owner="row.repo.owner"
+        :repo="row.repo.name"
+        :number="row.number"
+        :url="row.url"
+      />
     </header>
     <div class="pr-detail__body">
       <PullRequestConversation :pull-request-id="pullRequestId" />
@@ -146,6 +154,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .pr-detail__crumb {

@@ -53,8 +53,8 @@ const summaryRows = computed<readonly SummaryRow[]>(() =>
   (
     [
       { key: "approved", label: "Approved", count: approvedCount.value },
-      { key: "changes-requested", label: "Changes requested", count: changesCount.value },
       { key: "commented", label: "Commented", count: commentedCount.value },
+      { key: "changes-requested", label: "Changes requested", count: changesCount.value },
       { key: "pending", label: "Pending", count: pendingCount.value },
     ] as const
   ).filter((row) => row.count > 0),
@@ -158,11 +158,11 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
     </PRismTooltip>
     <PRismTooltip :as-child="true">
       <span class="reviewer-stack__summary">
-        <span class="reviewer-stack__summary-changes">{{ changesCount }}</span>
-        <span aria-hidden="true">/</span>
         <span class="reviewer-stack__summary-ok">{{ approvedCount }}</span>
         <span aria-hidden="true">/</span>
-        <span class="reviewer-stack__summary-total">{{ reviewers.length }}</span>
+        <span class="reviewer-stack__summary-commented">{{ commentedCount }}</span>
+        <span aria-hidden="true">/</span>
+        <span class="reviewer-stack__summary-changes">{{ changesCount }}</span>
       </span>
       <template #content>
         <div class="reviewer-stack__breakdown">
@@ -263,12 +263,12 @@ const reviewerByLogin = computed<ReadonlyMap<string, ReviewerEntry>>(() => {
 }
 
 .reviewer-stack__summary-ok { color: var(--success); }
+.reviewer-stack__summary-commented { color: var(--info); }
 .reviewer-stack__summary-changes { color: var(--danger); }
-.reviewer-stack__summary-total { color: var(--text-faint); }
 
 .reviewer-stack__summary-changes,
 .reviewer-stack__summary-ok,
-.reviewer-stack__summary-total {
+.reviewer-stack__summary-commented {
   min-width: 1.4em;
   text-align: center;
 }

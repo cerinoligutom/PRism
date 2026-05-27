@@ -32,7 +32,8 @@ interface BreakdownRow {
 }
 
 /**
- * Renders the em-dash count + segment-less bar. Backend contract: this fires
+ * Drives the segment-less bar + "no review threads" tooltip (the count still
+ * reads 0/0 so the hover affordance survives). Backend contract: this fires
  * when the PR has never had a review thread (rollup is `null`) or has had its
  * threads pruned (`total === 0`).
  */
@@ -214,73 +215,69 @@ function distributeWidths(
       </PRismTooltip>
     </div>
     <div class="threads-bar__nums">
-      <template v-if="isEmpty">
-        <span class="threads-bar__nums-empty">&mdash;</span>
-      </template>
-      <template v-else>
-        <PRismTooltip :as-child="true">
-          <span class="threads-bar__nums-count">
-            <span>{{ resolvedCount }}</span><span class="threads-bar__nums-denom">/{{ totalCount }}</span>
-          </span>
-          <template #content>
-            <div class="threads-bar__breakdown">
-              <div class="threads-bar__breakdown-head">
-                {{ resolvedCount }}/{{ totalCount }} resolved ({{ resolvedPct }}%)
-              </div>
-              <ul
-                v-if="breakdownRows.length > 0"
-                class="threads-bar__breakdown-list"
-              >
-                <li
-                  v-for="row in breakdownRows"
-                  :key="row.bucket"
-                  class="threads-bar__breakdown-row"
-                >
-                  <span
-                    :class="[
-                      'threads-bar__badge',
-                      `threads-bar__badge--${row.bucket}`,
-                    ]"
-                    aria-hidden="true"
-                  >
-                    <svg
-                      v-if="row.isResolved"
-                      width="12"
-                      height="12"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M5.25 8.25l2 2 3.5-4" />
-                    </svg>
-                    <svg
-                      v-else
-                      width="12"
-                      height="12"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path
-                        d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-                      />
-                    </svg>
-                  </span>
-                  <span class="threads-bar__breakdown-count">{{ row.count }}</span>
-                  <span class="threads-bar__breakdown-label">{{ row.label }}</span>
-                </li>
-              </ul>
+      <PRismTooltip :as-child="true">
+        <span class="threads-bar__nums-count">
+          <span>{{ resolvedCount }}</span><span class="threads-bar__nums-denom">/{{ totalCount }}</span>
+        </span>
+        <template #content>
+          <div class="threads-bar__breakdown">
+            <div class="threads-bar__breakdown-head">
+              <template v-if="isEmpty">No review threads</template>
+              <template v-else>{{ resolvedCount }}/{{ totalCount }} resolved ({{ resolvedPct }}%)</template>
             </div>
-          </template>
-        </PRismTooltip>
-      </template>
+            <ul
+              v-if="breakdownRows.length > 0"
+              class="threads-bar__breakdown-list"
+            >
+              <li
+                v-for="row in breakdownRows"
+                :key="row.bucket"
+                class="threads-bar__breakdown-row"
+              >
+                <span
+                  :class="[
+                    'threads-bar__badge',
+                    `threads-bar__badge--${row.bucket}`,
+                  ]"
+                  aria-hidden="true"
+                >
+                  <svg
+                    v-if="row.isResolved"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="8" cy="8" r="6.25" />
+                    <path d="M5.25 8.25l2 2 3.5-4" />
+                  </svg>
+                  <svg
+                    v-else
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
+                    />
+                  </svg>
+                </span>
+                <span class="threads-bar__breakdown-count">{{ row.count }}</span>
+                <span class="threads-bar__breakdown-label">{{ row.label }}</span>
+              </li>
+            </ul>
+          </div>
+        </template>
+      </PRismTooltip>
     </div>
   </div>
 </template>
@@ -345,10 +342,6 @@ function distributeWidths(
 }
 
 .threads-bar__nums-denom {
-  color: var(--text-faint);
-}
-
-.threads-bar__nums-empty {
   color: var(--text-faint);
 }
 
