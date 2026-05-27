@@ -57,11 +57,13 @@
               "originalLine": 41,
               "comments": {
                 "totalCount": 1,
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
                 "nodes": [
                   {
                     "id": "PRRC_1",
                     "url": "https://github.com/owner/repo/pull/42#discussion_r5001",
                     "author": { "login": "bob" },
+                    "body": "Nit: rename this.",
                     "bodyText": "Nit: rename this.",
                     "createdAt": "2026-05-18T12:00:00Z"
                   }
@@ -78,11 +80,13 @@
               "originalLine": 87,
               "comments": {
                 "totalCount": 3,
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
                 "nodes": [
                   {
                     "id": "PRRC_2",
                     "url": "https://github.com/owner/repo/pull/42#discussion_r5002",
                     "author": { "login": "carol" },
+                    "body": "Should this handle None?",
                     "bodyText": "Should this handle None?",
                     "createdAt": "2026-05-18T13:00:00Z"
                   }
@@ -110,7 +114,9 @@
           ]
         },
         "issueComments": {
-          "totalCount": 7
+          "totalCount": 7,
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "nodes": []
         }
       }
     }

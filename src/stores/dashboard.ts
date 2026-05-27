@@ -128,11 +128,6 @@ export interface DashboardGroupBucket {
   readonly failingCount: number;
 }
 
-interface SyncStatusEvent {
-  readonly account_id: number;
-  readonly phase: string;
-}
-
 /**
  * Mirrors `DashboardViewCounts` in `src-tauri/src/dashboard/types.rs`. Powers
  * the sidebar count chips via one Tauri invoke per load instead of a per-view
@@ -157,7 +152,6 @@ export interface ArchiveFailure {
   readonly message: string;
 }
 
-const SYNC_STATUS_EVENT = "sync://status";
 const DASHBOARD_REFRESH_EVENT = "dashboard://refresh";
 
 const VIEW_LABELS: Record<DashboardView, string> = {
@@ -1125,19 +1119,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function bind(): Promise<void> {
     await listener.bind(() =>
       Promise.all([
-        // Refresh on each completed cycle so the dashboard reflects the
-        // latest sync without the user clicking through. The worker emits
-        // `synced` once it has finished writing rows for the cycle.
-        listen<SyncStatusEvent>(SYNC_STATUS_EVENT, (event) => {
-          if (event.payload.phase === "synced") {
-            void load();
-          }
-        }),
-        // Triage writes (ADR 0018: archive / unarchive) emit this so the
-        // active view reloads without waiting for the next sync tick. The
-        // store's own `archive` / `unarchive` actions already trigger a
-        // single coalesced reload after their fan-out completes; this
-        // listener catches writes from other windows or future surfaces.
+        // ADR 0029: one refresh signal for every cache-mutating write. The
+        // sync worker emits this at the end of each successful cycle, and
+        // triage commands (archive / mark-read) emit it on their commits.
+        // In-flight fan-out batches suppress the reload so the store's own
+        // coalesced reload runs once at the end.
         listen(DASHBOARD_REFRESH_EVENT, () => {
           if (inFlightArchiveBatches > 0) return;
           void load();

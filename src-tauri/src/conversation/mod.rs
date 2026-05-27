@@ -1,16 +1,16 @@
-//! Conversation surface - per-thread state, conversation stats, and the
-//! lazy-hydration command path.
+//! Conversation surface — per-thread state, conversation stats, and the
+//! drawer's cache-read command.
 //!
-//! The shared interface contract for this module is
-//! `docs/contracts/conversation-depth.md`. Wave 1 lands the DTO types and the
-//! Tauri command shell; Wave 2-B implements the SQL composition and the lazy
-//! hydrator body.
+//! ADR 0029: sync owns conversation persistence. The commands here are pure
+//! readers; the lazy hydrator and its `PR_COMMENTS_QUERY` round-trip went away
+//! with that change. The shared interface contract is
+//! `docs/contracts/conversation-depth.md`.
 
 pub mod commands;
 pub mod query;
 pub mod types;
+pub(crate) mod writer;
 
-pub use commands::{AccountStoreHandle, ClientFactoryHandle};
 pub use types::{
     CommentBreakdown, ConversationStats, HydratedConversation, IssueComment, PullRequestReview,
     PullRequestThread, ReviewsSummary, ThreadComment, ThreadHeadComment, ThreadState,

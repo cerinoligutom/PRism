@@ -31,16 +31,9 @@ use crate::notify::{
     format_trigger, refresh_from_db as refresh_badge_from_db, NotificationSinkHandle,
     NotificationTrigger,
 };
+use crate::sync::DASHBOARD_REFRESH_EVENT;
 use crate::triage::query;
 use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
-
-/// Fired when a triage write that affects dashboard membership commits.
-/// The frontend listens for this and reloads the active view; the payload is
-/// empty because every subscriber re-queries the canonical dashboard state.
-/// See ADR 0018 - manual archive + unarchive are the first writers; the
-/// auto-archive sweep relies on the existing `sync://status` cycle reload
-/// instead.
-pub const DASHBOARD_REFRESH_EVENT: &str = "dashboard://refresh";
 
 /// User-facing error shape for `triage::*` commands. Internal failures (lock
 /// poison, rusqlite errors mid-transaction) fold into a single opaque variant

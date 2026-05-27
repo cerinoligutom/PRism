@@ -14,6 +14,13 @@ use crate::sync::state::AccountSyncState;
 /// stays consistent without needing to merge partial updates.
 pub const SYNC_STATUS_EVENT: &str = "sync://status";
 
+/// Emitted after any write that should cause the dashboard / conversation
+/// surfaces to re-read from SQLite: end of a successful sync cycle (ADR 0029),
+/// and after each successful triage command (mark-read, archive,
+/// unarchive). The frontend stores listen on this single event; the payload
+/// is empty because the surfaces re-query their own scope.
+pub const DASHBOARD_REFRESH_EVENT: &str = "dashboard://refresh";
+
 /// Emitted alongside `sync://status` when the cycle failed transiently. The
 /// payload mirrors the status event but carries a short human-readable
 /// message field. Kept separate from status so a toast layer can hook just

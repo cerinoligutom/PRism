@@ -35,6 +35,8 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0025](0025-in-app-changelog.md) | In-app changelog: bundled `CHANGELOG.md`, last-seen version gate, single concatenated dialog | Accepted | [#302](https://github.com/cerinoligutom/PRism/issues/302) |
 | [0026](0026-tracing-adoption.md) | Backend logging via `tracing` to stdout | Accepted | [#334](https://github.com/cerinoligutom/PRism/issues/334) |
 | [0027](0027-timeline-event-expansion.md) | Expanding the StatusTimelineTab event set | Accepted | [#342](https://github.com/cerinoligutom/PRism/issues/342) |
+| [0028](0028-persistent-notifications-inbox.md) | Persistent notifications inbox | Accepted | [#378](https://github.com/cerinoligutom/PRism/issues/378) |
+| [0029](0029-sync-owns-conversation-persistence.md) | Sync owns conversation persistence (supersedes 0010's lazy-hydration decision) | Accepted | [#422](https://github.com/cerinoligutom/PRism/issues/422) |
 
 ## Statuses
 
