@@ -37,6 +37,7 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0027](0027-timeline-event-expansion.md) | Expanding the StatusTimelineTab event set | Accepted | [#342](https://github.com/cerinoligutom/PRism/issues/342) |
 | [0028](0028-persistent-notifications-inbox.md) | Persistent notifications inbox | Accepted | [#378](https://github.com/cerinoligutom/PRism/issues/378) |
 | [0029](0029-sync-owns-conversation-persistence.md) | Sync owns conversation persistence (supersedes 0010's lazy-hydration decision) | Accepted | [#422](https://github.com/cerinoligutom/PRism/issues/422) |
+| [0030](0030-ci-checks-json-column.md) | Per-check CI detail stored as a denormalised JSON column | Proposed | [#426](https://github.com/cerinoligutom/PRism/issues/426) |
 
 ## Statuses
 
