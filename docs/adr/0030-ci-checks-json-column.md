@@ -1,6 +1,6 @@
 # 0030 — Per-check CI detail stored as a denormalised JSON column
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-05-27
 - **Issue:** [#426](https://github.com/cerinoligutom/PRism/issues/426)
 - **Deciders:** @cerinoligutom
