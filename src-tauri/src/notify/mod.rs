@@ -353,6 +353,86 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_skipped_when_needs_attention_toggle_off() {
+        // ADR 0031: the per-trigger `notify_on_needs_attention` toggle now
+        // gates dispatch. Master ON + permission Granted, but the toggle OFF
+        // must suppress the toast without touching the OS permission state.
+        let db = fresh_db();
+        write_settings(
+            &db,
+            &AppSettings {
+                notifications_enabled: true,
+                notify_on_needs_attention: false,
+                notify_on_mention: true,
+                notification_permission_state: NotificationPermissionState::Granted,
+                last_seen_version: None,
+                auto_update_enabled: false,
+                auto_update_interval_seconds: 21600,
+                auto_update_last_check_at: None,
+                auto_update_last_failure_message: None,
+                auto_archive_days: 30,
+                notification_retention_max: 500,
+                updated_at: 0,
+            },
+        );
+        let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
+
+        let dispatched = decide_dispatch(&db, &asker);
+
+        assert!(!dispatched, "toggle OFF must skip dispatch");
+        assert_eq!(
+            asker.request_calls.load(Ordering::SeqCst),
+            0,
+            "toggle OFF must not prompt"
+        );
+        assert_eq!(
+            read_perm(&db),
+            NotificationPermissionState::Granted,
+            "toggle OFF must not flip the OS permission state"
+        );
+    }
+
+    #[test]
+    fn master_off_suppresses_even_when_needs_attention_toggle_on() {
+        // The master switch wins above the per-trigger toggle: master OFF +
+        // toggle ON must still skip, and must not prompt or mutate permission
+        // state (ADR 0017 decision 5, ADR 0031).
+        let db = fresh_db();
+        write_settings(
+            &db,
+            &AppSettings {
+                notifications_enabled: false,
+                notify_on_needs_attention: true,
+                notify_on_mention: true,
+                notification_permission_state: NotificationPermissionState::Unprompted,
+                last_seen_version: None,
+                auto_update_enabled: false,
+                auto_update_interval_seconds: 21600,
+                auto_update_last_check_at: None,
+                auto_update_last_failure_message: None,
+                auto_archive_days: 30,
+                notification_retention_max: 500,
+                updated_at: 0,
+            },
+        );
+        let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
+
+        let dispatched = decide_dispatch(&db, &asker);
+
+        assert!(!dispatched, "master OFF must suppress regardless of toggle");
+        assert_eq!(
+            asker.request_calls.load(Ordering::SeqCst),
+            0,
+            "master OFF must not prompt"
+        );
+        assert_eq!(
+            read_perm(&db),
+            NotificationPermissionState::Unprompted,
+            "master OFF must not flip the permission state"
+        );
+    }
+
+    #[test]
     fn recording_sink_captures_dispatched_notification() {
         // Confirms the trait surface is narrow enough for the future
         // recompute emitter (issue #192) to be unit-tested against a fake
