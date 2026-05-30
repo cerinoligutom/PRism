@@ -14,6 +14,7 @@ import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import ThreadStateIcon from "./icons/ThreadStateIcon.vue";
 import DiffHunkBlock from "./DiffHunkBlock.vue";
 
 interface Props {
@@ -252,37 +253,9 @@ async function openCommentOnGitHub(
             ]"
             :aria-label="bucketTooltip(thread)"
           >
-            <svg
-              v-if="bucketFor(thread).resolvedShape"
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="8" cy="8" r="6.25" />
-              <path d="M5.25 8.25l2 2 3.5-4" />
-            </svg>
-            <svg
-              v-else
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path
-                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-              />
-            </svg>
+            <ThreadStateIcon
+              :state="bucketFor(thread).resolvedShape ? 'resolved' : 'unresolved'"
+            />
           </span>
           <template #content>
             <div class="thread-state-tip">

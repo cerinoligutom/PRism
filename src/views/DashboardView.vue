@@ -18,7 +18,9 @@ import FilteredEmptyState from "@/components/dashboard/FilteredEmptyState.vue";
 import AccountPicker from "@/components/dashboard/AccountPicker.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
 import PRismPopover from "@/components/ui/PRismPopover.vue";
+import PRismIconLegend from "@/components/ui/PRismIconLegend.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
+import ThreadStateIcon from "@/components/conversation/icons/ThreadStateIcon.vue";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
@@ -166,6 +168,46 @@ const isFilteredEmpty = computed<boolean>(() => {
     dashboard.activeChips.size > 0 || dashboard.searchQuery.length > 0
   );
 });
+
+/**
+ * Static row scaffold for the dashboard row-icon legend. Label text mirrors the
+ * prior inline markup (`&middot;` resolves to the same middle dot); each row's
+ * bespoke strip glyph / unread swatch / thread badge / colour swatch comes
+ * through `PRismIconLegend`'s `#icon` slot, keyed by `id`. The PR-state strip
+ * glyphs stay inline here pending the strip-dissolve slice (F1).
+ */
+const rowLegendSections = [
+  {
+    title: "PR state",
+    rows: [
+      { id: "needs", label: "Needs your review" },
+      { id: "changes", label: "Changes requested" },
+      { id: "approved", label: "Approved" },
+      { id: "draft", label: "Draft" },
+      { id: "stale", label: "Stale (no recent activity)" },
+    ],
+  },
+  {
+    title: "Unread",
+    rows: [{ id: "unread", label: "New activity since you last looked" }],
+  },
+  {
+    title: "Threads",
+    rows: [
+      { id: "unresolved-uninvolved", label: "Unresolved" },
+      { id: "unresolved-involved", label: "Unresolved · you're in it" },
+      { id: "resolved-uninvolved", label: "Resolved" },
+      { id: "resolved-involved", label: "Resolved · was yours" },
+    ],
+  },
+  {
+    title: "Colour key",
+    rows: [
+      { id: "warm", label: "Warm · involves you" },
+      { id: "cool", label: "Cool · others only" },
+    ],
+  },
+] as const;
 
 function isGroupCollapsed(bucketKey: string): boolean {
   return dashboard.collapsedGroups.has(bucketKey);
@@ -531,122 +573,67 @@ watch(
             </svg>
           </button>
           <template #content>
-            <div class="dashboard-legend" role="region" aria-label="Row icon legend">
-              <div class="dashboard-legend__section-title">PR state</div>
-              <ul class="dashboard-legend__rows">
-                <li class="dashboard-legend__row">
-                  <span class="pr-row__state row-strip-needs" aria-hidden="true">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
-                      <circle cx="8" cy="8" r="2" />
-                    </svg>
-                  </span>
-                  <span>Needs your review</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="pr-row__state row-strip-changes" aria-hidden="true">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
-                    </svg>
-                  </span>
-                  <span>Changes requested</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="pr-row__state row-strip-approved" aria-hidden="true">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M5.25 8.25l2 2 3.5-4" />
-                    </svg>
-                  </span>
-                  <span>Approved</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="pr-row__state row-strip-draft" aria-hidden="true">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
-                      <path d="M10 4l2 2" />
-                    </svg>
-                  </span>
-                  <span>Draft</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="pr-row__state row-strip-stale" aria-hidden="true">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M8 4.5V8l2.25 1.5" />
-                    </svg>
-                  </span>
-                  <span>Stale (no recent activity)</span>
-                </li>
-              </ul>
-
-              <div class="dashboard-legend__section-title">Unread</div>
-              <ul class="dashboard-legend__rows">
-                <li class="dashboard-legend__row">
-                  <span class="dashboard-legend__unread-swatch" aria-hidden="true">
-                    <span class="dashboard-legend__unread-dot"></span>
-                  </span>
-                  <span>New activity since you last looked</span>
-                </li>
-              </ul>
-
-              <div class="dashboard-legend__section-title">Threads</div>
-              <ul class="dashboard-legend__rows">
-                <li class="dashboard-legend__row">
-                  <span class="threads-bar__badge threads-bar__badge--unresolved-uninvolved" aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z" />
-                    </svg>
-                  </span>
-                  <span>Unresolved</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="threads-bar__badge threads-bar__badge--unresolved-involved" aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z" />
-                    </svg>
-                  </span>
-                  <span>Unresolved &middot; you're in it</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="threads-bar__badge threads-bar__badge--resolved-uninvolved" aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M5.25 8.25l2 2 3.5-4" />
-                    </svg>
-                  </span>
-                  <span>Resolved</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="threads-bar__badge threads-bar__badge--resolved-involved" aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <circle cx="8" cy="8" r="6.25" />
-                      <path d="M5.25 8.25l2 2 3.5-4" />
-                    </svg>
-                  </span>
-                  <span>Resolved &middot; was yours</span>
-                </li>
-              </ul>
-
-              <div class="dashboard-legend__section-title">Colour key</div>
-              <ul class="dashboard-legend__rows">
-                <li class="dashboard-legend__row">
-                  <span class="legend-swatch-pair" aria-hidden="true">
-                    <span class="legend-swatch legend-swatch--warning"></span>
-                    <span class="legend-swatch legend-swatch--success"></span>
-                  </span>
-                  <span>Warm &middot; involves you</span>
-                </li>
-                <li class="dashboard-legend__row">
-                  <span class="legend-swatch-pair" aria-hidden="true">
-                    <span class="legend-swatch legend-swatch--danger"></span>
-                    <span class="legend-swatch legend-swatch--info"></span>
-                  </span>
-                  <span>Cool &middot; others only</span>
-                </li>
-              </ul>
-            </div>
+            <PRismIconLegend
+              region-label="Row icon legend"
+              :sections="rowLegendSections"
+              :min-width="240"
+            >
+              <template #icon="{ id }">
+                <span v-if="id === 'needs'" class="pr-row__state row-strip-needs" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
+                    <circle cx="8" cy="8" r="2" />
+                  </svg>
+                </span>
+                <span v-else-if="id === 'changes'" class="pr-row__state row-strip-changes" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="6.25" />
+                    <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
+                  </svg>
+                </span>
+                <span v-else-if="id === 'approved'" class="pr-row__state row-strip-approved" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="6.25" />
+                    <path d="M5.25 8.25l2 2 3.5-4" />
+                  </svg>
+                </span>
+                <span v-else-if="id === 'draft'" class="pr-row__state row-strip-draft" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
+                    <path d="M10 4l2 2" />
+                  </svg>
+                </span>
+                <span v-else-if="id === 'stale'" class="pr-row__state row-strip-stale" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="6.25" />
+                    <path d="M8 4.5V8l2.25 1.5" />
+                  </svg>
+                </span>
+                <span v-else-if="id === 'unread'" class="dashboard-legend__unread-swatch" aria-hidden="true">
+                  <span class="dashboard-legend__unread-dot"></span>
+                </span>
+                <span v-else-if="id === 'unresolved-uninvolved'" class="threads-bar__badge threads-bar__badge--unresolved-uninvolved" aria-hidden="true">
+                  <ThreadStateIcon state="unresolved" :size="12" />
+                </span>
+                <span v-else-if="id === 'unresolved-involved'" class="threads-bar__badge threads-bar__badge--unresolved-involved" aria-hidden="true">
+                  <ThreadStateIcon state="unresolved" :size="12" />
+                </span>
+                <span v-else-if="id === 'resolved-uninvolved'" class="threads-bar__badge threads-bar__badge--resolved-uninvolved" aria-hidden="true">
+                  <ThreadStateIcon state="resolved" :size="12" />
+                </span>
+                <span v-else-if="id === 'resolved-involved'" class="threads-bar__badge threads-bar__badge--resolved-involved" aria-hidden="true">
+                  <ThreadStateIcon state="resolved" :size="12" />
+                </span>
+                <span v-else-if="id === 'warm'" class="legend-swatch-pair" aria-hidden="true">
+                  <span class="legend-swatch legend-swatch--warning"></span>
+                  <span class="legend-swatch legend-swatch--success"></span>
+                </span>
+                <span v-else-if="id === 'cool'" class="legend-swatch-pair" aria-hidden="true">
+                  <span class="legend-swatch legend-swatch--danger"></span>
+                  <span class="legend-swatch legend-swatch--info"></span>
+                </span>
+              </template>
+            </PRismIconLegend>
           </template>
         </PRismPopover>
       </div>
@@ -1163,49 +1150,14 @@ watch(
 </style>
 
 <!--
-  Unscoped because Reka's `TooltipPortal` teleports legend content out of
-  the scoped-CSS attribute boundary. Includes duplicated state-badge +
-  unread-dot styles from `PullRequestRow.vue` so the legend renders the
-  same visual identity without having to wait for that component's scoped
-  styles. ThreadsBar bucket badges come from `ThreadsBar.vue`'s own
-  unscoped block (loaded on every PR row).
+  Unscoped because Reka's `PopoverPortal` teleports legend content out of the
+  scoped-CSS attribute boundary. The container / section / row scaffold now
+  comes from `PRismIconLegend`; only the dashboard-specific unread swatch
+  survives here. `.pr-row__state` shape + variant palettes come from
+  `assets/styles/pr-status.css`; ThreadsBar bucket badges come from
+  `ThreadsBar.vue`'s own unscoped block (loaded on every PR row).
 -->
 <style>
-.dashboard-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: var(--fs-12);
-  color: var(--text);
-  min-width: 240px;
-}
-
-.dashboard-legend__section-title {
-  font-family: var(--font-mono);
-  font-size: var(--fs-9);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.dashboard-legend__rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.dashboard-legend__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* `.pr-row__state` shape + variant palettes come from
- * `assets/styles/pr-status.css` so the legend matches the inline row badge. */
-
 /* Unread cue mirrors the dashboard row's 10px column + 7px centred accent
  * dot so the swatch looks like the real thing. */
 .dashboard-legend__unread-swatch {

@@ -8,11 +8,13 @@ import { useDashboardStore } from "@/stores/dashboard";
 import type { ThreadsSummary } from "@/types/dashboard";
 import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
 import PRismPopover from "@/components/ui/PRismPopover.vue";
+import PRismIconLegend from "@/components/ui/PRismIconLegend.vue";
 import ConversationStats from "./ConversationStats.vue";
 import IssueCommentsTab from "./IssueCommentsTab.vue";
 import ReviewsTab from "./ReviewsTab.vue";
 import StatusTimelineTab from "./StatusTimelineTab.vue";
 import ThreadsList from "./ThreadsList.vue";
+import ThreadStateIcon from "./icons/ThreadStateIcon.vue";
 
 interface Props {
   pullRequestId: number;
@@ -116,6 +118,38 @@ const threadsSummaryForBar = computed<ThreadsSummary | null>(() => {
   };
 });
 
+/**
+ * Static row scaffold for the thread badge legend. The label text mirrors the
+ * prior inline markup (the `&middot;` entities resolve to the same middle dot);
+ * each row's bespoke badge / chip / swatch comes through `PRismIconLegend`'s
+ * `#icon` slot, keyed by `id`.
+ */
+const threadLegendSections = [
+  {
+    title: "State",
+    rows: [
+      { id: "unresolved-uninvolved", label: "Unresolved" },
+      { id: "unresolved-involved", label: "Unresolved · you're in it" },
+      { id: "resolved-uninvolved", label: "Resolved" },
+      { id: "resolved-involved", label: "Resolved · was yours" },
+    ],
+  },
+  {
+    title: "Modifier",
+    rows: [
+      { id: "mine", label: "You're a participant" },
+      { id: "outdated", label: "Line no longer exists" },
+    ],
+  },
+  {
+    title: "Colour key",
+    rows: [
+      { id: "warm", label: "Warm · involves you" },
+      { id: "cool", label: "Cool · others only" },
+    ],
+  },
+] as const;
+
 async function loadConversation(): Promise<void> {
   try {
     await store.load(props.pullRequestId);
@@ -217,117 +251,61 @@ watch(
                     </svg>
                   </button>
                   <template #content>
-                    <div class="thread-state-legend" role="region" aria-label="Thread badge legend">
-                      <div class="thread-state-legend__section-title">State</div>
-                      <ul class="thread-state-legend__rows">
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__state thread-card__state--unresolved-uninvolved">
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 16 16"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.5"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-                              />
-                            </svg>
-                          </span>
-                          <span>Unresolved</span>
-                        </li>
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__state thread-card__state--unresolved-involved">
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 16 16"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.5"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-                              />
-                            </svg>
-                          </span>
-                          <span>Unresolved &middot; you're in it</span>
-                        </li>
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__state thread-card__state--resolved-uninvolved">
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 16 16"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.5"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <circle cx="8" cy="8" r="6.25" />
-                              <path d="M5.25 8.25l2 2 3.5-4" />
-                            </svg>
-                          </span>
-                          <span>Resolved</span>
-                        </li>
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__state thread-card__state--resolved-involved">
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 16 16"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.5"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <circle cx="8" cy="8" r="6.25" />
-                              <path d="M5.25 8.25l2 2 3.5-4" />
-                            </svg>
-                          </span>
-                          <span>Resolved &middot; was yours</span>
-                        </li>
-                      </ul>
-                      <div class="thread-state-legend__section-title">Modifier</div>
-                      <ul class="thread-state-legend__rows">
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__chip thread-card__chip--mine">INVOLVED</span>
-                          <span>You're a participant</span>
-                        </li>
-                        <li class="thread-state-legend__row">
-                          <span class="thread-card__chip thread-card__chip--outdated">OUTDATED</span>
-                          <span>Line no longer exists</span>
-                        </li>
-                      </ul>
-                      <div class="thread-state-legend__section-title">Colour key</div>
-                      <ul class="thread-state-legend__rows">
-                        <li class="thread-state-legend__row">
-                          <span class="legend-swatch-pair" aria-hidden="true">
-                            <span class="legend-swatch legend-swatch--warning"></span>
-                            <span class="legend-swatch legend-swatch--success"></span>
-                          </span>
-                          <span>Warm &middot; involves you</span>
-                        </li>
-                        <li class="thread-state-legend__row">
-                          <span class="legend-swatch-pair" aria-hidden="true">
-                            <span class="legend-swatch legend-swatch--danger"></span>
-                            <span class="legend-swatch legend-swatch--info"></span>
-                          </span>
-                          <span>Cool &middot; others only</span>
-                        </li>
-                      </ul>
-                    </div>
+                    <PRismIconLegend
+                      region-label="Thread badge legend"
+                      :sections="threadLegendSections"
+                    >
+                      <template #icon="{ id }">
+                        <span
+                          v-if="id === 'unresolved-uninvolved'"
+                          class="thread-card__state thread-card__state--unresolved-uninvolved"
+                        >
+                          <ThreadStateIcon state="unresolved" />
+                        </span>
+                        <span
+                          v-else-if="id === 'unresolved-involved'"
+                          class="thread-card__state thread-card__state--unresolved-involved"
+                        >
+                          <ThreadStateIcon state="unresolved" />
+                        </span>
+                        <span
+                          v-else-if="id === 'resolved-uninvolved'"
+                          class="thread-card__state thread-card__state--resolved-uninvolved"
+                        >
+                          <ThreadStateIcon state="resolved" />
+                        </span>
+                        <span
+                          v-else-if="id === 'resolved-involved'"
+                          class="thread-card__state thread-card__state--resolved-involved"
+                        >
+                          <ThreadStateIcon state="resolved" />
+                        </span>
+                        <span
+                          v-else-if="id === 'mine'"
+                          class="thread-card__chip thread-card__chip--mine"
+                        >INVOLVED</span>
+                        <span
+                          v-else-if="id === 'outdated'"
+                          class="thread-card__chip thread-card__chip--outdated"
+                        >OUTDATED</span>
+                        <span
+                          v-else-if="id === 'warm'"
+                          class="legend-swatch-pair"
+                          aria-hidden="true"
+                        >
+                          <span class="legend-swatch legend-swatch--warning"></span>
+                          <span class="legend-swatch legend-swatch--success"></span>
+                        </span>
+                        <span
+                          v-else-if="id === 'cool'"
+                          class="legend-swatch-pair"
+                          aria-hidden="true"
+                        >
+                          <span class="legend-swatch legend-swatch--danger"></span>
+                          <span class="legend-swatch legend-swatch--info"></span>
+                        </span>
+                      </template>
+                    </PRismIconLegend>
                   </template>
                 </PRismPopover>
               </div>
@@ -560,45 +538,5 @@ watch(
   .pr-conversation__meta-col {
     overflow-y: visible;
   }
-}
-</style>
-
-<!--
-  Unscoped because Reka's `TooltipPortal` teleports the legend content out of
-  the scoped-CSS attribute boundary (same constraint as the participants /
-  state-badge tooltips in ThreadsList). The badge / chip swatches inside the
-  legend share the unscoped classes declared at the bottom of `ThreadsList.vue`.
--->
-<style>
-.thread-state-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: var(--fs-12);
-  color: var(--text);
-  min-width: 220px;
-}
-
-.thread-state-legend__section-title {
-  font-family: var(--font-mono);
-  font-size: var(--fs-9);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.thread-state-legend__rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.thread-state-legend__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 </style>

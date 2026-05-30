@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ThreadsSummary } from "@/types/dashboard";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import ThreadStateIcon from "@/components/conversation/icons/ThreadStateIcon.vue";
 
 interface Props {
   threads: ThreadsSummary | null;
@@ -174,35 +175,9 @@ function distributeWidths(
               ]"
               aria-hidden="true"
             >
-              <svg
-                v-if="segment.isResolved"
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <circle cx="8" cy="8" r="6.25" />
-                <path d="M5.25 8.25l2 2 3.5-4" />
-              </svg>
-              <svg
-                v-else
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-                />
-              </svg>
+              <ThreadStateIcon
+                :state="segment.isResolved ? 'resolved' : 'unresolved'"
+              />
             </span>
             <div class="threads-bar__seg-tip-text">
               <div class="threads-bar__seg-tip-label">{{ segment.label }}</div>
@@ -241,35 +216,10 @@ function distributeWidths(
                   ]"
                   aria-hidden="true"
                 >
-                  <svg
-                    v-if="row.isResolved"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <circle cx="8" cy="8" r="6.25" />
-                    <path d="M5.25 8.25l2 2 3.5-4" />
-                  </svg>
-                  <svg
-                    v-else
-                    width="12"
-                    height="12"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path
-                      d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5H4.5a2 2 0 0 1-2-2V4.5Z"
-                    />
-                  </svg>
+                  <ThreadStateIcon
+                    :state="row.isResolved ? 'resolved' : 'unresolved'"
+                    :size="12"
+                  />
                 </span>
                 <span class="threads-bar__breakdown-count">{{ row.count }}</span>
                 <span class="threads-bar__breakdown-label">{{ row.label }}</span>
