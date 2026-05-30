@@ -71,8 +71,7 @@
 /* Tooltip / legend hosts use flex gap for spacing; reset the chip's inline
  * left margin so it doesn't double up with the gap. */
 .thread-state-tip .thread-card__chip,
-.thread-state-legend .thread-card__chip,
-.dashboard-legend .thread-card__chip {
+.prism-icon-legend .thread-card__chip {
   margin-left: 0;
 }
 
