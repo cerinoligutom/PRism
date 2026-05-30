@@ -24,6 +24,13 @@ use crate::conversation::types::{
 /// `account_id` parameter resolves `is_involved` via an `EXISTS` against
 /// `review_comments` joined to `accounts`; `None` always returns
 /// `is_involved = false`.
+///
+/// Host isolation (issue #169, ADR 0031): the `is_involved` EXISTS additionally
+/// requires the matched account's `host` to equal the PR's owning host (via
+/// `repos -> accounts`), so a viewer sharing a login on two hosts is only
+/// "involved" on the host that actually owns the PR. The "How signals work"
+/// page embeds this surface as ground truth, so it must agree with the row
+/// roll-up on multi-account setups.
 pub fn list_pr_threads(
     conn: &Connection,
     pull_request_id: i64,
@@ -66,8 +73,11 @@ pub fn list_pr_threads(
                 WHEN EXISTS (
                     SELECT 1 FROM review_comments c
                       JOIN accounts a ON a.login = c.author_login
+                      JOIN repos r ON r.id = t_pr.repo_id
+                      JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                      WHERE c.review_thread_id = t.id
                        AND a.id = ?2
+                       AND a.host = pr_host_acc.host
                 ) THEN 1
                 ELSE 0
             END AS is_involved,
@@ -83,6 +93,7 @@ pub fn list_pr_threads(
             END AS unread,
             t.diff_hunk
         FROM review_threads t
+        JOIN pull_requests t_pr ON t_pr.id = t.pull_request_id
         LEFT JOIN review_comments head
                ON head.id = (
                     SELECT c.id FROM review_comments c
@@ -224,7 +235,9 @@ struct ThreadCounts {
 /// PR visible from any of the user's identities reads with the union's
 /// involvement state. The dashboard's single-account path is also a subset
 /// of this set, so the conversation bar stays consistent with the row bar
-/// the user clicked through from. See issue #102.
+/// the user clicked through from. See issue #102. The test is host-gated
+/// (ADR 0031): a matched account counts only on the PR's owning host, so a
+/// login shared across two hosts can't inflate the bar.
 #[derive(Debug, Clone, Copy)]
 struct ThreadBuckets {
     unresolved_involved: i64,
@@ -237,33 +250,48 @@ fn thread_buckets(
     conn: &Connection,
     pull_request_id: i64,
 ) -> Result<ThreadBuckets, rusqlite::Error> {
+    // The involvement EXISTS is host-gated (issue #169, ADR 0031): a comment
+    // author counts as one of the viewer's identities only when the matched
+    // account shares the PR's owning host (`repos -> accounts`). Without the
+    // guard a viewer sharing a login across two hosts would see cross-host
+    // involvement leak into the bar, disagreeing with the host-aware row
+    // roll-up the "How signals work" page treats as ground truth.
     conn.query_row(
         "SELECT
             COALESCE(SUM(CASE WHEN t.is_resolved = 0
                                AND EXISTS (SELECT 1 FROM review_comments c
                                             JOIN accounts a ON a.login = c.author_login
+                                            JOIN repos r ON r.id = pr.repo_id
+                                            JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                                             WHERE c.review_thread_id = t.id
-                                              AND a.id IN (SELECT id FROM accounts))
+                                              AND a.host = pr_host_acc.host)
                               THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN t.is_resolved = 0
                                AND NOT EXISTS (SELECT 1 FROM review_comments c
                                                 JOIN accounts a ON a.login = c.author_login
+                                                JOIN repos r ON r.id = pr.repo_id
+                                                JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                                                 WHERE c.review_thread_id = t.id
-                                                  AND a.id IN (SELECT id FROM accounts))
+                                                  AND a.host = pr_host_acc.host)
                               THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN t.is_resolved = 1
                                AND EXISTS (SELECT 1 FROM review_comments c
                                             JOIN accounts a ON a.login = c.author_login
+                                            JOIN repos r ON r.id = pr.repo_id
+                                            JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                                             WHERE c.review_thread_id = t.id
-                                              AND a.id IN (SELECT id FROM accounts))
+                                              AND a.host = pr_host_acc.host)
                               THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN t.is_resolved = 1
                                AND NOT EXISTS (SELECT 1 FROM review_comments c
                                                 JOIN accounts a ON a.login = c.author_login
+                                                JOIN repos r ON r.id = pr.repo_id
+                                                JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
                                                 WHERE c.review_thread_id = t.id
-                                                  AND a.id IN (SELECT id FROM accounts))
+                                                  AND a.host = pr_host_acc.host)
                               THEN 1 ELSE 0 END), 0)
            FROM review_threads t
+           JOIN pull_requests pr ON pr.id = t.pull_request_id
           WHERE t.pull_request_id = ?1",
         params![pull_request_id],
         |row| {
@@ -624,6 +652,120 @@ mod tests {
     #[test]
     fn resolution_rate_full() {
         assert_eq!(compute_resolution_rate(4, 4), 1.0);
+    }
+
+    /// Two accounts share login `me` on different hosts; the PR is owned by
+    /// account 1 (github.com). A thread comment by `me` makes the host-1 viewer
+    /// involved, but the host-2 viewer (github.acme.corp) must NOT read as
+    /// involved - the conversation surface is host-gated to agree with the
+    /// row roll-up (ADR 0031).
+    fn seed_cross_host_thread_fixture(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'gh', 'github.com', 'me', 0),
+                (2, 'ghe', 'github.acme.corp', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (5001, 100, 0, 0, 'RT_xh');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (6001, 5001, 'me', 'note', 1);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_pr_threads_is_involved_is_host_gated() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        seed_cross_host_thread_fixture(&conn);
+
+        let host1 = list_pr_threads(&conn, 100, Some(1)).unwrap();
+        assert_eq!(host1.len(), 1);
+        assert!(
+            host1[0].is_involved,
+            "github.com viewer authored the thread comment on the PR's host"
+        );
+
+        let host2 = list_pr_threads(&conn, 100, Some(2)).unwrap();
+        assert_eq!(host2.len(), 1);
+        assert!(
+            !host2[0].is_involved,
+            "github.acme.corp viewer shares the login but not the PR's host"
+        );
+    }
+
+    #[test]
+    fn list_pr_threads_is_involved_zero_when_no_viewer() {
+        // No `account_id` -> the viewer is unknown -> is_involved is forced 0,
+        // matching the roll-up returning 0 for a Tracked/Team PR with no
+        // relation row.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        seed_cross_host_thread_fixture(&conn);
+
+        let threads = list_pr_threads(&conn, 100, None).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(!threads[0].is_involved);
+    }
+
+    #[test]
+    fn thread_buckets_involvement_is_host_gated() {
+        // The login `me` authored the only thread comment, but it sits on
+        // github.com (account 1's host). The buckets count it involved (a
+        // host-matching identity exists). Add a second account on a different
+        // host sharing the login - it must not double-light the bucket, and
+        // removing the host-1 account drops the involved count to zero.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        seed_cross_host_thread_fixture(&conn);
+
+        let buckets = thread_buckets(&conn, 100).unwrap();
+        assert_eq!(
+            buckets.unresolved_involved, 1,
+            "a host-matching identity authored the comment"
+        );
+        assert_eq!(buckets.unresolved_uninvolved, 0);
+    }
+
+    #[test]
+    fn thread_buckets_uninvolved_when_only_cross_host_login_matches() {
+        // The only account that shares the comment author's login lives on a
+        // DIFFERENT host than the PR. The host gate must reject it, so the
+        // thread reads uninvolved.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'owner', 'github.com', 'owner-acct', 0),
+                (2, 'ghe', 'github.acme.corp', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (5001, 100, 0, 0, 'RT_xh');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (6001, 5001, 'me', 'note', 1);",
+        )
+        .unwrap();
+
+        let buckets = thread_buckets(&conn, 100).unwrap();
+        assert_eq!(
+            buckets.unresolved_involved, 0,
+            "the only `me` identity is on a different host than the PR"
+        );
+        assert_eq!(buckets.unresolved_uninvolved, 1);
     }
 
     #[test]

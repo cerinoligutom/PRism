@@ -46,8 +46,8 @@ use std::collections::HashMap;
 use rusqlite::{params_from_iter, Connection, Row};
 
 use crate::dashboard::types::{
-    CiSummary, DashboardPullRequest, DashboardSort, DashboardView, DashboardViewCounts, RepoRef,
-    ReviewerEntry, ReviewerState, ThreadsSummary,
+    CiSummary, DashboardPullRequest, DashboardSort, DashboardView, DashboardViewCounts,
+    MyReviewState, RepoRef, ReviewerEntry, ReviewerState, ThreadsSummary,
 };
 use crate::triage::query as triage_query;
 use crate::triage::types::ChipKey;
@@ -949,6 +949,10 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         ci,
         threads,
         reviewers: Vec::new(),
+        // Defaults to `None`; `hydrate_reviewers` recomputes it from the
+        // viewer's authoring / request / submitted-review relationship once the
+        // reviewer pass has the in-scope identities and per-PR host (ADR 0031).
+        my_review_state: MyReviewState::None,
         repo: RepoRef {
             id: repo_id,
             owner: repo_owner,
@@ -1056,6 +1060,13 @@ fn hydrate_reviewers(
     // submitted then was dismissed shouldn't reappear as pending.
     let mut submitted_logins_by_pr: HashMap<i64, std::collections::HashSet<String>> =
         HashMap::new();
+    // Every requested-reviewer login per PR, recorded before the pending-entry
+    // suppression. `my_review_state` reads this directly: a re-requested review
+    // (in `requested_reviewers` even after a prior submitted review) must read
+    // as `requested`, which outranks the stale submitted state in the ADR 0031
+    // precedence - so the derivation can't reuse the suppressed `Pending` entry.
+    let mut requested_logins_by_pr: HashMap<i64, std::collections::HashSet<String>> =
+        HashMap::new();
 
     // Submitted reviews, deduplicated to one row per (PR, login). The window
     // function picks the latest `submitted_at`; ties break by state priority
@@ -1134,6 +1145,12 @@ fn hydrate_reviewers(
             let pr_id: i64 = row.get(0)?;
             let login: String = row.get(1)?;
             let avatar_url: Option<String> = row.get(2)?;
+            // Record the raw request membership for the my-review-state
+            // derivation before any suppression below.
+            requested_logins_by_pr
+                .entry(pr_id)
+                .or_default()
+                .insert(login.clone());
             if submitted_logins_by_pr
                 .get(&pr_id)
                 .is_some_and(|set| set.contains(&login))
@@ -1163,19 +1180,20 @@ fn hydrate_reviewers(
     // In the unified path `pr.account_ids` carries every in-scope account
     // for this row; the scan tests against the union of their identities.
     for pr in prs.iter_mut() {
+        let pr_host = pr_owner_host_by_pr.get(&pr.id);
+        // Collect the (login, host) pairs that share the PR's host; these
+        // are the identities a reviewer's login can match to flip `is_you`.
+        // Other in-scope accounts (on different hosts) can't match: their
+        // login is a different identity even if the string coincides.
+        let viewer_logins_on_pr_host: Vec<&str> = pr
+            .account_ids
+            .iter()
+            .filter_map(|id| account_identities.get(id))
+            .filter(|(_, viewer_host)| pr_host.is_some_and(|h| h == viewer_host))
+            .map(|(login, _)| login.as_str())
+            .collect();
+
         if let Some(mut entries) = reviewers_by_pr.remove(&pr.id) {
-            let pr_host = pr_owner_host_by_pr.get(&pr.id);
-            // Collect the (login, host) pairs that share the PR's host; these
-            // are the identities a reviewer's login can match to flip `is_you`.
-            // Other in-scope accounts (on different hosts) can't match: their
-            // login is a different identity even if the string coincides.
-            let viewer_logins_on_pr_host: Vec<&str> = pr
-                .account_ids
-                .iter()
-                .filter_map(|id| account_identities.get(id))
-                .filter(|(_, viewer_host)| pr_host.is_some_and(|h| h == viewer_host))
-                .map(|(login, _)| login.as_str())
-                .collect();
             for entry in entries.iter_mut() {
                 entry.is_you = viewer_logins_on_pr_host
                     .iter()
@@ -1183,8 +1201,69 @@ fn hydrate_reviewers(
             }
             pr.reviewers = entries;
         }
+
+        // ADR 0031 my-review-state. Precedence (highest wins):
+        // author > requested > changes-requested > approved > commented > none.
+        // Reads raw data (author_login, requested-reviewer membership, the
+        // viewer's own submitted-review entry) rather than the suppressed
+        // reviewer list, so a re-requested review still reads as `requested`.
+        // Host-gating is inherited from `viewer_logins_on_pr_host`.
+        let requested = requested_logins_by_pr.get(&pr.id);
+        pr.my_review_state = derive_my_review_state(
+            &pr.author_login,
+            &viewer_logins_on_pr_host,
+            requested,
+            &pr.reviewers,
+        );
     }
     Ok(())
+}
+
+/// Resolve [`MyReviewState`] for one PR from the viewer's authoring /
+/// review-request / submitted-review relationship.
+///
+/// - `viewer_logins_on_pr_host` is the set of the viewer's in-scope logins
+///   that sit on the PR's owning host (the host gate). An empty slice means no
+///   in-scope identity on the host, so the result is always `None`.
+/// - `requested_logins` is every login in `requested_reviewers` for the PR
+///   (unsuppressed), used to detect the `requested` obligation directly.
+/// - `reviewers` is the hydrated entry list; the viewer's own `is_you` entry
+///   carries the latest submitted state (`Approved` / `ChangesRequested` /
+///   `Commented`).
+///
+/// Precedence (highest wins): author > requested > changes-requested >
+/// approved > commented > none. A viewer who authored the PR reads `author`
+/// even if they also reviewed; a re-requested reviewer reads `requested` even
+/// if they have a stale submitted review.
+fn derive_my_review_state(
+    author_login: &str,
+    viewer_logins_on_pr_host: &[&str],
+    requested_logins: Option<&std::collections::HashSet<String>>,
+    reviewers: &[ReviewerEntry],
+) -> MyReviewState {
+    if viewer_logins_on_pr_host.contains(&author_login) {
+        return MyReviewState::Author;
+    }
+    let is_requested = requested_logins.is_some_and(|set| {
+        viewer_logins_on_pr_host
+            .iter()
+            .any(|login| set.contains(*login))
+    });
+    if is_requested {
+        return MyReviewState::Requested;
+    }
+    // The viewer's own submitted-review entry, if any. There is at most one
+    // per PR (the hydration dedupes to one row per (PR, login)). A `Pending`
+    // entry here is a requested reviewer that wasn't already caught above
+    // (no submitted review), which still maps to `Requested`.
+    let own = reviewers.iter().find(|entry| entry.is_you);
+    match own.map(|entry| entry.state) {
+        Some(ReviewerState::Pending) => MyReviewState::Requested,
+        Some(ReviewerState::ChangesRequested) => MyReviewState::ChangesRequested,
+        Some(ReviewerState::Approved) => MyReviewState::Approved,
+        Some(ReviewerState::Commented) => MyReviewState::Commented,
+        None => MyReviewState::None,
+    }
 }
 
 /// GraphQL review state strings -> internal `ReviewerState`. Unknown values

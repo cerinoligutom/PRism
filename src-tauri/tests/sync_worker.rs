@@ -2183,12 +2183,14 @@ async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
 async fn cycle_dispatches_no_triggers_when_no_transitions_happen() {
     let server = MockServer::start().await;
     let harness = setup_harness(&server);
-    let account = seed_account(&harness, 1, "alice");
+    // The viewer is `erin`: not the PR author (alice), not a thread
+    // participant (bob/carol), not mentioned, and not the fixture's requested
+    // reviewer (dave). Under the ADR 0031 roll-up no unit needs her and no role
+    // obligation applies, so the recompute writes `needs_attention = 0` (no
+    // change from baseline) and nothing dispatches.
+    let account = seed_account(&harness, 1, "erin");
     seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
 
-    // Alice has no review request on the fixture, no unresolved thread
-    // involvement, and no mentions - all four ADR 0015 signals miss. The
-    // recompute will write `needs_attention = 0` (no change from baseline).
     harness
         .db
         .lock()

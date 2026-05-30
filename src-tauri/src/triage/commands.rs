@@ -428,15 +428,17 @@ mod tests {
     }
 
     /// Seeds a baseline (account, repo, PR, relation row) fixture used by
-    /// every test below. `author_login` controls which signals fire on
-    /// recompute; defaults flip none. `unresolved_involved_threads` is the
-    /// number of unresolved threads with a viewer-authored comment to seed -
-    /// each one drives ADR-0016's query-time involvement test.
+    /// every test below. `author_login` controls which role obligations fire on
+    /// recompute; defaults flip none. `threads_needing_me` is the number of
+    /// unresolved threads to seed that need the viewer under the ADR 0031
+    /// roll-up: each carries a viewer comment at t=1 (involvement) plus a later
+    /// other-authored reply at t=2 (past the engagement watermark), so the (A)
+    /// branch fires.
     fn seed(
         db: &DbHandle,
         author_login: &str,
         pr_updated_at: i64,
-        unresolved_involved_threads: i64,
+        threads_needing_me: i64,
         review_decision: Option<&str>,
     ) {
         let conn = db.lock().unwrap();
@@ -461,16 +463,18 @@ mod tests {
             }
         ))
         .unwrap();
-        for i in 0..unresolved_involved_threads {
+        for i in 0..threads_needing_me {
             let thread_id = 5000 + i;
-            let comment_id = 6000 + i;
+            let own_comment_id = 6000 + i;
+            let other_comment_id = 6500 + i;
             conn.execute_batch(&format!(
                 "INSERT INTO review_threads
                     (id, pull_request_id, is_resolved, is_outdated, node_id)
                     VALUES ({thread_id}, 100, 0, 0, 'RT_seed_{i}');
                  INSERT INTO review_comments
-                    (id, review_thread_id, author_login, body, created_at)
-                    VALUES ({comment_id}, {thread_id}, 'alice', 'note', 1);"
+                    (id, review_thread_id, author_login, body, created_at) VALUES
+                    ({own_comment_id},   {thread_id}, 'alice', 'note',  1),
+                    ({other_comment_id}, {thread_id}, 'bob',   'reply', 2);"
             ))
             .unwrap();
         }
@@ -557,8 +561,10 @@ mod tests {
     #[test]
     fn mark_pr_read_recomputes_needs_attention_against_remaining_signals() {
         let db = fresh_db();
-        // Author == viewer + unresolved involved threads => signal 1 fires
-        // even after the read flip (mentions are zeroed, but threads remain).
+        // Two threads with a fresh other-authored reply keep the roll-up's (A)
+        // branch firing even after the read flip - the legacy mention counter
+        // is zeroed, but the conversation watermark still says the threads need
+        // me (ADR 0031).
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
         let (_, _, _, needs_attention) = read_triage(&db);
@@ -655,22 +661,22 @@ mod tests {
         let db = fresh_db();
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        // After mark_pr_read, signal 1 keeps needs_attention = 1.
+        // After mark_pr_read the (A) branch keeps needs_attention = 1 (the
+        // threads still carry a fresh other-authored reply).
         let (_, _, _, before) = read_triage(&db);
         assert_eq!(before, 1);
-        // Resolve every seeded thread so the recompute's signal-1 EXISTS
-        // misses and the only-thread-driven attention can clear.
+        // Delete the other-authored replies so no comment past my watermark
+        // remains; the units settle and the recompute clears the roll-up.
+        // (Resolving alone would NOT clear it - a resolved thread with a fresh
+        // reply still nags under ADR 0031.)
         {
             let conn = db.lock().unwrap();
-            conn.execute(
-                "UPDATE review_threads SET is_resolved = 1 WHERE pull_request_id = 100",
-                [],
-            )
-            .unwrap();
+            conn.execute("DELETE FROM review_comments WHERE author_login = 'bob'", [])
+                .unwrap();
         }
         invoke_mark_pr_unread(&db, 100, 1).unwrap();
         let (_, _, _, after) = read_triage(&db);
-        assert_eq!(after, 0, "no signals left after thread clears");
+        assert_eq!(after, 0, "no unit needs me after the other replies clear");
     }
 
     // ===== archive (M6 wave 1) =====
@@ -723,7 +729,8 @@ mod tests {
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
         // After mark_pr_read, the relation has read_at set, mentions = 0,
-        // and signal-1 keeps needs_attention = 1.
+        // and the (A) branch keeps needs_attention = 1 (the seeded threads
+        // still carry a fresh other-authored reply).
         let (read_at_before, _, _, attention_before) = read_triage(&db);
         assert!(read_at_before.is_some());
         assert_eq!(attention_before, 1);

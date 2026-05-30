@@ -31,6 +31,22 @@ export type ReviewerState =
   | "commented"
   | "pending";
 
+/**
+ * Mirrors `MyReviewState` in `src-tauri/src/dashboard/types.rs`. The viewer's
+ * own relationship to the PR for the my-review-state row slot, derived
+ * server-side because the client cannot express `"author"` / `"requested"` /
+ * `"none"` from the submitted-review projection alone (ADR 0031). Precedence
+ * (highest wins): author > requested > changes-requested > approved >
+ * commented > none.
+ */
+export type MyReviewState =
+  | "author"
+  | "requested"
+  | "changes-requested"
+  | "approved"
+  | "commented"
+  | "none";
+
 export type RowDensity = "comfortable" | "tight" | "roomy";
 
 export type DashboardGroup = "repo" | "org" | "none";
@@ -143,6 +159,11 @@ export interface DashboardPullRequest {
   readonly ci: CiSummary | null;
   readonly threads: ThreadsSummary | null;
   readonly reviewers: readonly ReviewerEntry[];
+  /** The viewer's own relationship to the PR for the my-review-state row slot.
+   * Derived server-side with a fixed precedence (author > requested >
+   * changes-requested > approved > commented > none); host-gated. See
+   * ADR 0031. */
+  readonly my_review_state: MyReviewState;
   readonly repo: RepoRef;
   /** Tracked accounts with a relation to this PR. Sorted ascending. Length
    * 1 in the single-account-filter path; 1..N in the unified path; empty
