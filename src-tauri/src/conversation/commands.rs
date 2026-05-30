@@ -278,6 +278,20 @@ fn mark_units_seen_in_tx(
                 "auto-mark-on-open advance_general_stream_seen failed",
             );
         }
+        // Opening the PR also clears the PR-level "unread" axis (the bold-title
+        // signal): advance the read watermark so the dashboard's unread
+        // derivation reads false. This is distinct from the per-unit seen marks
+        // above - the dot tracks "needs me", the bold title tracks "opened".
+        if let Err(e) =
+            crate::triage::units::advance_read_watermark(&tx, owner, pull_request_id, now)
+        {
+            tracing::warn!(
+                pull_request_id,
+                account = owner,
+                err = %e,
+                "auto-mark-on-open advance_read_watermark failed",
+            );
+        }
         // Recompute the roll-up so the row, badge, and sidebar reflect the
         // newly-seen units in the same transaction. ADR 0031: this path does
         // not dispatch toasts (the user is looking at the drawer); all
@@ -433,9 +447,10 @@ mod tests {
     #[test]
     fn auto_mark_on_open_marks_every_visible_unit_seen() {
         // Opening a conversation advances the seen watermark for every visible
-        // thread (keyed on node_id) and the general stream, and recomputes the
-        // roll-up to 0 - and crucially does NOT touch the PR-level read_at (the
-        // old auto-mark path is gone).
+        // thread (keyed on node_id) and the general stream, recomputes the
+        // roll-up to 0, and advances the PR-level read watermark so the unread
+        // (bold-title) axis clears on open too (ADR 0031's two-axis encoding:
+        // the dot tracks "needs me", the bold title tracks "opened").
         let db = seed_two_unit_pr();
         // Both threads + general are lit before open.
         {
@@ -469,10 +484,9 @@ mod tests {
             read_general_seen(&db).is_some(),
             "general stream marked seen"
         );
-        assert_eq!(
-            read_pr_level_read_at(&db),
-            None,
-            "the old PR-level read_at auto-mark is gone"
+        assert!(
+            read_pr_level_read_at(&db).is_some(),
+            "opening advances the PR read watermark so the unread bold-title axis clears on open"
         );
         assert_eq!(
             db.lock()

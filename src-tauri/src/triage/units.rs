@@ -67,6 +67,35 @@ pub fn advance_general_stream_seen(
     Ok(())
 }
 
+/// Advance the PR-level read watermark so the dashboard's `unread` derivation
+/// (`read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`) clears
+/// when the viewer opens the PR. This is the "I have opened the latest of this
+/// PR" axis (the bold-title signal), distinct from the per-unit "needs me"
+/// attention dot: opening a PR clears both - the units via the seen watermarks
+/// above, the unread via this. `read_pr_updated_at` snapshots the PR's current
+/// `updated_at` so a later update re-flags the row unread.
+///
+/// UPDATE-only (no UPSERT) so it is a no-op on a missing relation row, matching
+/// [`advance_general_stream_seen`]: opening a Team-view PR the viewer has no
+/// relation to must not manufacture one.
+pub fn advance_read_watermark(
+    conn: &Connection,
+    account_id: i64,
+    pull_request_id: i64,
+    read_at: i64,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET read_at = ?3,
+                read_pr_updated_at = (
+                    SELECT updated_at FROM pull_requests WHERE id = ?2
+                )
+          WHERE account_id = ?1 AND pull_request_id = ?2",
+        params![account_id, pull_request_id, read_at],
+    )?;
+    Ok(())
+}
+
 /// The per-row "does this notification's own unit still need me" predicate, as
 /// a `CASE WHEN ... THEN 1 ELSE 0 END` SQL expression correlated to a
 /// `notifications n` row. Resolves `n.unit_kind` / `n.unit_ref` against the
@@ -307,5 +336,58 @@ mod tests {
 
         advance_general_stream_seen(&conn, 1, 100, 90).unwrap();
         assert_eq!(read(&conn), Some(250), "MAX-only: stale mark ignored");
+    }
+
+    #[test]
+    fn advance_read_watermark_sets_read_at_snapshots_updated_at_and_skips_missing_row() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'o', 'r', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 500, 'main', 'feat');",
+        )
+        .unwrap();
+
+        // No relation row yet: the UPDATE is a clean no-op and manufactures
+        // nothing (matches the general-stream / Team-view PR semantic).
+        advance_read_watermark(&conn, 1, 100, 999).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "no relation row is manufactured on a missing row");
+
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0)",
+            [],
+        )
+        .unwrap();
+
+        advance_read_watermark(&conn, 1, 100, 999).unwrap();
+        let (read_at, read_pr_updated_at): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT read_at, read_pr_updated_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(read_at, Some(999), "read_at set to the passed clock");
+        assert_eq!(
+            read_pr_updated_at,
+            Some(500),
+            "read_pr_updated_at snapshots the PR's updated_at so a later update re-flags unread",
+        );
     }
 }
