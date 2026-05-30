@@ -1,9 +1,11 @@
 # 0015 - Triage state model: per-account read-state, mention detection, and "needs my attention" composite
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31)
 - **Date:** 2026-05-21
 - **Issue:** [#144](https://github.com/cerinoligutom/PRism/issues/144)
 - **Deciders:** @cerinoligutom
+
+> **Superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31).** The four-signal `needs_attention` composite is replaced by the conversation-unit roll-up: the author-only gate on signal 1 is removed and the predicate is applied to the conversation surface too. `mentioned_count_unread` is retired as a standalone counter in favour of a per-comment `mentions_viewer` bit folded into unit involvement. Read-state moves from the PR-level `read_at` watermark to per-conversation-unit engagement watermarks. The original decisions below stand as the historical record.
 
 ## Context
 

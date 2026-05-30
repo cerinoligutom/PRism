@@ -1,9 +1,11 @@
 # 0028 - Persistent notifications inbox: data model, dispatch, read/unread, retention
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31)
 - **Date:** 2026-05-25
 - **Issue:** [#381](https://github.com/cerinoligutom/PRism/issues/381)
 - **Deciders:** @cerinoligutom
+
+> **Superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31).** Inbox read-state is derived per row against the row's own conversation-unit watermark rather than an independent `read_at` (which narrows to an orphan-only fallback for pruned PRs). Rows gain `unit_kind` / `unit_ref` / `deep_link_url` so a notification deep-links the exact thread or general stream and resolves its own unread state. Dispatch becomes edge-with-re-arm so the inbox stops being once-per-PR. The original decisions below stand as the historical record.
 
 ## Context
 
