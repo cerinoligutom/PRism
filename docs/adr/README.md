@@ -22,9 +22,9 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0012](0012-threads-bar-four-state-and-outdated-counted.md) | Threads-bar four-state redesign and outdated counted in the denominator | Accepted | [#98](https://github.com/cerinoligutom/PRism/issues/98) |
 | [0013](0013-user-avatars-cache.md) | User avatar caching via a `users` table | Accepted | [#99](https://github.com/cerinoligutom/PRism/issues/99) |
 | [0014](0014-comment-markdown-rendering.md) | Comment markdown rendering via GitHub `bodyHTML` + Shiki client highlighting | Accepted | [#138](https://github.com/cerinoligutom/PRism/issues/138) |
-| [0015](0015-triage-state-model.md) | Triage state model: per-account read-state, mention detection, and "needs my attention" composite | Accepted | [#144](https://github.com/cerinoligutom/PRism/issues/144) |
+| [0015](0015-triage-state-model.md) | Triage state model: per-account read-state, mention detection, and "needs my attention" composite | Accepted (0031 in part) | [#144](https://github.com/cerinoligutom/PRism/issues/144) |
 | [0016](0016-unified-multi-account-dashboard.md) | Unified multi-account dashboard: dedupe-and-merge, query-time threads rollup, per-account failure isolation | Accepted | [#163](https://github.com/cerinoligutom/PRism/issues/163) |
-| [0017](0017-desktop-notifications.md) | Desktop notifications: triggers, app-wide preferences, macOS-only dock badge, deferred permission prompt | Accepted | [#188](https://github.com/cerinoligutom/PRism/issues/188) |
+| [0017](0017-desktop-notifications.md) | Desktop notifications: triggers, app-wide preferences, macOS-only dock badge, deferred permission prompt | Accepted (0031 in part) | [#188](https://github.com/cerinoligutom/PRism/issues/188) |
 | [0018](0018-archive-and-ttl.md) | Archive bucket: per-(account, PR) `archived_at`, 30-day inactivity TTL, manual + auto, reversible | Accepted | [#189](https://github.com/cerinoligutom/PRism/issues/189) |
 | [0019](0019-error-handling-and-reauth-flow.md) | Error handling: per-store `lastError`, no toast for failures, self-healing reauth | Accepted | [#287](https://github.com/cerinoligutom/PRism/issues/287) |
 | [0020](0020-settings-persistence-boundary.md) | Settings persistence: SQLite for worker-visible state, localStorage for device-local UI prefs | Accepted | [#287](https://github.com/cerinoligutom/PRism/issues/287) |
@@ -35,9 +35,10 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0025](0025-in-app-changelog.md) | In-app changelog: bundled `CHANGELOG.md`, last-seen version gate, single concatenated dialog | Accepted | [#302](https://github.com/cerinoligutom/PRism/issues/302) |
 | [0026](0026-tracing-adoption.md) | Backend logging via `tracing` to stdout | Accepted | [#334](https://github.com/cerinoligutom/PRism/issues/334) |
 | [0027](0027-timeline-event-expansion.md) | Expanding the StatusTimelineTab event set | Accepted | [#342](https://github.com/cerinoligutom/PRism/issues/342) |
-| [0028](0028-persistent-notifications-inbox.md) | Persistent notifications inbox | Accepted | [#378](https://github.com/cerinoligutom/PRism/issues/378) |
+| [0028](0028-persistent-notifications-inbox.md) | Persistent notifications inbox | Accepted (0031 in part) | [#378](https://github.com/cerinoligutom/PRism/issues/378) |
 | [0029](0029-sync-owns-conversation-persistence.md) | Sync owns conversation persistence (supersedes 0010's lazy-hydration decision) | Accepted | [#422](https://github.com/cerinoligutom/PRism/issues/422) |
 | [0030](0030-ci-checks-json-column.md) | Per-check CI detail stored as a denormalised JSON column | Accepted | [#426](https://github.com/cerinoligutom/PRism/issues/426) |
+| [0031](0031-conversation-unit-attention-and-rearm-dispatch.md) | Conversation-unit attention model, derived inbox read-state, and edge-with-re-arm dispatch | Accepted | [#428](https://github.com/cerinoligutom/PRism/issues/428) |
 
 ## Statuses
 

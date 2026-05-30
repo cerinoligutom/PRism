@@ -1,9 +1,11 @@
 # 0017 - Desktop notifications: triggers, app-wide preferences, macOS-only dock badge, deferred permission prompt
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31)
 - **Date:** 2026-05-22
 - **Issue:** [#188](https://github.com/cerinoligutom/PRism/issues/188)
 - **Deciders:** @cerinoligutom
+
+> **Superseded in part by [ADR 0031](0031-conversation-unit-attention-and-rearm-dispatch.md) (2026-05-31).** The dock badge counts the conversation-unit roll-up (not `needs_attention` as originally framed, and not the interim unread predicate the M6 cut moved to). The two trigger toggles collapse to a single `notify_on_needs_attention` that is now actually read by `decide_dispatch` (it was dead). Dispatch is edge-with-re-arm rather than pure edge. The original decisions below stand as the historical record.
 
 ## Context
 

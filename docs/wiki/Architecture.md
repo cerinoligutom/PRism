@@ -67,11 +67,13 @@ Any PR the user touches (author, assignee, reviewer, commenter, mentionee, react
 
 ## Notifications
 
-Both desktop (native OS toasts) and in-app (badges). In-app attention dots (sidebar, per view) are the always-on signal; native toasts are opt-in via two toggles (PR newly needs your attention, you were mentioned) under a master switch. Defaults: master OFF, both triggers ON once the master is enabled. The OS permission prompt is deferred until the first toast would fire, so users see the ask in context rather than at launch.
+PRism's in-app attention dots, the macOS dock badge, and the notifications inbox chip all read one per-PR "needs me" roll-up derived from per-conversation-unit watermarks, so the three counts agree by construction (the inbox resolves each row against its own unit). A conversation unit (a review thread, or the PR's general comment stream) needs you when someone other than you posts activity involving you, after you last engaged it: you commented in it, you were mentioned, or you authored the PR. Reading or replying clears it; new activity re-arms it. Resolved threads still nag on a post-resolution reply. Role obligations (you are a requested reviewer, or your PR has changes requested) are PR-level and clear from GitHub state, not from marking seen.
 
-OS dock / taskbar badge support: macOS only in v1 (numeric badge from total "needs your attention" count across in-scope accounts). Windows and Linux: documented gap, post-v1.
+Native OS toasts are edge-with-re-arm (per-PR dedup) and opt-in via a single "Notify when a PR needs me" toggle under a master switch. The OS permission prompt is deferred until the first toast would fire, so users see the ask in context rather than at launch. An in-app "How signals work" page explains each signal and what triggers it.
 
-See PRD §5.6 and ADR 0017.
+OS dock / taskbar badge support: macOS only in v1 (numeric badge from the same roll-up across in-scope accounts). Windows and Linux: documented gap, post-v1.
+
+See PRD §5.6, ADR 0017, and ADR 0031.
 
 ## Deep links
 

@@ -168,6 +168,15 @@ git commit -m "sync from docs/wiki@${SHA}"
 git push
 ```
 
+## Signals and notifications
+
+The attention/notification model is one source of truth (ADR-0031): a per-conversation-unit engagement watermark feeds the PR-row indicator, the dock badge, the sidebar dots, and the inbox, so they agree by construction. Two anti-drift rules apply to any change in that model:
+
+- The "How signals work" page (`src/views/HowSignalsWorkView.vue`) renders the same live icon components the rows use and pulls every signal label from `src/components/signals/signalCopy.ts`. Change a signal's label in `signalCopy.ts` only — both the tooltip and the guide pick it up. Don't hardcode signal copy anywhere else.
+- Changing a trigger or the meaning of a signal (the unit-needs-me predicate, the role obligations, the dispatch re-arm policy, or what clears a unit) means updating the model prose in `HowSignalsWorkView.vue` and, if the user-facing model changed, the wiki Architecture Notifications section, in the same PR. Flag wiki republishing in the PR description (see the Wiki section above).
+
+Reference ADR-0017 and ADR-0031.
+
 ## Updater manifest
 
 The Tauri updater consumes a `latest.json` manifest published on GitHub Pages. ADR-0024 owns the design; [`.github/workflows/update-manifest.yml`](.github/workflows/update-manifest.yml) regenerates the manifest whenever a draft Release is published (gate 3 of ADR-0023's review chain).
