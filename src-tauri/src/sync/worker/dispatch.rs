@@ -1,7 +1,9 @@
 //! Notification dispatch: format the per-PR triggers produced by the post-write
 //! triage recompute into [`crate::notify::Notification`] payloads and hand them
-//! to the sink. The sink owns master-switch + per-trigger gating + permission
-//! state (ADR 0017 decision 5); the worker only forwards.
+//! to the sink. The sink's [`crate::notify::runtime::decide_dispatch`] gates
+//! every dispatch on the master switch, then the `notify_on_needs_attention`
+//! toggle, then the OS permission state (ADR 0017 decision 5, ADR 0031); the
+//! worker only formats and forwards.
 
 use crate::db::DbHandle;
 use crate::notify::{format_trigger, NotificationSinkHandle, NotificationTrigger};

@@ -1,22 +1,20 @@
 //! Shared SQL helpers for the triage module.
 //!
-//! Wave 1 left this module empty. Wave 2-A lands the
-//! [`recompute_needs_attention`] helper used by `mark_pr_read` /
-//! `mark_pr_unread` (this module's command bodies) and intentionally
-//! duplicated by Wave 2-B's per-cycle recompute inside
-//! `sync::worker::write_pr_updates` so the two write paths stay decoupled
-//! across the parallel implementation waves. See `docs/contracts/triage-ux.md`
-//! ("Sync cycle changes") and ADR 0015 ("Composite formula") for the
-//! single source of truth for the four input signals.
+//! [`recompute_needs_attention`] backs the read/unread commands and the
+//! conversation hydrator; the per-cycle sync recompute in
+//! `sync::worker::triage_recompute` and the bulk [`mark_view_read`] recompute
+//! reuse the same four-signal formula via [`needs_attention_case_expr`], the
+//! single host-aware, row-correlated builder. See `docs/contracts/triage-ux.md`
+//! ("Sync cycle changes"), ADR 0015 ("Composite formula"), and ADR 0031 (the
+//! consolidation) for the single source of truth for the four input signals.
 //!
-//! Wave 2-D additionally lands the per-chip count SQL consumed by
-//! [`crate::triage::commands::list_filter_chip_counts`]. The five counts share
-//! the same view-scoped FROM clause; each chip's predicate is documented in
-//! [`crate::triage::types::ChipKey`].
+//! The per-chip count SQL consumed by
+//! [`crate::triage::commands::list_filter_chip_counts`] also lives here. The
+//! five counts share the same view-scoped FROM clause; each chip's predicate is
+//! documented in [`crate::triage::types::ChipKey`].
 //!
-//! Wave 2-C extends this module with [`count_sidebar_attention`], the
-//! per-view COUNT(*) that backs the sidebar count-chip `.has-attention`
-//! boost.
+//! [`count_sidebar_attention`] is the per-view COUNT(*) that backs the sidebar
+//! count-chip `.has-attention` boost.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
@@ -264,20 +262,85 @@ pub fn archive_retention_sweep(conn: &Connection) -> Result<usize, rusqlite::Err
     )
 }
 
-/// Recompute the `pull_request_viewer_relations.needs_attention` boolean for
-/// one `(account_id, pull_request_id)` pair using the four ADR-0015 signals:
+/// The four-signal `needs_attention` formula as a `CASE WHEN ... THEN 1 ELSE 0
+/// END` SQL expression, host-aware and correlated to the surrounding
+/// `pull_request_viewer_relations rel` row. Every caller (the bulk command
+/// recompute, the single-pair command recompute, and the per-cycle sync
+/// recompute) embeds this verbatim so the four ADR-0015 signals never drift
+/// apart again (ADR 0031).
+///
+/// The four signals (ADR 0015):
 ///
 /// 1. Viewer authored the PR AND at least one unresolved thread is involved
-///    by the viewer (a `review_comments` row authored by the viewer's
-///    account login on an unresolved `review_threads` row). Per ADR 0016
-///    the involvement test reads `review_threads` / `review_comments`
-///    directly instead of the retired `pr.threads_unresolved_involved`
-///    column.
+///    by the viewer (a `review_comments` row authored by the viewer's login on
+///    an unresolved `review_threads` row). Per ADR 0016 the involvement test
+///    reads `review_threads` / `review_comments` directly instead of the
+///    retired `pr.threads_unresolved_involved` column.
 /// 2. Viewer is in `requested_reviewers` for the PR (presence implies pending;
-///    the table never stores submitted reviews - those flow through
-///    `reviews`).
+///    the table never stores submitted reviews - those flow through `reviews`).
 /// 3. `mentioned_count_unread > 0` for the (account, PR) pair.
 /// 4. Viewer authored the PR AND `review_decision = 'CHANGES_REQUESTED'`.
+///
+/// Host isolation (issue #169, ADR 0016 / 0031): GitHub logins are unique per
+/// host, not globally. Signals 1, 2, and 4 join the PR's owning host
+/// (`repos -> accounts`) and require it to equal the viewer's host before a
+/// login-string match counts. A viewer with the same login on two hosts (e.g.
+/// `me` on github.com and `me` on a GHES instance) therefore never inherits the
+/// other identity's involvement. Signal 3 reads the relation row's own
+/// per-(account, PR) counter, which the host-aware mention scanner already
+/// gated, so it needs no extra host guard here.
+///
+/// The expression references only `rel.account_id`, `rel.pull_request_id`, and
+/// `rel.mentioned_count_unread`, so any caller can wrap it in its own WHERE
+/// scope (a single pair, an IN-set of PR ids, or every row).
+pub(crate) fn needs_attention_case_expr() -> &'static str {
+    "CASE WHEN (
+        EXISTS (
+            SELECT 1
+              FROM pull_requests pr
+              JOIN accounts viewer ON viewer.id = rel.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+              JOIN review_threads t ON t.pull_request_id = pr.id
+             WHERE pr.id = rel.pull_request_id
+               AND pr.author_login = viewer.login
+               AND pr_host_acc.host = viewer.host
+               AND t.is_resolved = 0
+               AND EXISTS (
+                   SELECT 1 FROM review_comments c
+                    WHERE c.review_thread_id = t.id
+                      AND c.author_login = viewer.login
+               )
+        )
+        OR EXISTS (
+            SELECT 1
+              FROM requested_reviewers rr
+              JOIN pull_requests pr ON pr.id = rr.pull_request_id
+              JOIN accounts viewer ON viewer.id = rel.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE rr.pull_request_id = rel.pull_request_id
+               AND rr.login = viewer.login
+               AND pr_host_acc.host = viewer.host
+        )
+        OR rel.mentioned_count_unread > 0
+        OR EXISTS (
+            SELECT 1
+              FROM pull_requests pr
+              JOIN accounts viewer ON viewer.id = rel.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE pr.id = rel.pull_request_id
+               AND pr.author_login = viewer.login
+               AND pr_host_acc.host = viewer.host
+               AND pr.review_decision = 'CHANGES_REQUESTED'
+        )
+    ) THEN 1 ELSE 0 END"
+}
+
+/// Recompute the `pull_request_viewer_relations.needs_attention` boolean for
+/// one `(account_id, pull_request_id)` pair using the four ADR-0015 signals via
+/// [`needs_attention_case_expr`].
 ///
 /// The UPDATE is a no-op when the relation row doesn't exist for the pair
 /// (Tracked-view PRs never get a row - see contract). Callers that need the row
@@ -319,44 +382,13 @@ pub fn recompute_needs_attention(
         .optional()?;
 
     conn.execute(
-        "UPDATE pull_request_viewer_relations AS rel
-            SET needs_attention = (
-                SELECT CASE WHEN
-                    EXISTS (
-                        SELECT 1
-                          FROM pull_requests pr
-                          JOIN accounts a ON a.id = rel.account_id
-                          JOIN review_threads t ON t.pull_request_id = pr.id
-                         WHERE pr.id = rel.pull_request_id
-                           AND pr.author_login = a.login
-                           AND t.is_resolved = 0
-                           AND EXISTS (
-                               SELECT 1 FROM review_comments c
-                                JOIN accounts a2 ON a2.login = c.author_login
-                                WHERE c.review_thread_id = t.id
-                                  AND a2.id = rel.account_id
-                           )
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                          FROM requested_reviewers rr
-                          JOIN accounts a ON a.id = rel.account_id
-                         WHERE rr.pull_request_id = rel.pull_request_id
-                           AND rr.login = a.login
-                    )
-                    OR rel.mentioned_count_unread > 0
-                    OR EXISTS (
-                        SELECT 1
-                          FROM pull_requests pr
-                          JOIN accounts a ON a.id = rel.account_id
-                         WHERE pr.id = rel.pull_request_id
-                           AND pr.author_login = a.login
-                           AND pr.review_decision = 'CHANGES_REQUESTED'
-                    )
-                THEN 1 ELSE 0 END
-            )
-          WHERE rel.account_id = ?1
-            AND rel.pull_request_id = ?2",
+        &format!(
+            "UPDATE pull_request_viewer_relations AS rel
+                SET needs_attention = ({case_expr})
+              WHERE rel.account_id = ?1
+                AND rel.pull_request_id = ?2",
+            case_expr = needs_attention_case_expr(),
+        ),
         params![account_id, pull_request_id],
     )?;
 
@@ -497,52 +529,19 @@ pub fn mark_view_read(
     );
     conn.execute(&read_flip_sql, params_from_iter(base_params.iter()))?;
 
-    // Bulk needs_attention recompute against the same row set. Same CASE
-    // WHEN as `recompute_needs_attention` so the four ADR-0015 signals stay
-    // in step. The mention counter just dropped to zero, so signal 3 will
-    // miss; signals 1, 2, and 4 still resolve from the relation row's
-    // surrounding data.
+    // Bulk needs_attention recompute against the same row set, host-aware via
+    // the shared `needs_attention_case_expr` builder so the four ADR-0015
+    // signals stay in step with the single-pair and sync paths (ADR 0031). The
+    // mention counter just dropped to zero, so signal 3 will miss; signals 1,
+    // 2, and 4 still resolve from the relation row's surrounding data.
     let recompute_sql = format!(
         "UPDATE pull_request_viewer_relations AS rel
-            SET needs_attention = (
-                SELECT CASE WHEN
-                    EXISTS (
-                        SELECT 1
-                          FROM pull_requests pr
-                          JOIN accounts a ON a.id = rel.account_id
-                          JOIN review_threads t ON t.pull_request_id = pr.id
-                         WHERE pr.id = rel.pull_request_id
-                           AND pr.author_login = a.login
-                           AND t.is_resolved = 0
-                           AND EXISTS (
-                               SELECT 1 FROM review_comments c
-                                JOIN accounts a2 ON a2.login = c.author_login
-                                WHERE c.review_thread_id = t.id
-                                  AND a2.id = rel.account_id
-                           )
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                          FROM requested_reviewers rr
-                          JOIN accounts a ON a.id = rel.account_id
-                         WHERE rr.pull_request_id = rel.pull_request_id
-                           AND rr.login = a.login
-                    )
-                    OR rel.mentioned_count_unread > 0
-                    OR EXISTS (
-                        SELECT 1
-                          FROM pull_requests pr
-                          JOIN accounts a ON a.id = rel.account_id
-                         WHERE pr.id = rel.pull_request_id
-                           AND pr.author_login = a.login
-                           AND pr.review_decision = 'CHANGES_REQUESTED'
-                    )
-                THEN 1 ELSE 0 END
-            )
+            SET needs_attention = ({case_expr})
           WHERE rel.pull_request_id IN (
               SELECT DISTINCT pr.id {in_clause}
           ) {account_scope}
-            {archive_filter}"
+            {archive_filter}",
+        case_expr = needs_attention_case_expr(),
     );
     conn.execute(&recompute_sql, params_from_iter(base_params.iter()))?;
 
@@ -2941,5 +2940,140 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rel_count, 0, "mark_view_read must not UPSERT");
+    }
+
+    // ===== command-path host isolation (issue #169, #430, ADR 0031) =====
+    //
+    // Before the ADR 0031 consolidation the command-path recompute matched the
+    // viewer's login string without checking the PR's owning host, so a viewer
+    // with the same login on two hosts could leak involvement across hosts.
+    // These tests pin the host-aware behaviour the consolidated builder now
+    // gives the command path.
+
+    /// Seed a PR owned by account 1 (github.com, login `me`) plus a second
+    /// account on a different host that shares the same login. Both accounts
+    /// get a relation row to the github.com PR so the command-path recompute
+    /// can run for either. Signal-bearing activity (the requested reviewer,
+    /// the involved unresolved thread, the CHANGES_REQUESTED decision) is
+    /// seeded host-blind against login `me`.
+    fn seed_command_path_cross_host_collision(
+        conn: &Connection,
+        author_login: &str,
+        review_decision: Option<&str>,
+        unresolved_involved_thread: bool,
+    ) {
+        conn.execute_batch(&format!(
+            "INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'github', 'github.com', 'me', 0),
+                (2, 'ghe', 'github.acme.corp', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref, review_decision)
+                VALUES (100, 10, 1, 't', 'open', 0, '{author_login}',
+                        0, 0, 'main', 'feat', {review_decision_sql});
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at)
+                VALUES (1, 100, 0, 0, 0, 0), (2, 100, 0, 0, 0, 0);",
+            review_decision_sql = match review_decision {
+                Some(s) => format!("'{s}'"),
+                None => "NULL".to_string(),
+            }
+        ))
+        .unwrap();
+        if unresolved_involved_thread {
+            conn.execute_batch(
+                "INSERT INTO review_threads
+                    (id, pull_request_id, is_resolved, is_outdated, node_id)
+                    VALUES (5001, 100, 0, 0, 'RT_xhost');
+                 INSERT INTO review_comments
+                    (id, review_thread_id, author_login, body, created_at)
+                    VALUES (6001, 5001, 'me', 'note', 1);",
+            )
+            .unwrap();
+        }
+    }
+
+    fn read_needs_attention_for(conn: &Connection, account_id: i64, pr_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT needs_attention FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn recompute_does_not_leak_authored_thread_signal_across_hosts() {
+        // PR is authored by `me` on github.com with an unresolved involved
+        // thread. Recomputing the github.com relation flags it (signal 1);
+        // recomputing the same-login GHES relation must stay 0 - account 2's
+        // identity does not own this PR.
+        let conn = fresh_db();
+        seed_command_path_cross_host_collision(&conn, "me", None, true);
+
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention_for(&conn, 1, 100),
+            1,
+            "github.com viewer authored the PR; signal 1 fires"
+        );
+        assert_eq!(
+            read_needs_attention_for(&conn, 2, 100),
+            0,
+            "GHES viewer shares the login but not the host; must not leak"
+        );
+    }
+
+    #[test]
+    fn recompute_does_not_leak_requested_reviewer_signal_across_hosts() {
+        let conn = fresh_db();
+        seed_command_path_cross_host_collision(&conn, "someone-else", None, false);
+        conn.execute(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user')",
+            [],
+        )
+        .unwrap();
+
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention_for(&conn, 1, 100),
+            1,
+            "the requested reviewer is the github.com identity"
+        );
+        assert_eq!(
+            read_needs_attention_for(&conn, 2, 100),
+            0,
+            "cross-host login match must not flag the GHES relation"
+        );
+    }
+
+    #[test]
+    fn recompute_does_not_leak_changes_requested_signal_across_hosts() {
+        let conn = fresh_db();
+        seed_command_path_cross_host_collision(&conn, "me", Some("CHANGES_REQUESTED"), false);
+
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+
+        assert_eq!(
+            read_needs_attention_for(&conn, 1, 100),
+            1,
+            "github.com viewer authored the CHANGES_REQUESTED PR"
+        );
+        assert_eq!(
+            read_needs_attention_for(&conn, 2, 100),
+            0,
+            "CHANGES_REQUESTED on a github.com PR does not make the GHES \
+             identity its author"
+        );
     }
 }

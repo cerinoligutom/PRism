@@ -154,6 +154,14 @@ pub(crate) fn decide_dispatch(db: &DbHandle, asker: &dyn PermissionAsker) -> boo
         // keeps doing its job (ADR 0017 decision drivers).
         return false;
     }
+    if !settings.notify_on_needs_attention {
+        // Per-trigger toggle off (ADR 0031 collapses the two per-trigger
+        // toggles onto this one; `notify_on_mention` is left vestigial). The
+        // user opted out of toast dispatch while keeping the master switch on,
+        // so skip without touching the OS permission state. Checked after the
+        // master switch so the master still wins when both are off.
+        return false;
+    }
     match settings.notification_permission_state {
         NotificationPermissionState::Granted => true,
         NotificationPermissionState::Unprompted => {

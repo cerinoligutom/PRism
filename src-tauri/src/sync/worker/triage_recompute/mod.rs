@@ -160,62 +160,21 @@ pub(super) fn scan_mentions_and_recompute_attention(
         params![new_mentions, now, account_id, pr_id],
     )?;
 
-    // Composite recompute. Mirrors the formula in ADR 0015. Short-lived
-    // duplication with `triage::query::recompute_needs_attention` (M4-A);
-    // ADR 0015 calls out the intentional overlap.
-    //
-    // Identity match uses the viewer's `(login, host)` pair against the PR's
-    // owning host. The early-exit above guarantees `viewer_host` equals the
-    // PR's host, so the EXISTS subqueries only need to verify `pr.author_login
-    // = ?3` and `rr.login = ?3` (login string equality) against PR rows on
-    // the matching host - captured by the `pr_host_acc.host = ?4` join below.
-    //
-    // Signal #1 (`threads_unresolved_involved > 0` on an authored PR) reads
-    // `review_threads` + `review_comments` directly per ADR 0016 - the
-    // pre-aggregated column went away with the dashboard rollup. The
-    // involvement test scopes by `a.id = ?1` (the active account), matching
-    // the dashboard query's single-account semantics.
+    // Composite recompute via the shared host-aware, row-correlated builder
+    // in `triage::query` so this per-cycle path and the command paths run one
+    // formula (ADR 0031). The WHERE scopes the UPDATE to this single
+    // `(account_id, pull_request_id)` pair; the builder resolves the viewer's
+    // `(login, host)` from `accounts viewer ON viewer.id = rel.account_id` and
+    // matches it against the PR's owning host, so the early-exit above and the
+    // formula agree on host isolation.
     tx.execute(
-        "UPDATE pull_request_viewer_relations
-            SET needs_attention = CASE WHEN (
-                EXISTS (
-                    SELECT 1 FROM pull_requests pr
-                     JOIN repos r ON r.id = pr.repo_id
-                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
-                     JOIN review_threads t ON t.pull_request_id = pr.id
-                     WHERE pr.id = ?2
-                       AND pr.author_login = ?3
-                       AND pr_host_acc.host = ?4
-                       AND t.is_resolved = 0
-                       AND EXISTS (
-                           SELECT 1 FROM review_comments c
-                            JOIN accounts a ON a.login = c.author_login
-                            WHERE c.review_thread_id = t.id
-                              AND a.id = ?1
-                       )
-                )
-                OR EXISTS (
-                    SELECT 1 FROM requested_reviewers rr
-                     JOIN pull_requests pr ON pr.id = rr.pull_request_id
-                     JOIN repos r ON r.id = pr.repo_id
-                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
-                     WHERE rr.pull_request_id = ?2
-                       AND rr.login = ?3
-                       AND pr_host_acc.host = ?4
-                )
-                OR (mentioned_count_unread > 0)
-                OR EXISTS (
-                    SELECT 1 FROM pull_requests pr
-                     JOIN repos r ON r.id = pr.repo_id
-                     JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
-                     WHERE pr.id = ?2
-                       AND pr.author_login = ?3
-                       AND pr_host_acc.host = ?4
-                       AND pr.review_decision = 'CHANGES_REQUESTED'
-                )
-            ) THEN 1 ELSE 0 END
-          WHERE account_id = ?1 AND pull_request_id = ?2",
-        params![account_id, pr_id, viewer_login, viewer_host],
+        &format!(
+            "UPDATE pull_request_viewer_relations AS rel
+                SET needs_attention = ({case_expr})
+              WHERE rel.account_id = ?1 AND rel.pull_request_id = ?2",
+            case_expr = crate::triage::query::needs_attention_case_expr(),
+        ),
+        params![account_id, pr_id],
     )?;
 
     // Compare to the pre-write snapshot. A missing relation row before the
