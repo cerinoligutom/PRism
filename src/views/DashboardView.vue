@@ -21,6 +21,8 @@ import PRismPopover from "@/components/ui/PRismPopover.vue";
 import PRismIconLegend from "@/components/ui/PRismIconLegend.vue";
 import PRismCallout from "@/components/ui/PRismCallout.vue";
 import ThreadStateIcon from "@/components/conversation/icons/ThreadStateIcon.vue";
+import MyReviewStateIcon from "@/components/dashboard/icons/MyReviewStateIcon.vue";
+import { SIGNAL_COPY } from "@/components/signals/signalCopy";
 import PullRequestDrawer from "@/components/conversation/PullRequestDrawer.vue";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAppearanceStore } from "@/stores/appearance";
@@ -178,13 +180,20 @@ const isFilteredEmpty = computed<boolean>(() => {
  */
 const rowLegendSections = [
   {
-    title: "PR state",
+    title: "Attention",
+    rows: [{ id: "needs", label: SIGNAL_COPY.attention.label }],
+  },
+  {
+    title: "Your review",
     rows: [
-      { id: "needs", label: "Needs your review" },
-      { id: "changes", label: "Changes requested" },
-      { id: "approved", label: "Approved" },
-      { id: "draft", label: "Draft" },
-      { id: "stale", label: "Stale (no recent activity)" },
+      { id: "review-author", label: SIGNAL_COPY.myReview.author.label },
+      { id: "review-requested", label: SIGNAL_COPY.myReview.requested.label },
+      {
+        id: "review-changes-requested",
+        label: SIGNAL_COPY.myReview["changes-requested"].label,
+      },
+      { id: "review-approved", label: SIGNAL_COPY.myReview.approved.label },
+      { id: "review-commented", label: SIGNAL_COPY.myReview.commented.label },
     ],
   },
   {
@@ -579,38 +588,26 @@ watch(
               :min-width="240"
             >
               <template #icon="{ id }">
-                <span v-if="id === 'needs'" class="pr-row__state row-strip-needs" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
-                    <circle cx="8" cy="8" r="2" />
-                  </svg>
+                <span v-if="id === 'needs'" class="dashboard-legend__attention-swatch" aria-hidden="true">
+                  <span class="dashboard-legend__attention-dot"></span>
                 </span>
-                <span v-else-if="id === 'changes'" class="pr-row__state row-strip-changes" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="8" cy="8" r="6.25" />
-                    <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
-                  </svg>
+                <span v-else-if="id === 'review-author'" class="pr-row__state my-review--author" aria-hidden="true">
+                  <MyReviewStateIcon state="author" />
                 </span>
-                <span v-else-if="id === 'approved'" class="pr-row__state row-strip-approved" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="8" cy="8" r="6.25" />
-                    <path d="M5.25 8.25l2 2 3.5-4" />
-                  </svg>
+                <span v-else-if="id === 'review-requested'" class="pr-row__state my-review--requested" aria-hidden="true">
+                  <MyReviewStateIcon state="requested" />
                 </span>
-                <span v-else-if="id === 'draft'" class="pr-row__state row-strip-draft" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
-                    <path d="M10 4l2 2" />
-                  </svg>
+                <span v-else-if="id === 'review-changes-requested'" class="pr-row__state my-review--changes-requested" aria-hidden="true">
+                  <MyReviewStateIcon state="changes-requested" />
                 </span>
-                <span v-else-if="id === 'stale'" class="pr-row__state row-strip-stale" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="8" cy="8" r="6.25" />
-                    <path d="M8 4.5V8l2.25 1.5" />
-                  </svg>
+                <span v-else-if="id === 'review-approved'" class="pr-row__state my-review--approved" aria-hidden="true">
+                  <MyReviewStateIcon state="approved" />
+                </span>
+                <span v-else-if="id === 'review-commented'" class="pr-row__state my-review--commented" aria-hidden="true">
+                  <MyReviewStateIcon state="commented" />
                 </span>
                 <span v-else-if="id === 'unread'" class="dashboard-legend__unread-swatch" aria-hidden="true">
-                  <span class="dashboard-legend__unread-dot"></span>
+                  <span class="dashboard-legend__unread-title">Aa</span>
                 </span>
                 <span v-else-if="id === 'unresolved-uninvolved'" class="threads-bar__badge threads-bar__badge--unresolved-uninvolved" aria-hidden="true">
                   <ThreadStateIcon state="unresolved" :size="12" />
@@ -1158,8 +1155,9 @@ watch(
   `ThreadsBar.vue`'s own unscoped block (loaded on every PR row).
 -->
 <style>
-/* Unread cue mirrors the dashboard row's 10px column + 7px centred accent
+/* Attention cue mirrors the dashboard row's 10px column + 7px centred accent
  * dot so the swatch looks like the real thing. */
+.dashboard-legend__attention-swatch,
 .dashboard-legend__unread-swatch {
   width: 22px;
   height: 22px;
@@ -1169,10 +1167,19 @@ watch(
   flex-shrink: 0;
 }
 
-.dashboard-legend__unread-dot {
+.dashboard-legend__attention-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--accent-strong);
+}
+
+/* Unread now reads as a bolder title (the dot is the attention affordance,
+ * ADR 0031), so the swatch shows weighted glyphs rather than a dot. */
+.dashboard-legend__unread-title {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text-strong);
+  line-height: 1;
 }
 </style>

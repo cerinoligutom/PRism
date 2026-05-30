@@ -75,8 +75,12 @@
   margin-left: 0;
 }
 
-/* ─── PR row state badge ───────────────────────────────────────────────── */
+/* ─── PR row my-review-state slot ──────────────────────────────────────── */
 
+/* The leading state cell now carries the viewer's own review relationship to
+ * the PR (`MyReviewStateIcon`) rather than the dissolved priority strip
+ * (ADR 0031). Shape + centring stay shared so the dashboard legend renders the
+ * same swatch; colour comes from the `.my-review--*` modifiers below. */
 .pr-row__state {
   width: 22px;
   height: 22px;
@@ -93,33 +97,28 @@
   height: 14px;
 }
 
-.pr-row__state.row-strip-none {
-  background: transparent;
+.my-review--author {
+  color: var(--info);
 }
 
-.pr-row__state.row-strip-needs {
+.my-review--requested {
   color: var(--warning);
-  background: oklch(from var(--warning) l c h / 0.18);
 }
 
-.pr-row__state.row-strip-changes {
+.my-review--changes-requested {
   color: var(--danger);
-  background: oklch(from var(--danger) l c h / 0.18);
 }
 
-.pr-row__state.row-strip-approved {
+.my-review--approved {
   color: var(--success);
-  background: oklch(from var(--success) l c h / 0.18);
 }
 
-.pr-row__state.row-strip-draft {
+.my-review--commented {
   color: var(--text-mute);
-  background: oklch(from var(--text-mute) l c h / 0.18);
 }
 
-.pr-row__state.row-strip-stale {
-  color: var(--text-faint);
-  background: oklch(from var(--text-faint) l c h / 0.18);
+.my-review--none {
+  color: var(--text-disabled);
 }
 
 /* ─── ThreadsBar bucket badge ──────────────────────────────────────────── */
