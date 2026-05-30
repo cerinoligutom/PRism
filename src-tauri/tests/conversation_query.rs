@@ -209,96 +209,78 @@ fn list_pr_threads_projects_diff_hunk_through_to_dto() {
     assert!(by_id[&1003].is_none());
 }
 
-// ===== unread derivation (issue #158) =====
+// ===== per-thread unread derivation (ADR 0031, repoints issue #158) =====
+//
+// ADR 0031 moves the `unread` flag off the PR-level `rel.read_at` watermark
+// onto the per-thread engagement watermark: a thread is unread iff an
+// other-authored comment is newer than MAX(thread_read_state.seen_at for this
+// viewer + node, my own latest comment in the thread). These tests replace the
+// pre-0031 `rel.read_at`-driven suite.
 
-/// Insert a viewer-relation row for (`account_id`, PR 100) with the given
-/// `read_at` watermark.
-fn seed_viewer_relation(db: &DbHandle, account_id: i64, read_at: Option<i64>) {
+/// Mark a thread seen for an account at `seen_at`.
+fn mark_thread_seen(db: &DbHandle, account_id: i64, node_id: &str, seen_at: i64) {
     let conn = db.lock().unwrap();
-    conn.execute(
-        "INSERT INTO pull_request_viewer_relations
-            (account_id, pull_request_id, relation_observed_at, read_at)
-         VALUES (?1, ?2, 0, ?3)",
-        params![account_id, PR_ID, read_at],
-    )
-    .unwrap();
+    prism_lib::triage::units::advance_thread_seen(&conn, account_id, node_id, seen_at).unwrap();
 }
 
 #[test]
-fn list_pr_threads_unread_when_no_relation_row() {
-    // No relation row for ALICE on this PR. Every thread has activity > 0
-    // (the fixture timestamps), so all four read as unread.
+fn list_pr_threads_unread_per_thread_against_engagement_watermark_for_alice() {
+    // Alice authored the PR + replied last on thread 1000. Per-thread:
+    //   1000: other-authored bob@1000 < my-latest alice@2000 -> read.
+    //   1001: other-authored bob@1600 > my-latest(0) -> unread.
+    //   1002: other-authored carol@1700 > my-latest(0) -> unread.
+    //   1003: other-authored carol@2500 > my-latest(0) -> unread.
     let db = fresh_db();
     seed_fixture(&db);
-    let conn = db.lock().unwrap();
-    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
-    assert!(
-        threads.iter().all(|t| t.unread),
-        "threads must be unread without a read_at watermark"
-    );
-}
-
-#[test]
-fn list_pr_threads_unread_when_read_at_null() {
-    // Explicit relation row but NULL read_at (e.g. flipped back to unread via
-    // `mark_unread`). Same effect as a missing row: every thread is unread.
-    let db = fresh_db();
-    seed_fixture(&db);
-    seed_viewer_relation(&db, ALICE_ID, None);
-    let conn = db.lock().unwrap();
-    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
-    assert!(threads.iter().all(|t| t.unread));
-}
-
-#[test]
-fn list_pr_threads_unread_after_stale_read_at() {
-    // Viewer last read at t=500. Fixture activity sits in [1000, 2500], so
-    // every thread is still unread.
-    let db = fresh_db();
-    seed_fixture(&db);
-    seed_viewer_relation(&db, ALICE_ID, Some(500));
-    let conn = db.lock().unwrap();
-    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
-    assert!(threads.iter().all(|t| t.unread));
-}
-
-#[test]
-fn list_pr_threads_read_after_fresh_read_at() {
-    // Viewer caught up at t=3000, after every fixture timestamp. All threads
-    // read.
-    let db = fresh_db();
-    seed_fixture(&db);
-    seed_viewer_relation(&db, ALICE_ID, Some(3_000));
-    let conn = db.lock().unwrap();
-    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
-    assert!(threads.iter().all(|t| !t.unread));
-}
-
-#[test]
-fn list_pr_threads_unread_is_per_thread_against_watermark() {
-    // Viewer read at t=1900. Fixture activity:
-    //   thread 1000: last_reply_at=1100 -> read.
-    //   thread 1001: last_reply_at=1800 -> read.
-    //   thread 1002: created_at=1700, no reply, head=1700 -> read.
-    //   thread 1003: created_at=2500 -> unread.
-    let db = fresh_db();
-    seed_fixture(&db);
-    seed_viewer_relation(&db, ALICE_ID, Some(1_900));
     let conn = db.lock().unwrap();
     let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
     let by_id: std::collections::HashMap<i64, bool> =
         threads.iter().map(|t| (t.id, t.unread)).collect();
-    assert!(!by_id[&1000]);
-    assert!(!by_id[&1001]);
-    assert!(!by_id[&1002]);
+    assert!(!by_id[&1000], "alice's own later reply clears 1000");
+    assert!(by_id[&1001], "fresh other-authored reply lights 1001");
+    assert!(by_id[&1002]);
     assert!(by_id[&1003]);
 }
 
 #[test]
+fn list_pr_threads_unread_per_thread_for_bob() {
+    // Bob authored the comments on 1000/1001. Per-thread for bob:
+    //   1000: other-authored alice@2000 > bob's latest bob@1000 -> unread.
+    //   1001: no other-authored comment (both bob) -> read.
+    //   1002: carol@1700 > my-latest(0) -> unread.
+    //   1003: carol@2500 -> unread.
+    let db = fresh_db();
+    seed_fixture(&db);
+    let conn = db.lock().unwrap();
+    let threads = query::list_pr_threads(&conn, PR_ID, Some(BOB_ID)).unwrap();
+    let by_id: std::collections::HashMap<i64, bool> =
+        threads.iter().map(|t| (t.id, t.unread)).collect();
+    assert!(by_id[&1000], "alice's reply is newer than bob's latest");
+    assert!(!by_id[&1001], "no other-authored comment in 1001 for bob");
+    assert!(by_id[&1002]);
+    assert!(by_id[&1003]);
+}
+
+#[test]
+fn list_pr_threads_seen_watermark_clears_a_lit_thread() {
+    // Marking thread 1001 seen past its latest reply (1600) clears it for
+    // alice; the others stay as before.
+    let db = fresh_db();
+    seed_fixture(&db);
+    mark_thread_seen(&db, ALICE_ID, "PRRT_2", 2_000);
+    let conn = db.lock().unwrap();
+    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
+    let by_id: std::collections::HashMap<i64, bool> =
+        threads.iter().map(|t| (t.id, t.unread)).collect();
+    assert!(!by_id[&1001], "seen past the reply clears 1001");
+    assert!(by_id[&1002], "untouched threads stay lit");
+}
+
+#[test]
 fn list_pr_threads_unread_false_when_account_id_is_none() {
-    // Without a viewer, the projection has no read state to compare against.
-    // Forced to false so the dashboard's anonymous reader doesn't accidentally
-    // boldface every thread.
+    // Without a viewer the projection has no engagement watermark to compare
+    // against, so it's forced to false (the dashboard's anonymous reader must
+    // not boldface every thread).
     let db = fresh_db();
     seed_fixture(&db);
     let conn = db.lock().unwrap();
@@ -307,20 +289,29 @@ fn list_pr_threads_unread_false_when_account_id_is_none() {
 }
 
 #[test]
-fn list_pr_threads_unread_scoped_to_viewer_account() {
-    // Alice has caught up; Bob hasn't opened the PR yet. Bob's read should be
-    // unread regardless of alice's relation row.
+fn list_pr_threads_pr_level_read_at_no_longer_clears_unread() {
+    // Regression: a PR-level `read_at` write (the pre-0031 driver) must NOT
+    // affect the per-thread unread flag anymore.
     let db = fresh_db();
     seed_fixture(&db);
-    seed_viewer_relation(&db, ALICE_ID, Some(3_000));
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at, read_at)
+             VALUES (?1, ?2, 0, 9999)",
+            params![ALICE_ID, PR_ID],
+        )
+        .unwrap();
+    }
     let conn = db.lock().unwrap();
-    let threads_for_bob = query::list_pr_threads(&conn, PR_ID, Some(BOB_ID)).unwrap();
+    let threads = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
+    let by_id: std::collections::HashMap<i64, bool> =
+        threads.iter().map(|t| (t.id, t.unread)).collect();
     assert!(
-        threads_for_bob.iter().all(|t| t.unread),
-        "bob has no relation row; all threads unread"
+        by_id[&1001],
+        "PR-level read_at must not clear a per-thread lit unit"
     );
-    let threads_for_alice = query::list_pr_threads(&conn, PR_ID, Some(ALICE_ID)).unwrap();
-    assert!(threads_for_alice.iter().all(|t| !t.unread));
 }
 
 // ===== get_conversation_stats =====

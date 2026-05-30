@@ -19,7 +19,6 @@
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::dashboard::DashboardView;
-use crate::notify::{NotificationKind, NotificationTrigger};
 use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
 
 /// Persist the read-state flip for one `(account_id, pull_request_id)` pair.
@@ -424,41 +423,17 @@ pub(crate) fn needs_attention_case_expr() -> &'static str {
 /// (Tracked-view PRs never get a row - see contract). Callers that need the row
 /// present should UPSERT first.
 ///
-/// Returns a (possibly empty) [`Vec<NotificationTrigger>`] describing the
-/// transitions observed in this call (ADR 0017 decision 1). Callers (the sync
-/// worker, the read/unread commands, the conversation hydrator) hand the
-/// triggers to the [`NotificationSink`](crate::notify::NotificationSink) once
-/// the enclosing transaction commits - dispatching from inside the helper
-/// would either hold the DB lock during the OS plugin call or fire a toast
-/// for a write that later rolled back.
-///
-/// `previous_mentioned_count` records the mention counter value from before
-/// any writes the caller applied in the same transaction. When `Some(n)`, a
-/// strict increase between `n` and the post-UPDATE value produces a Mention
-/// trigger; `None` disables Mention-trigger detection (the read / unread
-/// commands' transactions don't care about increases, only resets). The
-/// `needs_attention` 0 -> 1 transition is detected against the helper's own
-/// entry snapshot, so callers don't pass a baseline for it.
+/// ADR 0031 moves all toast dispatch onto the sync worker's edge-with-re-arm
+/// path (`sync::worker::triage_recompute`), so this read/clear-driven recompute
+/// no longer emits notification triggers. It only refreshes the column; the
+/// caller refreshes the badge afterwards. This is why marking a PR read, or
+/// opening its conversation, never fires a toast (a surface the user is already
+/// looking at).
 pub fn recompute_needs_attention(
     conn: &Connection,
     account_id: i64,
     pull_request_id: i64,
-    previous_mentioned_count: Option<i64>,
-) -> Result<Vec<NotificationTrigger>, rusqlite::Error> {
-    // Snapshot the pre-UPDATE `needs_attention`. The Mention transition is
-    // measured against the explicit baseline above, not this snapshot,
-    // because the helper's own UPDATE doesn't change the counter. A missing
-    // relation row reads as None - no transition, no trigger.
-    let before_attention: Option<i64> = conn
-        .query_row(
-            "SELECT needs_attention
-               FROM pull_request_viewer_relations
-              WHERE account_id = ?1 AND pull_request_id = ?2",
-            params![account_id, pull_request_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-
+) -> Result<(), rusqlite::Error> {
     conn.execute(
         &format!(
             "UPDATE pull_request_viewer_relations AS rel
@@ -469,45 +444,7 @@ pub fn recompute_needs_attention(
         ),
         params![account_id, pull_request_id],
     )?;
-
-    let Some(before_attention) = before_attention else {
-        return Ok(Vec::new());
-    };
-
-    let after: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT needs_attention, mentioned_count_unread
-               FROM pull_request_viewer_relations
-              WHERE account_id = ?1 AND pull_request_id = ?2",
-            params![account_id, pull_request_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()?;
-    let Some((after_attention, after_mentions)) = after else {
-        return Ok(Vec::new());
-    };
-
-    let mut triggers = Vec::new();
-    if before_attention == 0 && after_attention == 1 {
-        triggers.push(NotificationTrigger {
-            account_id,
-            pull_request_id,
-            kind: NotificationKind::NeedsAttention,
-        });
-    }
-    // Strict increase fires one Mention trigger regardless of the delta size:
-    // a single 0 -> 2 jump is one event from the user's perspective, not two
-    // (ADR 0017 decision 1).
-    if let Some(prev) = previous_mentioned_count {
-        if after_mentions > prev {
-            triggers.push(NotificationTrigger {
-                account_id,
-                pull_request_id,
-                kind: NotificationKind::Mention,
-            });
-        }
-    }
-    Ok(triggers)
+    Ok(())
 }
 
 /// Mark every relation row matching the active view + chip filter as read.
@@ -1197,7 +1134,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
         seed_review_comment(&conn, 6002, 5001, "bob", 20, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1211,7 +1148,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "bob", 10, 0);
         seed_review_comment(&conn, 6002, 5001, "carol", 20, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1224,7 +1161,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
         seed_review_comment(&conn, 6002, 5001, "alice", 20, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1237,7 +1174,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "bob", 10, 0);
         seed_review_comment(&conn, 6002, 5001, "alice", 30, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1251,7 +1188,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "bob", 20, 1);
         seed_thread_seen(&conn, "RT_a", 25);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1269,7 +1206,7 @@ mod tests {
         seed_review_comment(&conn, 6001, 5001, "bob", 10, 1); // mentions me
         seed_review_comment(&conn, 6002, 5001, "alice", 20, 0); // my reply (engage)
         seed_review_comment(&conn, 6003, 5001, "bob", 30, 0); // new other reply
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1284,7 +1221,7 @@ mod tests {
         seed_account_repo_pr(&conn, "alice", "bob");
         seed_thread(&conn, 5001, "RT_a", 0);
         seed_review_comment(&conn, 6001, 5001, "bob", 10, 1);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1302,7 +1239,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1318,7 +1255,7 @@ mod tests {
         seed_thread(&conn, 5001, "RT_a", 1);
         seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
         seed_review_comment(&conn, 6002, 5001, "bob", 30, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1329,7 +1266,7 @@ mod tests {
         seed_account_repo_pr(&conn, "alice", "bob");
         seed_thread(&conn, 5001, "RT_a", 1);
         seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1341,7 +1278,7 @@ mod tests {
         seed_account_repo_pr(&conn, "alice", "bob");
         seed_issue_comment(&conn, 7001, "alice", 10, 0);
         seed_issue_comment(&conn, 7002, "bob", 20, 0);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1350,7 +1287,7 @@ mod tests {
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         seed_issue_comment(&conn, 7001, "bob", 10, 1);
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
@@ -1368,7 +1305,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1384,7 +1321,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
 
         conn.execute(
@@ -1392,7 +1329,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1406,7 +1343,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1416,7 +1353,7 @@ mod tests {
     fn changes_requested_on_my_pr_fires_then_clears_on_approval() {
         let conn = fresh_db();
         seed_pr_with_decision(&conn, "alice", "alice", Some("CHANGES_REQUESTED"));
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
 
         conn.execute(
@@ -1424,7 +1361,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1432,7 +1369,7 @@ mod tests {
     fn changes_requested_on_other_authored_pr_does_not_fire() {
         let conn = fresh_db();
         seed_pr_with_decision(&conn, "alice", "bob", Some("CHANGES_REQUESTED"));
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1448,7 +1385,7 @@ mod tests {
             [],
         )
         .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
@@ -1468,11 +1405,7 @@ mod tests {
         .unwrap();
         // No relations row for (1, 100) - the UPDATE should still succeed
         // and touch zero rows.
-        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert!(
-            triggers.is_empty(),
-            "missing relation row must not emit triggers"
-        );
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         let exists: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pull_request_viewer_relations
@@ -1516,8 +1449,8 @@ mod tests {
         )
         .unwrap();
 
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        recompute_needs_attention(&conn, 2, 100).unwrap();
 
         let read = |account: i64| -> i64 {
             conn.query_row(
@@ -1557,8 +1490,7 @@ mod tests {
         )
         .unwrap();
 
-        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert!(triggers.is_empty());
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         let exists: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pull_request_viewer_relations
@@ -1570,14 +1502,16 @@ mod tests {
         assert_eq!(exists, 0, "no relation row exists to light");
     }
 
-    // ===== notification trigger emission (ADR 0017 decision 1, issue #192) =====
+    // ===== recompute column flips (ADR 0031) =====
     //
-    // The recompute helper returns triggers describing transitions observed
-    // in the same call. The sync worker / commands dispatch them to the
-    // notification sink after the transaction commits.
+    // `recompute_needs_attention` is now a read/clear-driven column refresh
+    // only - it does NOT emit notification triggers (all toast dispatch moved
+    // to the sync worker's edge-with-re-arm path). These tests assert the
+    // column flips correctly; trigger emission is covered in
+    // `sync::worker::triage_recompute::tests`.
 
     /// Drive a clean 0 -> 1 attention flip via the requested-reviewer branch
-    /// (D-free role obligation), the simplest roll-up signal to seed without
+    /// (C role obligation), the simplest roll-up signal to seed without
     /// conversation state.
     fn make_requested_reviewer(conn: &Connection) {
         conn.execute(
@@ -1589,124 +1523,44 @@ mod tests {
     }
 
     #[test]
-    fn returns_needs_attention_trigger_on_zero_to_one_flip() {
-        let conn = fresh_db();
-        // Requested reviewer fires branch (C), so a baseline-zero row flips to
-        // 1 on this call.
-        seed_account_repo_pr(&conn, "alice", "bob");
-        make_requested_reviewer(&conn);
-        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].kind, NotificationKind::NeedsAttention);
-        assert_eq!(triggers[0].account_id, 1);
-        assert_eq!(triggers[0].pull_request_id, 100);
-    }
-
-    #[test]
-    fn returns_empty_vec_when_already_at_one() {
+    fn recompute_flips_column_to_one_on_requested_reviewer() {
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         make_requested_reviewer(&conn);
-        // First call flips 0 -> 1 and emits the trigger.
-        let _ = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        // Second call is a steady-state 1 -> 1 transition; no trigger.
-        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert!(triggers.is_empty());
+        recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
     #[test]
-    fn returns_mention_trigger_when_count_increases() {
-        // A jump from 0 to 2 fires exactly one Mention trigger, not two -
-        // the trigger is about "a new unread mention landed since the last
-        // recompute" rather than "one toast per mention" (ADR 0017 decision 1).
-        // The Mention trigger still reads the legacy `mentioned_count_unread`
-        // (the dispatch path isn't rewritten until the next slice, #433); only
-        // the `needs_attention` roll-up moved off the counter.
-        let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob");
-        conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 2
-              WHERE account_id = 1 AND pull_request_id = 100",
-            [],
-        )
-        .unwrap();
-        let triggers = recompute_needs_attention(&conn, 1, 100, Some(0)).unwrap();
-        let mention_count = triggers
-            .iter()
-            .filter(|t| t.kind == NotificationKind::Mention)
-            .count();
-        assert_eq!(mention_count, 1, "single trigger per recompute call");
-        // The bumped counter no longer flips the roll-up (it reads
-        // `mentions_viewer`, not the counter), so no NeedsAttention trigger.
-        assert!(
-            triggers
-                .iter()
-                .all(|t| t.kind != NotificationKind::NeedsAttention),
-            "the legacy counter must not flip the roll-up under ADR 0031"
-        );
-    }
-
-    #[test]
-    fn returns_both_triggers_when_both_transitions_happen() {
-        // Branch (C) flips the roll-up 0 -> 1 (NeedsAttention trigger) while the
-        // legacy counter increase emits the Mention trigger in the same call.
+    fn recompute_is_idempotent_at_one() {
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         make_requested_reviewer(&conn);
-        conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 1
-              WHERE account_id = 1 AND pull_request_id = 100",
-            [],
-        )
-        .unwrap();
-        let triggers = recompute_needs_attention(&conn, 1, 100, Some(0)).unwrap();
-        assert_eq!(triggers.len(), 2);
-        assert!(triggers
-            .iter()
-            .any(|t| t.kind == NotificationKind::NeedsAttention));
-        assert!(triggers.iter().any(|t| t.kind == NotificationKind::Mention));
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
     }
 
     #[test]
-    fn returns_no_mention_trigger_when_baseline_matches_post_value() {
-        // The mark-read / mark-unread paths pass `previous_mentioned_count`
-        // equal to the post-UPDATE value (they don't bump the counter on the
-        // way in). The helper must not surface a phantom Mention trigger.
+    fn recompute_clears_column_when_signal_gone() {
+        // The legacy `mentioned_count_unread` counter no longer feeds the
+        // roll-up (it reads `mentions_viewer`), so a row whose only state is a
+        // bumped counter recomputes back to 0.
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 0
+                SET needs_attention = 1, mentioned_count_unread = 5
               WHERE account_id = 1 AND pull_request_id = 100",
             [],
         )
         .unwrap();
-        let triggers = recompute_needs_attention(&conn, 1, 100, Some(0)).unwrap();
-        assert!(
-            triggers.iter().all(|t| t.kind != NotificationKind::Mention),
-            "steady-state counter must not emit a Mention trigger"
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            0,
+            "the legacy counter must not hold the roll-up at 1 under ADR 0031"
         );
-    }
-
-    #[test]
-    fn returns_empty_vec_on_one_to_zero_clear() {
-        // Clearing attention is not a notification event - the in-app badge
-        // turning off is signal enough. Only the rising edge fires a toast.
-        let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob");
-        conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET needs_attention = 1
-              WHERE account_id = 1 AND pull_request_id = 100",
-            [],
-        )
-        .unwrap();
-        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert!(triggers.is_empty());
-        assert_eq!(read_needs_attention(&conn), 0, "row cleared back to 0");
     }
 
     // ===== chip-count tests (M4-D) =====
@@ -3431,8 +3285,8 @@ mod tests {
         let conn = fresh_db();
         seed_command_path_cross_host_collision(&conn, "me", None, true);
 
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        recompute_needs_attention(&conn, 2, 100).unwrap();
 
         assert_eq!(
             read_needs_attention_for(&conn, 1, 100),
@@ -3457,8 +3311,8 @@ mod tests {
         )
         .unwrap();
 
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        recompute_needs_attention(&conn, 2, 100).unwrap();
 
         assert_eq!(
             read_needs_attention_for(&conn, 1, 100),
@@ -3477,8 +3331,8 @@ mod tests {
         let conn = fresh_db();
         seed_command_path_cross_host_collision(&conn, "me", Some("CHANGES_REQUESTED"), false);
 
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        recompute_needs_attention(&conn, 2, 100).unwrap();
 
         assert_eq!(
             read_needs_attention_for(&conn, 1, 100),

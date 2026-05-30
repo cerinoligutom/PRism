@@ -113,6 +113,9 @@ fn persist_inbox_row(db: &DbHandle, notification: &Notification, snapshot: &Noti
         pr_title: snapshot.pr_title.clone(),
         title: notification.title.clone(),
         body: Some(notification.body.clone()),
+        unit_kind: snapshot.unit_kind.map(|k| k.as_storage().to_string()),
+        unit_ref: snapshot.unit_ref.clone(),
+        deep_link_url: snapshot.deep_link_url.clone(),
     };
     let conn = match db.lock() {
         Ok(g) => g,
@@ -270,7 +273,9 @@ mod tests {
 
     use super::*;
     use crate::notifications::store as inbox_store;
-    use crate::notify::types::{Notification, NotificationKind, NotificationSnapshot};
+    use crate::notify::types::{
+        Notification, NotificationKind, NotificationSnapshot, NotificationUnitKind,
+    };
 
     fn fresh_db() -> DbHandle {
         let mut conn = Connection::open_in_memory().expect("in-memory db");
@@ -297,8 +302,14 @@ mod tests {
     fn sample_notification(kind: NotificationKind) -> Notification {
         Notification {
             title: "Needs your attention".to_string(),
-            body: "owner/web #42 - Add a thing".to_string(),
-            payload: json!({ "account_id": 1, "pull_request_id": 100 }),
+            body: "owner/web #42 - src/lib.rs:1".to_string(),
+            payload: json!({
+                "account_id": 1,
+                "pull_request_id": 100,
+                "unit_kind": "thread",
+                "unit_ref": "RT_1",
+                "deep_link_url": "https://x/t",
+            }),
             snapshot: Some(NotificationSnapshot {
                 kind,
                 account_id: 1,
@@ -308,6 +319,9 @@ mod tests {
                 pr_number: 42,
                 pr_node_id: None,
                 pr_title: "Add a thing".to_string(),
+                unit_kind: Some(NotificationUnitKind::Thread),
+                unit_ref: Some("RT_1".to_string()),
+                deep_link_url: Some("https://x/t".to_string()),
             }),
         }
     }
@@ -334,7 +348,11 @@ mod tests {
         assert_eq!(row.pr_number, 42);
         assert_eq!(row.pr_title, "Add a thing");
         assert_eq!(row.title, "Needs your attention");
-        assert_eq!(row.body.as_deref(), Some("owner/web #42 - Add a thing"));
+        assert_eq!(row.body.as_deref(), Some("owner/web #42 - src/lib.rs:1"));
+        // ADR 0031: the dispatched row carries the unit it points at.
+        assert_eq!(row.unit_kind.as_deref(), Some("thread"));
+        assert_eq!(row.unit_ref.as_deref(), Some("RT_1"));
+        assert_eq!(row.deep_link_url.as_deref(), Some("https://x/t"));
     }
 
     #[test]

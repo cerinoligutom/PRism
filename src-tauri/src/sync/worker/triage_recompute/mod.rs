@@ -1,22 +1,27 @@
-//! Mention scan + `needs_attention` roll-up recompute (ADR 0031; supersedes
-//! the ADR 0015 four-signal composite).
+//! Mention scan + `needs_attention` roll-up recompute + edge-with-re-arm
+//! dispatch (ADR 0031; supersedes the ADR 0015 four-signal composite and the
+//! ADR 0017 pure-edge trigger).
 //!
 //! Runs inside the same DB transaction as `enrichment::write_pr_updates` so the
 //! recompute sees the freshest threads, comments, requested reviewers, and
 //! review decision. The scan sets the per-comment `mentions_viewer` bit the
 //! roll-up folds into involvement (and still bumps the legacy
-//! `mentioned_count_unread` counter the existing dispatch trigger reads).
-//! Returns the (possibly empty) [`NotificationTrigger`]s for the ADR 0017
-//! transitions observed in this cycle - the caller dispatches after commit.
+//! `mentioned_count_unread` counter, now vestigial - nothing reads it; left as
+//! a harmless write so the mention-scan tests stay stable, per ADR 0031's
+//! "left vestigial" note). After the recompute, [`rearm::rearm_dispatch`]
+//! produces at most one per-unit [`NotificationTrigger`] when the PR crosses
+//! its per-PR `last_emitted_activity_at` watermark - the caller dispatches
+//! after commit.
 
 use rusqlite::params;
 
 use crate::github::AccountId;
-use crate::notify::{NotificationKind, NotificationTrigger};
+use crate::notify::NotificationTrigger;
 
 use super::unix_now;
 
 mod mentions;
+mod rearm;
 #[cfg(test)]
 mod tests;
 
@@ -25,7 +30,8 @@ use mentions::mentions_viewer;
 /// Count new `@<viewer-login>` mentions across the PR's comment bodies since
 /// the per-(account, PR) watermark, set `mentions_viewer = 1` on each matched
 /// comment, bump the legacy unread counter by that count, advance the watermark
-/// to now, then recompute the `needs_attention` roll-up. See ADR 0031.
+/// to now, recompute the `needs_attention` roll-up, then run the
+/// edge-with-re-arm dispatch (ADR 0031). See ADR 0031.
 ///
 /// Watermark advance runs unconditionally so a cycle with zero new comments
 /// still moves the cursor forward and the next scan starts from now.
@@ -81,22 +87,6 @@ pub(super) fn scan_mentions_and_recompute_attention(
     if viewer_host != pr_owner_host {
         return Ok(Vec::new());
     }
-
-    // Snapshot the row before the scan + recompute so we can spot the two
-    // ADR 0017 transitions (0 -> 1 on `needs_attention`, strict increase on
-    // `mentioned_count_unread`). The mention counter snapshot has to come
-    // _before_ the UPDATE below bumps it; the attention snapshot can come
-    // either side of that bump since the recompute UPDATE that follows is
-    // the only thing that writes `needs_attention`.
-    let before: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT needs_attention, mentioned_count_unread
-               FROM pull_request_viewer_relations
-              WHERE account_id = ?1 AND pull_request_id = ?2",
-            params![account_id, pr_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .ok();
 
     // Read the prior watermark. NULL or missing relation row reads as 0 so the
     // first cycle counts every comment newer than the epoch.
@@ -210,38 +200,22 @@ pub(super) fn scan_mentions_and_recompute_attention(
         params![account_id, pr_id],
     )?;
 
-    // Compare to the pre-write snapshot. A missing relation row before the
-    // write means the recompute UPDATE matched zero rows; no trigger fires.
-    let Some((before_attention, before_mentions)) = before else {
-        return Ok(Vec::new());
-    };
-    let after: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT needs_attention, mentioned_count_unread
-               FROM pull_request_viewer_relations
+    // Edge-with-re-arm dispatch (ADR 0031, per-PR dedup). Emit one per-unit
+    // trigger iff the PR currently needs the viewer AND the newest
+    // other-authored crossing activity beats the per-PR
+    // `last_emitted_activity_at` watermark; then advance the watermark
+    // (MAX-only) so the same activity never re-fires. Reading a unit advances
+    // its engagement watermark, drops the PR out of "needs me", and re-arms
+    // for the next genuinely-new reply.
+    let (trigger, advance_to) = rearm::rearm_dispatch(tx, account_id, pr_id, &viewer_login)?;
+    if let Some(advance_to) = advance_to {
+        tx.execute(
+            "UPDATE pull_request_viewer_relations
+                SET last_emitted_activity_at =
+                    MAX(COALESCE(last_emitted_activity_at, 0), ?3)
               WHERE account_id = ?1 AND pull_request_id = ?2",
-            params![account_id, pr_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .ok();
-    let Some((after_attention, after_mentions)) = after else {
-        return Ok(Vec::new());
-    };
-
-    let mut triggers = Vec::new();
-    if before_attention == 0 && after_attention == 1 {
-        triggers.push(NotificationTrigger {
-            account_id,
-            pull_request_id: pr_id,
-            kind: NotificationKind::NeedsAttention,
-        });
+            params![account_id, pr_id, advance_to],
+        )?;
     }
-    if after_mentions > before_mentions {
-        triggers.push(NotificationTrigger {
-            account_id,
-            pull_request_id: pr_id,
-            kind: NotificationKind::Mention,
-        });
-    }
-    Ok(triggers)
+    Ok(trigger.into_iter().collect())
 }

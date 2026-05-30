@@ -94,6 +94,8 @@ pub fn run() {
             conversation::commands::list_pr_threads,
             conversation::commands::list_pr_timeline_events,
             conversation::commands::load_pr_conversation,
+            conversation::commands::mark_general_stream_seen,
+            conversation::commands::mark_thread_seen,
             dashboard::commands::get_pr_route_metadata,
             dashboard::commands::list_dashboard_pull_requests,
             dashboard::commands::list_dashboard_view_counts,

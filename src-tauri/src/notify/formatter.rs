@@ -1,14 +1,18 @@
 //! Format a [`NotificationTrigger`] into a user-facing
 //! [`Notification`] by joining against the local cache for the PR title, repo
-//! slug, number, and (for mentions) the most recent unread comment excerpt.
+//! slug, number, and the conversation unit the trigger points at (ADR 0031).
 //!
-//! Title / body strings follow ADR 0017 decision 1:
+//! Title / body strings:
 //!
-//! * [`NotificationKind::NeedsAttention`] -> title "Needs your attention",
-//!   body "<owner>/<repo> #<number> - <pr_title>".
-//! * [`NotificationKind::Mention`] -> title "New mention in <owner>/<repo>
-//!   #<number>", body the latest unread mention excerpt (~80 chars, single
-//!   line). Falls back to the PR title when no qualifying comment exists.
+//! * **Thread unit** -> title "Needs your attention", body "<owner>/<repo>
+//!   #<number> - <path>:<line>" when the thread carries a file location, else
+//!   the PR title.
+//! * **General stream** -> title "Needs your attention", body "<owner>/<repo>
+//!   #<number> - General discussion".
+//!
+//! `deep_link_url` is threaded from the trigger (the thread url, or the PR
+//! conversation url for the general stream) into both the snapshot and the
+//! click payload so the toast click reconciles the exact unit.
 //!
 //! The formatter takes a `&Connection` so callers can run it outside the
 //! recompute transaction without re-locking the DB. A formatter failure
@@ -19,10 +23,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 use crate::notify::types::{
-    Notification, NotificationKind, NotificationSnapshot, NotificationTrigger,
+    Notification, NotificationSnapshot, NotificationTrigger, NotificationUnitKind,
 };
-
-const EXCERPT_CHAR_LIMIT: usize = 80;
 
 /// Format a single trigger into a dispatchable notification. Returns `None`
 /// when the PR or repo can't be resolved (typically a row deleted between the
@@ -32,6 +34,9 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
     let payload = json!({
         "account_id": trigger.account_id,
         "pull_request_id": trigger.pull_request_id,
+        "unit_kind": trigger.unit_kind.as_storage(),
+        "unit_ref": trigger.unit_ref,
+        "deep_link_url": trigger.deep_link_url,
     });
     // Snapshot carried into the persistent inbox row (#378). Cloning is fine -
     // the dispatch path is per-trigger and the strings are short.
@@ -44,27 +49,54 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
         pr_number: number,
         pr_node_id: None,
         pr_title: title.clone(),
+        unit_kind: Some(trigger.unit_kind),
+        unit_ref: trigger.unit_ref.clone(),
+        deep_link_url: trigger.deep_link_url.clone(),
     };
-    let notification = match trigger.kind {
-        NotificationKind::NeedsAttention => Notification {
-            title: "Needs your attention".to_string(),
-            body: format!("{owner}/{repo} #{number} - {title}"),
-            payload,
-            snapshot: Some(snapshot),
-        },
-        NotificationKind::Mention => {
-            // Latest qualifying comment body, trimmed and clipped.
-            let excerpt =
-                latest_mention_excerpt(conn, trigger.account_id, trigger.pull_request_id, &title);
-            Notification {
-                title: format!("New mention in {owner}/{repo} #{number}"),
-                body: excerpt,
-                payload,
-                snapshot: Some(snapshot),
-            }
-        }
+
+    let unit_label = match trigger.unit_kind {
+        NotificationUnitKind::Thread => trigger
+            .unit_ref
+            .as_deref()
+            .and_then(|node_id| thread_location_label(conn, node_id))
+            .unwrap_or_else(|| title.clone()),
+        NotificationUnitKind::General => "General discussion".to_string(),
     };
-    Some(notification)
+
+    Some(Notification {
+        title: "Needs your attention".to_string(),
+        body: format!("{owner}/{repo} #{number} - {unit_label}"),
+        payload,
+        snapshot: Some(snapshot),
+    })
+}
+
+/// Build a `path:line` label for a thread unit from `review_threads`. Returns
+/// `None` when the thread row can't be resolved or carries no `path`; the
+/// caller falls back to the PR title. `line` prefers the current `line`, then
+/// `original_line` (an outdated thread keeps only the latter).
+fn thread_location_label(conn: &Connection, node_id: &str) -> Option<String> {
+    let (path, line): (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT path, COALESCE(line, original_line)
+               FROM review_threads
+              WHERE node_id = ?1",
+            params![node_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let path = path?;
+    match line {
+        Some(n) => Some(format!("{path}:{n}")),
+        None => Some(path),
+    }
 }
 
 fn pr_lookup(conn: &Connection, pr_id: i64) -> Option<(String, String, i64, String)> {
@@ -88,61 +120,10 @@ fn pr_lookup(conn: &Connection, pr_id: i64) -> Option<(String, String, i64, Stri
     .flatten()
 }
 
-/// Best-effort excerpt from the most recent review comment on the PR whose
-/// `created_at` sits past the relation row's `mention_scan_watermark_at`. The
-/// scan + recompute pair advances the watermark _before_ the recompute runs,
-/// so by the time the formatter looks the new comment has the freshest
-/// timestamp at or after the watermark. Falls back to the PR title when no
-/// qualifying comment is found (e.g. the trigger fired from a mark-read
-/// recompute, where the counter rose via a sync write that committed
-/// elsewhere). Issue comments aren't queried here in v1 - the contract notes
-/// the review-comments table holds the bulk of @-mentions during reviews; an
-/// open follow-up extends to issue_comments once the body shape is unified.
-fn latest_mention_excerpt(
-    conn: &Connection,
-    account_id: i64,
-    pr_id: i64,
-    fallback_title: &str,
-) -> String {
-    let body: Option<String> = conn
-        .query_row(
-            "SELECT c.body
-               FROM review_comments c
-               JOIN review_threads t ON t.id = c.review_thread_id
-              WHERE t.pull_request_id = ?1
-                AND c.created_at >= COALESCE(
-                    (SELECT mention_scan_watermark_at
-                       FROM pull_request_viewer_relations
-                      WHERE account_id = ?2 AND pull_request_id = ?1), 0)
-              ORDER BY c.created_at DESC
-              LIMIT 1",
-            params![pr_id, account_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    body.map(|raw| excerpt_single_line(&raw))
-        .unwrap_or_else(|| excerpt_single_line(fallback_title))
-}
-
-/// Collapse a multi-line comment body into a single line and clip to
-/// [`EXCERPT_CHAR_LIMIT`] chars. Replaces every run of whitespace with a
-/// single space so the toast row stays one line tall; appends an ellipsis
-/// when the source overflowed.
-fn excerpt_single_line(input: &str) -> String {
-    let collapsed: String = input.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= EXCERPT_CHAR_LIMIT {
-        return collapsed;
-    }
-    let mut clipped: String = collapsed.chars().take(EXCERPT_CHAR_LIMIT).collect();
-    clipped.push('\u{2026}');
-    clipped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notify::types::NotificationKind;
     use rusqlite::Connection;
 
     fn fresh_db() -> Connection {
@@ -170,90 +151,111 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn formats_needs_attention_with_pr_title_and_repo_slug() {
-        let conn = fresh_db();
-        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
-        let trigger = NotificationTrigger {
+    fn thread_trigger(node_id: &str, url: Option<&str>) -> NotificationTrigger {
+        NotificationTrigger {
             account_id: 1,
             pull_request_id: 100,
             kind: NotificationKind::NeedsAttention,
-        };
-        let n = format_trigger(&conn, &trigger).expect("formatted");
-        assert_eq!(n.title, "Needs your attention");
-        assert_eq!(n.body, "owner/web #42 - Add a thing");
-        assert_eq!(n.payload["account_id"], 1);
-        assert_eq!(n.payload["pull_request_id"], 100);
+            unit_kind: NotificationUnitKind::Thread,
+            unit_ref: Some(node_id.to_string()),
+            deep_link_url: url.map(str::to_string),
+            newest_activity_at: 200,
+        }
     }
 
-    #[test]
-    fn formats_mention_title_with_repo_and_number() {
-        let conn = fresh_db();
-        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
-        let trigger = NotificationTrigger {
+    fn general_trigger(url: Option<&str>) -> NotificationTrigger {
+        NotificationTrigger {
             account_id: 1,
             pull_request_id: 100,
-            kind: NotificationKind::Mention,
-        };
-        let n = format_trigger(&conn, &trigger).expect("formatted");
-        assert_eq!(n.title, "New mention in owner/web #42");
+            kind: NotificationKind::NeedsAttention,
+            unit_kind: NotificationUnitKind::General,
+            unit_ref: None,
+            deep_link_url: url.map(str::to_string),
+            newest_activity_at: 200,
+        }
     }
 
     #[test]
-    fn mention_body_pulls_latest_review_comment_excerpt() {
+    fn thread_body_uses_path_and_line() {
         let conn = fresh_db();
         seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
-        conn.execute_batch(
+        conn.execute(
             "INSERT INTO review_threads
-                (id, pull_request_id, is_resolved, is_outdated, node_id)
-                VALUES (200, 100, 0, 0, 'RT_1');
-             INSERT INTO review_comments
-                (id, review_thread_id, author_login, body, created_at)
-                VALUES (300, 200, 'bob', 'older comment', 90),
-                       (301, 200, 'bob', 'hey @alice can you look at this?', 200);",
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, line)
+                VALUES (200, 100, 0, 0, 'RT_1', 'src/lib.rs', 42)",
+            [],
         )
         .unwrap();
-        let trigger = NotificationTrigger {
-            account_id: 1,
-            pull_request_id: 100,
-            kind: NotificationKind::Mention,
-        };
-        let n = format_trigger(&conn, &trigger).expect("formatted");
-        assert_eq!(n.body, "hey @alice can you look at this?");
+        let n = format_trigger(&conn, &thread_trigger("RT_1", Some("https://x/t"))).expect("fmt");
+        assert_eq!(n.title, "Needs your attention");
+        assert_eq!(n.body, "owner/web #42 - src/lib.rs:42");
+        assert_eq!(n.payload["unit_kind"], "thread");
+        assert_eq!(n.payload["unit_ref"], "RT_1");
+        assert_eq!(n.payload["deep_link_url"], "https://x/t");
     }
 
     #[test]
-    fn mention_body_falls_back_to_pr_title_when_no_comment() {
+    fn thread_body_falls_back_to_original_line_then_pr_title() {
         let conn = fresh_db();
         seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
-        let trigger = NotificationTrigger {
-            account_id: 1,
-            pull_request_id: 100,
-            kind: NotificationKind::Mention,
-        };
-        let n = format_trigger(&conn, &trigger).expect("formatted");
-        assert_eq!(n.body, "Add a thing");
+        // No current `line`, only `original_line` (outdated thread keeps it).
+        conn.execute(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, original_line)
+                VALUES (200, 100, 0, 1, 'RT_o', 'src/old.rs', 7)",
+            [],
+        )
+        .unwrap();
+        let n = format_trigger(&conn, &thread_trigger("RT_o", None)).expect("fmt");
+        assert_eq!(n.body, "owner/web #42 - src/old.rs:7");
+
+        // A thread with no path falls back to the PR title.
+        conn.execute(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (201, 100, 0, 0, 'RT_np')",
+            [],
+        )
+        .unwrap();
+        let n = format_trigger(&conn, &thread_trigger("RT_np", None)).expect("fmt");
+        assert_eq!(n.body, "owner/web #42 - Add a thing");
     }
 
     #[test]
-    fn excerpt_collapses_whitespace_and_clips_to_eighty_chars() {
-        let long = "alpha\n\nbeta\tgamma".to_string() + &"x".repeat(200);
-        let trimmed = excerpt_single_line(&long);
-        let char_count = trimmed.chars().count();
-        assert_eq!(char_count, EXCERPT_CHAR_LIMIT + 1, "limit + ellipsis");
-        assert!(trimmed.ends_with('\u{2026}'));
-        assert!(trimmed.starts_with("alpha beta gamma"));
+    fn general_stream_body_is_general_discussion() {
+        let conn = fresh_db();
+        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
+        let url = "https://github.com/owner/web/pull/42";
+        let n = format_trigger(&conn, &general_trigger(Some(url))).expect("fmt");
+        assert_eq!(n.title, "Needs your attention");
+        assert_eq!(n.body, "owner/web #42 - General discussion");
+        assert_eq!(n.payload["unit_kind"], "general");
+        assert!(n.payload["unit_ref"].is_null());
+        assert_eq!(n.payload["deep_link_url"], url);
+    }
+
+    #[test]
+    fn snapshot_carries_unit_fields() {
+        let conn = fresh_db();
+        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
+        conn.execute(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, line)
+                VALUES (200, 100, 0, 0, 'RT_1', 'src/lib.rs', 42)",
+            [],
+        )
+        .unwrap();
+        let n = format_trigger(&conn, &thread_trigger("RT_1", Some("https://x/t"))).expect("fmt");
+        let snap = n.snapshot.expect("snapshot");
+        assert_eq!(snap.unit_kind, Some(NotificationUnitKind::Thread));
+        assert_eq!(snap.unit_ref.as_deref(), Some("RT_1"));
+        assert_eq!(snap.deep_link_url.as_deref(), Some("https://x/t"));
     }
 
     #[test]
     fn returns_none_when_pr_missing() {
         let conn = fresh_db();
         // No PR rows seeded.
-        let trigger = NotificationTrigger {
-            account_id: 1,
-            pull_request_id: 100,
-            kind: NotificationKind::NeedsAttention,
-        };
-        assert!(format_trigger(&conn, &trigger).is_none());
+        assert!(format_trigger(&conn, &general_trigger(None)).is_none());
     }
 }

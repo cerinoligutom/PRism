@@ -43,12 +43,14 @@ pub fn list_pr_threads(
     // author / body / created_at; the `LEFT JOIN users` then resolves the
     // author's avatar URL (ADR 0013).
     //
-    // The `LEFT JOIN pull_request_viewer_relations rel` carries the active
-    // account's `read_at` watermark so the `unread` projection can compare it
-    // against the thread's latest activity timestamp (issue #158). NULL
-    // `read_at` (never opened) plus any activity timestamp marks the thread
-    // unread; otherwise the thread is unread iff activity > read_at. With no
-    // `account_id` the projection is forced to 0 (the viewer is unknown).
+    // ADR 0031: the `unread` projection is per-thread. A thread is unread iff
+    // an other-authored comment is newer than the thread's engagement
+    // watermark `MAX(thread_read_state.seen_at for (account, node_id), my own
+    // latest comment.created_at in the thread)` - the same shape the roll-up's
+    // (A) branch uses, repointed off the PR-level `rel.read_at`. Host-gated:
+    // the viewer login/host must match the PR's owning host before a
+    // login-string comparison counts (issue #169). With no `account_id` the
+    // projection is forced to 0 (the viewer is unknown).
     let sql = "
         SELECT
             t.id,
@@ -84,11 +86,31 @@ pub fn list_pr_threads(
             t.url,
             CASE
                 WHEN ?2 IS NULL THEN 0
-                WHEN COALESCE(t.last_reply_at,
-                              head.created_at,
-                              t.created_at,
-                              0)
-                     > COALESCE(rel.read_at, 0) THEN 1
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM review_comments c
+                      JOIN accounts viewer ON viewer.id = ?2
+                      JOIN repos r ON r.id = t_pr.repo_id
+                      JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+                     WHERE c.review_thread_id = t.id
+                       AND pr_host_acc.host = viewer.host
+                       AND c.author_login <> viewer.login
+                       AND c.created_at > (
+                           SELECT MAX(w) FROM (
+                               SELECT COALESCE((
+                                   SELECT trs.seen_at FROM thread_read_state trs
+                                    WHERE trs.account_id = ?2
+                                      AND trs.review_thread_node_id = t.node_id
+                               ), 0) AS w
+                               UNION ALL
+                               SELECT COALESCE((
+                                   SELECT MAX(mc.created_at) FROM review_comments mc
+                                    WHERE mc.review_thread_id = t.id
+                                      AND mc.author_login = viewer.login
+                               ), 0) AS w
+                           )
+                       )
+                ) THEN 1
                 ELSE 0
             END AS unread,
             t.diff_hunk
@@ -102,9 +124,6 @@ pub fn list_pr_threads(
                      LIMIT 1
                   )
         LEFT JOIN users u ON u.login = head.author_login
-        LEFT JOIN pull_request_viewer_relations rel
-               ON rel.pull_request_id = t.pull_request_id
-              AND rel.account_id      = ?2
         WHERE t.pull_request_id = ?1
         ORDER BY COALESCE(t.created_at, 0), t.id
     ";
@@ -713,6 +732,91 @@ mod tests {
         let threads = list_pr_threads(&conn, 100, None).unwrap();
         assert_eq!(threads.len(), 1);
         assert!(!threads[0].is_involved);
+    }
+
+    /// Seed a single-account PR (`me` authors it on github.com) with a thread
+    /// that has my comment then a later other-authored reply. The thread unit
+    /// is lit until `me` engages past the reply.
+    fn seed_unread_thread_fixture(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'gh', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'me', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0);
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id,
+                 created_at, last_reply_at)
+                VALUES (5001, 100, 0, 0, 'RT_u', 5, 20);
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (6001, 5001, 'me',  'mine',  5),
+                (6002, 5001, 'bob', 'reply', 20);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_pr_threads_unread_follows_last_engaged_not_read_at() {
+        // ADR 0031: a thread is unread iff an other-authored comment is newer
+        // than MAX(thread_read_state.seen_at, my-latest-comment). Marking the
+        // thread seen past the reply clears it; a PR-level read_at write does
+        // NOT.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        seed_unread_thread_fixture(&conn);
+
+        let threads = list_pr_threads(&conn, 100, Some(1)).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(
+            threads[0].unread,
+            "fresh other reply past my comment => unread"
+        );
+
+        // A PR-level read_at write must NOT clear the per-thread unread flag.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET read_at = 99 WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        assert!(
+            list_pr_threads(&conn, 100, Some(1)).unwrap()[0].unread,
+            "PR-level read_at no longer drives the per-thread unread flag"
+        );
+
+        // Marking the thread seen past the reply clears it.
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_u", 25).unwrap();
+        assert!(
+            !list_pr_threads(&conn, 100, Some(1)).unwrap()[0].unread,
+            "seen past the reply => read"
+        );
+    }
+
+    #[test]
+    fn list_pr_threads_unread_clears_when_my_own_reply_is_latest() {
+        // My own later comment advances the engagement watermark, so the
+        // thread reads as read with no explicit mark-seen.
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate::run(&mut conn).unwrap();
+        seed_unread_thread_fixture(&conn);
+        conn.execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (6003, 5001, 'me', 'my reply', 30)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !list_pr_threads(&conn, 100, Some(1)).unwrap()[0].unread,
+            "my own latest reply clears the thread"
+        );
     }
 
     #[test]
