@@ -267,7 +267,131 @@ fn mention_scan_only_counts_comments_after_watermark() {
     );
 }
 
-// --- needs_attention recompute tests (four signals, ADR 0015) ---
+fn read_mentions_viewer_review(db: &DbHandle, comment_id: i64) -> i64 {
+    db.lock()
+        .unwrap()
+        .query_row(
+            "SELECT mentions_viewer FROM review_comments WHERE id = ?1",
+            params![comment_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+}
+
+fn read_mentions_viewer_issue(db: &DbHandle, comment_id: i64) -> i64 {
+    db.lock()
+        .unwrap()
+        .query_row(
+            "SELECT mentions_viewer FROM issue_comments WHERE id = ?1",
+            params![comment_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+}
+
+// --- mentions_viewer bit (ADR 0031) ---
+
+#[test]
+fn scan_sets_mentions_viewer_bit_on_matched_review_comment() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (1001, 100, 0, 0, 'RT_b');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'bob',   'hey @me look',  10),
+                (2002, 1001, 'carol', 'unrelated note', 20);",
+        )
+        .unwrap();
+
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+    assert_eq!(
+        read_mentions_viewer_review(&db, 2001),
+        1,
+        "matched comment gets the bit"
+    );
+    assert_eq!(
+        read_mentions_viewer_review(&db, 2002),
+        0,
+        "unmatched comment stays at the default 0"
+    );
+}
+
+#[test]
+fn scan_sets_mentions_viewer_bit_on_matched_issue_comment() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at) VALUES
+                (3001, 100, 'bob',   'ping @me',     10),
+                (3002, 100, 'carol', 'no mention',   20);",
+        )
+        .unwrap();
+
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+
+    assert_eq!(read_mentions_viewer_issue(&db, 3001), 1);
+    assert_eq!(read_mentions_viewer_issue(&db, 3002), 0);
+}
+
+#[test]
+fn scan_mentions_viewer_bit_is_set_never_cleared() {
+    // The bit is idempotent: a comment flagged in an earlier cycle stays
+    // flagged even after the watermark moves past it (a later scan won't
+    // re-examine it, and nothing clears the bit).
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at)
+                VALUES (3001, 100, 'bob', 'ping @me', 10);",
+        )
+        .unwrap();
+
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(read_mentions_viewer_issue(&db, 3001), 1);
+
+    // A second cycle with no new comments leaves the bit set.
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(read_mentions_viewer_issue(&db, 3001), 1);
+}
+
+#[test]
+fn scan_does_not_set_mentions_viewer_bit_cross_host() {
+    // Account 2 (github.acme.corp) shares login `me`; the github.com mention
+    // must not set the bit "for" it - the scan keys on the host-matching
+    // identity, so the bit is set once (account 1's scan), reflecting the
+    // PR-host identity, and account 2's scan is a no-op.
+    let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at)
+                VALUES (3001, 100, 'bob', 'ping @me', 10);",
+        )
+        .unwrap();
+
+    // Account 2's scan early-exits on the host mismatch: no bit, no counter.
+    write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(read_mentions_viewer_issue(&db, 3001), 0);
+
+    // Account 1 (PR's host) sets the bit.
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(read_mentions_viewer_issue(&db, 3001), 1);
+}
+
+// --- needs_attention recompute tests (ADR 0031 roll-up) ---
 
 #[test]
 fn needs_attention_stays_zero_when_no_signal_fires() {
@@ -280,11 +404,12 @@ fn needs_attention_stays_zero_when_no_signal_fires() {
 }
 
 #[test]
-fn needs_attention_fires_on_unresolved_thread_for_pr_author() {
+fn needs_attention_fires_on_thread_with_fresh_other_reply() {
     let (db, repo_id, pr_id) = seed_db_with_pr();
     seed_relation(&db, 1, pr_id);
 
-    // Make 'me' the PR author and add an unresolved + involved thread.
+    // 'me' authored the PR and engaged in a thread (t=10); a later
+    // other-authored reply (t=20) lights the roll-up's (A) branch (ADR 0031).
     db.lock()
         .unwrap()
         .execute_batch(
@@ -293,8 +418,9 @@ fn needs_attention_fires_on_unresolved_thread_for_pr_author() {
                 (id, pull_request_id, is_resolved, is_outdated, node_id)
                 VALUES (1001, 100, 0, 0, 'RT_n');
              INSERT INTO review_comments
-                (id, review_thread_id, author_login, body, created_at)
-                VALUES (2001, 1001, 'me', 'reply', 10);",
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'me',  'reply', 10),
+                (2002, 1001, 'bob', 'pong',  20);",
         )
         .unwrap();
 
@@ -585,8 +711,9 @@ fn needs_attention_does_not_fire_cross_host_for_changes_requested() {
 #[test]
 fn needs_attention_still_fires_same_host_for_pr_author_match() {
     // Regression guard: the host-aware join must not break the matching
-    // account's recompute. Same fixture, but check the account that IS
-    // the PR author still gets needs_attention=1.
+    // account's recompute. Same fixture, but check the account that IS the PR
+    // author still gets needs_attention=1 via the (A) branch (an other-authored
+    // reply newer than its own comment).
     let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
 
     db.lock()
@@ -597,8 +724,9 @@ fn needs_attention_still_fires_same_host_for_pr_author_match() {
                 (id, pull_request_id, is_resolved, is_outdated, node_id)
                 VALUES (1001, 100, 0, 0, 'RT_y');
              INSERT INTO review_comments
-                (id, review_thread_id, author_login, body, created_at)
-                VALUES (2001, 1001, 'me', 'reply', 10);",
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'me',  'reply', 10),
+                (2002, 1001, 'bob', 'pong',  20);",
         )
         .unwrap();
 
@@ -607,7 +735,7 @@ fn needs_attention_still_fires_same_host_for_pr_author_match() {
     assert_eq!(
         read_needs_attention(&db, 1, pr_id),
         1,
-        "account 1 IS the PR author (same host, same login) - must flag"
+        "account 1 is on the PR's host and the thread has a fresh reply - must flag"
     );
 }
 

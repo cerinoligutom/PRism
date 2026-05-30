@@ -30,7 +30,9 @@ pub mod runtime;
 pub mod sink;
 pub mod types;
 
-pub use badge::{count_global_unread, refresh_from_db, update_badge, AppHandleBadge, BadgeSink};
+pub use badge::{
+    count_needs_attention_global, refresh_from_db, update_badge, AppHandleBadge, BadgeSink,
+};
 pub use formatter::format_trigger;
 pub use pending::{PendingPayloadQueue, PendingPayloadQueueHandle};
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};

@@ -4,7 +4,7 @@
 //! Two surfaces:
 //!
 //! * [`update_badge`] - the cross-platform entry point. Reads the count via
-//!   [`count_global_unread`] and dispatches to the platform-specific
+//!   [`count_needs_attention_global`] and dispatches to the platform-specific
 //!   `apply_badge`: macOS dock badge, Windows taskbar overlay icon, Linux
 //!   Unity launcher D-Bus signal. Targets without a known affordance no-op.
 //! * [`BadgeSink`] / [`AppHandleBadge`] - the trait + production impl the sync
@@ -12,19 +12,22 @@
 //!   `ReauthNotifier` so unit tests can capture refresh calls without booting
 //!   Tauri.
 //!
-//! The count source is the unified, account-agnostic unread predicate: every
-//! open, unarchived PR with at least one relation flagged unread (per ADR 0015:
-//! `read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`)
-//! contributes one. The badge reflects "PRs you haven't caught up on" globally
-//! (matching the row dot indicator) and is independent of the dashboard's
-//! account-scope filter. Multi-account viewers see one number; a PR visible
-//! from two accounts and unread on either counts once (`DISTINCT pr.id`).
+//! The count source is the `needs_attention` roll-up (ADR 0031): every open,
+//! unarchived PR with at least one relation whose `needs_attention = 1`
+//! contributes one. The badge equals the row roll-up by construction - it is
+//! the same per-`(account, pr)` boolean the PR-row attention dot and the
+//! sidebar per-view dots read, so the three surfaces can never disagree
+//! (resolving ADR 0031's symptom 5). It is account-agnostic: multi-account
+//! viewers see one number, and a PR visible from two accounts that needs
+//! attention on either counts once (`DISTINCT pr.id`).
 //!
-//! Why unread, not `needs_attention`: the M6 first cut wired the badge to the
-//! curated `needs_attention` flag, but that means opening a row clears its
-//! left-rail dot without dropping the badge unless the PR also crossed the
-//! attention bar. The dot and the badge should track the same thing or users
-//! lose trust in the dock signal.
+//! Why the roll-up, not the unread predicate: under ADR 0031 attention is a
+//! conversation-unit watermark model, not a blunt "PR changed since I last
+//! opened it" flag. The roll-up clears only on a deliberate mark-seen or a
+//! genuine reply, and a role obligation (requested reviewer / CHANGES_REQUESTED
+//! on your PR) keeps it lit even after you've read it - the case the unread
+//! predicate got wrong. Binding the badge to the roll-up is what lets the dock,
+//! the row dot, and the sidebar dots track one definition.
 //!
 //! Trigger surfaces:
 //!
@@ -124,8 +127,8 @@ fn apply_badge<R: Runtime>(_app: &AppHandle<R>, _count: i64) {
 /// that should never propagate a failure into a triage command's return path.
 pub fn refresh_from_db<R: Runtime>(app: &AppHandle<R>, db: &DbHandle) {
     let count = match db.lock() {
-        Ok(conn) => count_global_unread(&conn).unwrap_or_else(|err| {
-            tracing::error!(%err, "badge: count_global_unread failed");
+        Ok(conn) => count_needs_attention_global(&conn).unwrap_or_else(|err| {
+            tracing::error!(%err, "badge: count_needs_attention_global failed");
             0
         }),
         Err(err) => {
@@ -136,19 +139,21 @@ pub fn refresh_from_db<R: Runtime>(app: &AppHandle<R>, db: &DbHandle) {
     update_badge(app, count);
 }
 
-/// Count the global unread total used by the dock badge.
+/// Count the global needs-attention total used by the dock badge (ADR 0031).
 ///
-/// DISTINCT over `pull_requests.id` so a PR visible from two accounts and
-/// unread on either contributes one - the badge counts PRs (analogous to
-/// Slack channels), not relation rows. Excludes archived rows (ADR 0018
-/// decision 5) and closed / merged PRs (post-M6 default: only open work
-/// contributes to the unread signal).
+/// DISTINCT over `pull_requests.id` so a PR that needs attention on two
+/// accounts contributes one - the badge counts PRs (analogous to Slack
+/// channels), not relation rows. Excludes archived rows (ADR 0018 decision 5)
+/// and closed / merged PRs (only open work contributes to the attention
+/// signal).
 ///
-/// The unread predicate is ADR 0015's:
-/// `read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`.
-/// The same condition drives the row's left-rail dot, so the dock and the
-/// row stay in sync.
-pub fn count_global_unread(conn: &Connection) -> Result<i64, rusqlite::Error> {
+/// The predicate is the roll-up boolean `rel.needs_attention = 1`, the same
+/// per-`(account, pr)` value the PR-row attention dot and the sidebar per-view
+/// dots ([`crate::triage::query::count_sidebar_attention`]) read. The sync
+/// worker recomputes that column each cycle via the shared
+/// [`needs_attention_case_expr`](crate::triage::query) builder, so the badge,
+/// the row, and the sidebar agree by construction.
+pub fn count_needs_attention_global(conn: &Connection) -> Result<i64, rusqlite::Error> {
     conn.query_row(
         "SELECT COUNT(DISTINCT pr.id)
            FROM pull_requests pr
@@ -156,8 +161,7 @@ pub fn count_global_unread(conn: &Connection) -> Result<i64, rusqlite::Error> {
              ON rel.pull_request_id = pr.id
           WHERE rel.archived_at IS NULL
             AND pr.state = 'open'
-            AND (rel.read_at IS NULL
-                 OR pr.updated_at > COALESCE(rel.read_pr_updated_at, 0))",
+            AND rel.needs_attention = 1",
         [],
         |row| row.get::<_, i64>(0),
     )
@@ -454,9 +458,13 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for the unread count source. The Tauri-bound write path is
-    //! exercised at app run time; here we verify the SQL matches the unread
-    //! predicate from ADR 0015 plus the open + unarchived gates.
+    //! Unit tests for the needs-attention count source (ADR 0031). The
+    //! Tauri-bound write path is exercised at app run time; here we verify the
+    //! badge SQL equals the row roll-up - `rel.needs_attention = 1` over open,
+    //! unarchived PRs, DISTINCT by `pr.id`. We seed the boolean directly rather
+    //! than re-deriving it through the roll-up builder; that derivation is
+    //! covered in `triage::query` tests. The badge's only job is to count the
+    //! flagged rows the row dot and the sidebar dots already read.
     use super::*;
     use rusqlite::Connection;
 
@@ -467,19 +475,10 @@ mod tests {
     }
 
     /// Seed an account / repo / PR / relation row with the supplied shape.
-    /// `updated_at` is the PR's last-activity timestamp; `read_at` and
-    /// `read_pr_updated_at` model the viewer's read watermark. A row is
-    /// unread iff `read_at IS NULL OR updated_at > read_pr_updated_at`.
-    #[allow(clippy::too_many_arguments)]
-    fn seed_pr(
-        conn: &Connection,
-        pr_id: i64,
-        state: &str,
-        updated_at: i64,
-        archived: bool,
-        read_at: Option<i64>,
-        read_pr_updated_at: Option<i64>,
-    ) {
+    /// `needs_attention` is the roll-up boolean the badge counts; `archived`
+    /// and `state` exercise the open + unarchived gates. A row contributes to
+    /// the badge iff `needs_attention = 1 AND state = 'open' AND NOT archived`.
+    fn seed_pr(conn: &Connection, pr_id: i64, state: &str, archived: bool, needs_attention: bool) {
         conn.execute_batch(
             "INSERT OR IGNORE INTO accounts (id, label, host, login, created_at)
                 VALUES (1, 'a', 'github.com', 'alice', 0);
@@ -492,79 +491,80 @@ mod tests {
         } else {
             "NULL"
         };
-        let read_at_sql = read_at.map_or("NULL".into(), |v| v.to_string());
-        let read_pr_updated_at_sql = read_pr_updated_at.map_or("NULL".into(), |v| v.to_string());
+        let attention = i64::from(needs_attention);
         conn.execute_batch(&format!(
             "INSERT INTO pull_requests
                 (id, repo_id, number, title, state, is_draft, author_login,
                  created_at, updated_at, base_ref, head_ref)
                 VALUES ({pr_id}, 10, {pr_id}, 't', '{state}', 0, 'bob',
-                        0, {updated_at}, 'main', 'feat');
+                        0, 1000, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, relation_observed_at,
-                 read_at, read_pr_updated_at, archived_at)
-                VALUES (1, {pr_id}, 0,
-                        {read_at_sql}, {read_pr_updated_at_sql}, {archived_sql});"
+                 needs_attention, archived_at)
+                VALUES (1, {pr_id}, 0, {attention}, {archived_sql});"
         ))
         .unwrap();
     }
 
     #[test]
-    fn count_global_unread_returns_zero_on_empty_table() {
+    fn count_needs_attention_global_returns_zero_on_empty_table() {
         let conn = fresh_conn();
-        assert_eq!(count_global_unread(&conn).unwrap(), 0);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 0);
     }
 
     #[test]
-    fn count_global_unread_counts_never_opened_prs() {
-        // `read_at IS NULL` means the viewer has never opened the row, so the
-        // PR is unread regardless of `updated_at`.
+    fn count_needs_attention_global_counts_flagged_open_prs() {
+        // A relation with `needs_attention = 1` on an open, unarchived PR is
+        // exactly what the row attention dot lights, so the badge counts it.
         let conn = fresh_conn();
-        seed_pr(&conn, 100, "open", 1000, false, None, None);
-        assert_eq!(count_global_unread(&conn).unwrap(), 1);
+        seed_pr(&conn, 100, "open", false, true);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 1);
     }
 
     #[test]
-    fn count_global_unread_excludes_caught_up_prs() {
-        // `read_at` set AND `updated_at <= read_pr_updated_at` -> caught up.
+    fn count_needs_attention_global_excludes_unflagged_prs() {
+        // `needs_attention = 0` means no lit unit and no role obligation; the
+        // badge must not count a PR the row doesn't flag.
         let conn = fresh_conn();
-        seed_pr(&conn, 100, "open", 500, false, Some(600), Some(500));
-        assert_eq!(count_global_unread(&conn).unwrap(), 0);
+        seed_pr(&conn, 100, "open", false, false);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 0);
     }
 
     #[test]
-    fn count_global_unread_includes_re_unread_after_new_activity() {
-        // A PR opened earlier ticks back to unread when sync surfaces fresh
-        // activity (`updated_at > read_pr_updated_at`).
-        let conn = fresh_conn();
-        seed_pr(&conn, 100, "open", 700, false, Some(600), Some(500));
-        assert_eq!(count_global_unread(&conn).unwrap(), 1);
-    }
-
-    #[test]
-    fn count_global_unread_excludes_archived_rows() {
+    fn count_needs_attention_global_excludes_archived_rows() {
         // ADR 0018 decision 5: archived rows do not contribute to any active
-        // count.
+        // count, even while `needs_attention` stays 1 on disk.
         let conn = fresh_conn();
-        seed_pr(&conn, 100, "open", 1000, true, None, None);
-        assert_eq!(count_global_unread(&conn).unwrap(), 0);
+        seed_pr(&conn, 100, "open", true, true);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 0);
     }
 
     #[test]
-    fn count_global_unread_excludes_closed_and_merged_prs() {
-        // Post-M6 default: only open PRs feed the unread signal.
+    fn count_needs_attention_global_excludes_closed_and_merged_prs() {
+        // Only open work feeds the attention signal; a closed/merged PR keeps
+        // its flag on disk but drops from the badge.
         let conn = fresh_conn();
-        seed_pr(&conn, 100, "closed", 1000, false, None, None);
-        seed_pr(&conn, 101, "merged", 1000, false, None, None);
-        seed_pr(&conn, 102, "open", 1000, false, None, None);
-        assert_eq!(count_global_unread(&conn).unwrap(), 1);
+        seed_pr(&conn, 100, "closed", false, true);
+        seed_pr(&conn, 101, "merged", false, true);
+        seed_pr(&conn, 102, "open", false, true);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 1);
     }
 
     #[test]
-    fn count_global_unread_distincts_across_accounts() {
-        // A PR visible from two accounts and unread on either contributes one
-        // - DISTINCT over `pr.id`, matching Slack's "this channel has new
-        // messages" rather than "this channel has N new messages per workspace".
+    fn count_needs_attention_global_counts_only_flagged_among_many() {
+        // A mix of flagged and unflagged open PRs: only the flagged ones count.
+        let conn = fresh_conn();
+        seed_pr(&conn, 100, "open", false, true);
+        seed_pr(&conn, 101, "open", false, false);
+        seed_pr(&conn, 102, "open", false, true);
+        assert_eq!(count_needs_attention_global(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn count_needs_attention_global_distincts_across_accounts() {
+        // A PR that needs attention on two accounts contributes one - DISTINCT
+        // over `pr.id`, matching the row indicator (one dot per PR, not per
+        // relation owner).
         let conn = fresh_conn();
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
@@ -579,17 +579,17 @@ mod tests {
                 VALUES (100, 10, 1, 't', 'open', 0, 'bob',
                         0, 1000, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, relation_observed_at, read_at)
-                VALUES (1, 100, 0, NULL);
+                (account_id, pull_request_id, relation_observed_at, needs_attention)
+                VALUES (1, 100, 0, 1);
              INSERT INTO pull_request_viewer_relations
-                (account_id, pull_request_id, relation_observed_at, read_at)
-                VALUES (2, 100, 0, NULL);",
+                (account_id, pull_request_id, relation_observed_at, needs_attention)
+                VALUES (2, 100, 0, 1);",
         )
         .unwrap();
         assert_eq!(
-            count_global_unread(&conn).unwrap(),
+            count_needs_attention_global(&conn).unwrap(),
             1,
-            "two accounts on the same PR count as one unread"
+            "two accounts needing attention on the same PR count as one"
         );
     }
 }

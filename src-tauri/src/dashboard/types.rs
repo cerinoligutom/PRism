@@ -57,6 +57,32 @@ pub enum ReviewerState {
     Pending,
 }
 
+/// The viewer's own relationship to the PR, encoded server-side for the
+/// my-review-state row slot (ADR 0031). The client cannot express `Author`,
+/// `Requested`, or `None` from the submitted-review projection alone, so the
+/// dashboard query derives this with a fixed precedence (highest wins):
+/// `Author` > `Requested` > `ChangesRequested` > `Approved` > `Commented` >
+/// `None`. Host-gated like every other involvement signal: only an identity on
+/// the PR's owning host counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MyReviewState {
+    /// The viewer authored the PR.
+    Author,
+    /// The viewer is a requested reviewer who has not yet submitted a review.
+    Requested,
+    /// The viewer's own latest submitted review is `CHANGES_REQUESTED`.
+    ChangesRequested,
+    /// The viewer's own latest submitted review is `APPROVED`.
+    Approved,
+    /// The viewer's own latest submitted review is `COMMENTED`.
+    Commented,
+    /// The viewer has no authoring, review-request, or submitted-review
+    /// relationship to the PR (including when there is no in-scope identity on
+    /// the PR's host).
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardPullRequest {
     pub id: i64,
@@ -91,6 +117,12 @@ pub struct DashboardPullRequest {
     /// the muted em-dash state in that case.
     pub threads: Option<ThreadsSummary>,
     pub reviewers: Vec<ReviewerEntry>,
+    /// The viewer's own relationship to the PR for the my-review-state row slot
+    /// (ADR 0031). Derived server-side with a fixed precedence because the
+    /// client cannot express `author` / `requested` / `none` from the
+    /// submitted-review data alone. Host-gated: only an in-scope identity on
+    /// the PR's owning host can lift this above `none`.
+    pub my_review_state: MyReviewState,
     pub repo: RepoRef,
     /// Tracked accounts with a relation to this PR (Authored / Assigned /
     /// Watching). Sorted ascending. In the single-account-filter path the

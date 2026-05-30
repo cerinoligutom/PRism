@@ -3,10 +3,10 @@
 //! [`recompute_needs_attention`] backs the read/unread commands and the
 //! conversation hydrator; the per-cycle sync recompute in
 //! `sync::worker::triage_recompute` and the bulk [`mark_view_read`] recompute
-//! reuse the same four-signal formula via [`needs_attention_case_expr`], the
-//! single host-aware, row-correlated builder. See `docs/contracts/triage-ux.md`
-//! ("Sync cycle changes"), ADR 0015 ("Composite formula"), and ADR 0031 (the
-//! consolidation) for the single source of truth for the four input signals.
+//! reuse the same roll-up via [`needs_attention_case_expr`], the single
+//! host-aware, row-correlated builder. See ADR 0031 (the conversation-unit
+//! watermark model) for the single source of truth for the roll-up; it
+//! supersedes the ADR 0015 four-signal composite.
 //!
 //! The per-chip count SQL consumed by
 //! [`crate::triage::commands::list_filter_chip_counts`] also lives here. The
@@ -262,54 +262,133 @@ pub fn archive_retention_sweep(conn: &Connection) -> Result<usize, rusqlite::Err
     )
 }
 
-/// The four-signal `needs_attention` formula as a `CASE WHEN ... THEN 1 ELSE 0
-/// END` SQL expression, host-aware and correlated to the surrounding
+/// The `needs_attention` roll-up as a `CASE WHEN ... THEN 1 ELSE 0 END` SQL
+/// expression, host-aware and correlated to the surrounding
 /// `pull_request_viewer_relations rel` row. Every caller (the bulk command
 /// recompute, the single-pair command recompute, and the per-cycle sync
-/// recompute) embeds this verbatim so the four ADR-0015 signals never drift
-/// apart again (ADR 0031).
+/// recompute) embeds this verbatim so the model never drifts apart again
+/// (ADR 0031, the consolidation; supersedes the ADR 0015 four-signal formula).
 ///
-/// The four signals (ADR 0015):
+/// `needs_attention = 1` for `(account, pr)` iff ANY of:
 ///
-/// 1. Viewer authored the PR AND at least one unresolved thread is involved
-///    by the viewer (a `review_comments` row authored by the viewer's login on
-///    an unresolved `review_threads` row). Per ADR 0016 the involvement test
-///    reads `review_threads` / `review_comments` directly instead of the
-///    retired `pr.threads_unresolved_involved` column.
-/// 2. Viewer is in `requested_reviewers` for the PR (presence implies pending;
-///    the table never stores submitted reviews - those flow through `reviews`).
-/// 3. `mentioned_count_unread > 0` for the (account, PR) pair.
-/// 4. Viewer authored the PR AND `review_decision = 'CHANGES_REQUESTED'`.
+/// - (A) **a review thread needs me.** For a thread `t` on the PR I am
+///   _involved_ in (I authored the PR, OR I have a comment in `t`, OR a comment
+///   in `t` has `mentions_viewer = 1`) there exists a comment by someone other
+///   than me with `created_at > last_engaged_at(t)`, where
+///   `last_engaged_at(t) = MAX(thread_read_state.seen_at for (account,
+///   t.node_id), my own latest comment.created_at in t)` (missing reads as 0).
+///   The author-only gate on ADR 0015's signal 1 is removed: a non-author
+///   thread participant now stays lit on a fresh other-authored reply.
+/// - (B) **the general stream needs me.** Same shape over the PR's
+///   `issue_comments`, treated as one dismissible unit. Watermark =
+///   `MAX(rel.general_stream_seen_at, my own latest issue_comment.created_at)`;
+///   involvement = I authored the PR, OR I posted any issue_comment, OR a
+///   comment has `mentions_viewer = 1`.
+/// - (C) **requested reviewer** (host-gated): I am in `requested_reviewers`.
+/// - (D) **CHANGES_REQUESTED on my authored PR** (host-gated):
+///   `pr.author_login = viewer.login AND pr.review_decision =
+///   'CHANGES_REQUESTED'`.
+///
+/// Mentions fold into involvement via the persisted per-comment
+/// `mentions_viewer` bit (set by the scanner); the standalone
+/// `mentioned_count_unread` counter is no longer read here. Resolved threads
+/// need no special branch: a reply newer than the watermark satisfies (A)'s
+/// generic predicate, so "resolved + new reply nags; resolved + quiet stays
+/// quiet" falls out for free.
 ///
 /// Host isolation (issue #169, ADR 0016 / 0031): GitHub logins are unique per
-/// host, not globally. Signals 1, 2, and 4 join the PR's owning host
-/// (`repos -> accounts`) and require it to equal the viewer's host before a
-/// login-string match counts. A viewer with the same login on two hosts (e.g.
-/// `me` on github.com and `me` on a GHES instance) therefore never inherits the
-/// other identity's involvement. Signal 3 reads the relation row's own
-/// per-(account, PR) counter, which the host-aware mention scanner already
-/// gated, so it needs no extra host guard here.
+/// host, not globally. Every branch joins the PR's owning host
+/// (`repos -> accounts`) and requires it to equal the viewer's host before a
+/// login-string match counts, so a viewer sharing a login on two hosts never
+/// inherits the other identity's involvement.
 ///
 /// The expression references only `rel.account_id`, `rel.pull_request_id`, and
-/// `rel.mentioned_count_unread`, so any caller can wrap it in its own WHERE
-/// scope (a single pair, an IN-set of PR ids, or every row).
+/// `rel.general_stream_seen_at`, so any caller can wrap it in its own WHERE
+/// scope (a single pair, an IN-set of PR ids, or every row). The repeated
+/// `viewer` / `pr_host_acc` joins per branch resolve the same row each time;
+/// at v1 per-PR sizes the planner collapses them and the duplication keeps each
+/// branch independently legible.
 pub(crate) fn needs_attention_case_expr() -> &'static str {
     "CASE WHEN (
         EXISTS (
+            SELECT 1
+              FROM review_threads t
+              JOIN pull_requests pr ON pr.id = t.pull_request_id
+              JOIN accounts viewer ON viewer.id = rel.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE t.pull_request_id = rel.pull_request_id
+               AND pr_host_acc.host = viewer.host
+               AND (
+                   pr.author_login = viewer.login
+                   OR EXISTS (
+                       SELECT 1 FROM review_comments c
+                        WHERE c.review_thread_id = t.id
+                          AND c.author_login = viewer.login
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM review_comments c
+                        WHERE c.review_thread_id = t.id
+                          AND c.mentions_viewer = 1
+                   )
+               )
+               AND EXISTS (
+                   SELECT 1 FROM review_comments c
+                    WHERE c.review_thread_id = t.id
+                      AND c.author_login <> viewer.login
+                      AND c.created_at > (
+                          SELECT MAX(w) FROM (
+                              SELECT COALESCE((
+                                  SELECT trs.seen_at FROM thread_read_state trs
+                                   WHERE trs.account_id = rel.account_id
+                                     AND trs.review_thread_node_id = t.node_id
+                              ), 0) AS w
+                              UNION ALL
+                              SELECT COALESCE((
+                                  SELECT MAX(mc.created_at) FROM review_comments mc
+                                   WHERE mc.review_thread_id = t.id
+                                     AND mc.author_login = viewer.login
+                              ), 0) AS w
+                          )
+                      )
+               )
+        )
+        OR EXISTS (
             SELECT 1
               FROM pull_requests pr
               JOIN accounts viewer ON viewer.id = rel.account_id
               JOIN repos r ON r.id = pr.repo_id
               JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
-              JOIN review_threads t ON t.pull_request_id = pr.id
              WHERE pr.id = rel.pull_request_id
-               AND pr.author_login = viewer.login
                AND pr_host_acc.host = viewer.host
-               AND t.is_resolved = 0
+               AND (
+                   pr.author_login = viewer.login
+                   OR EXISTS (
+                       SELECT 1 FROM issue_comments ic
+                        WHERE ic.pull_request_id = pr.id
+                          AND ic.author_login = viewer.login
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM issue_comments ic
+                        WHERE ic.pull_request_id = pr.id
+                          AND ic.mentions_viewer = 1
+                   )
+               )
                AND EXISTS (
-                   SELECT 1 FROM review_comments c
-                    WHERE c.review_thread_id = t.id
-                      AND c.author_login = viewer.login
+                   SELECT 1 FROM issue_comments ic
+                    WHERE ic.pull_request_id = pr.id
+                      AND ic.author_login <> viewer.login
+                      AND ic.created_at > (
+                          SELECT MAX(w) FROM (
+                              SELECT COALESCE(rel.general_stream_seen_at, 0) AS w
+                              UNION ALL
+                              SELECT COALESCE((
+                                  SELECT MAX(mic.created_at) FROM issue_comments mic
+                                   WHERE mic.pull_request_id = pr.id
+                                     AND mic.author_login = viewer.login
+                              ), 0) AS w
+                          )
+                      )
                )
         )
         OR EXISTS (
@@ -323,7 +402,6 @@ pub(crate) fn needs_attention_case_expr() -> &'static str {
                AND rr.login = viewer.login
                AND pr_host_acc.host = viewer.host
         )
-        OR rel.mentioned_count_unread > 0
         OR EXISTS (
             SELECT 1
               FROM pull_requests pr
@@ -339,7 +417,7 @@ pub(crate) fn needs_attention_case_expr() -> &'static str {
 }
 
 /// Recompute the `pull_request_viewer_relations.needs_attention` boolean for
-/// one `(account_id, pull_request_id)` pair using the four ADR-0015 signals via
+/// one `(account_id, pull_request_id)` pair using the ADR-0031 roll-up via
 /// [`needs_attention_case_expr`].
 ///
 /// The UPDATE is a no-op when the relation row doesn't exist for the pair
@@ -530,10 +608,11 @@ pub fn mark_view_read(
     conn.execute(&read_flip_sql, params_from_iter(base_params.iter()))?;
 
     // Bulk needs_attention recompute against the same row set, host-aware via
-    // the shared `needs_attention_case_expr` builder so the four ADR-0015
-    // signals stay in step with the single-pair and sync paths (ADR 0031). The
-    // mention counter just dropped to zero, so signal 3 will miss; signals 1,
-    // 2, and 4 still resolve from the relation row's surrounding data.
+    // the shared `needs_attention_case_expr` builder so the roll-up stays in
+    // step with the single-pair and sync paths (ADR 0031). The roll-up reads
+    // the per-unit watermarks (thread_read_state + general_stream_seen_at), not
+    // the read flip above; this recompute re-derives attention from conversation
+    // state. The next slice (#433) advances those watermarks on mark-read.
     let recompute_sql = format!(
         "UPDATE pull_request_viewer_relations AS rel
             SET needs_attention = ({case_expr})
@@ -992,16 +1071,19 @@ mod tests {
         conn
     }
 
-    /// Seed one account / repo / PR / relation row. When
-    /// `unresolved_involved_thread` is true the fixture also inserts one
-    /// unresolved `review_threads` row with a `review_comments` row authored
-    /// by the viewer - so the ADR-0016 query-time involvement check finds the
-    /// viewer involved on an unresolved thread.
-    fn seed_account_repo_pr(
+    /// Seed one account (id 1) / repo / PR (id 100) / relation row. The PR's
+    /// author and `review_decision` are configurable; the relation row carries
+    /// schema defaults (no view flags, `general_stream_seen_at` NULL). Tests
+    /// then layer threads, comments, requested reviewers, and watermarks per
+    /// the ADR-0031 roll-up scenario they exercise.
+    fn seed_account_repo_pr(conn: &Connection, viewer_login: &str, author_login: &str) {
+        seed_pr_with_decision(conn, viewer_login, author_login, None);
+    }
+
+    fn seed_pr_with_decision(
         conn: &Connection,
         viewer_login: &str,
         author_login: &str,
-        unresolved_involved_thread: bool,
         review_decision: Option<&str>,
     ) {
         conn.execute_batch(&format!(
@@ -1025,17 +1107,72 @@ mod tests {
             }
         ))
         .unwrap();
-        if unresolved_involved_thread {
-            conn.execute_batch(&format!(
-                "INSERT INTO review_threads
-                    (id, pull_request_id, is_resolved, is_outdated, node_id)
-                    VALUES (5001, 100, 0, 0, 'RT_seed');
-                 INSERT INTO review_comments
-                    (id, review_thread_id, author_login, body, created_at)
-                    VALUES (6001, 5001, '{viewer_login}', 'note', 1);"
-            ))
-            .unwrap();
-        }
+    }
+
+    /// Insert one review thread on PR 100. `node_id` keys the thread for the
+    /// `thread_read_state` seen-watermark; `is_resolved` lets the resolved-nag
+    /// cases set it without a second helper.
+    fn seed_thread(conn: &Connection, thread_id: i64, node_id: &str, is_resolved: i64) {
+        conn.execute(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (?1, 100, ?2, 0, ?3)",
+            params![thread_id, is_resolved, node_id],
+        )
+        .unwrap();
+    }
+
+    /// Insert one review comment into a thread. `mentions_viewer` is the
+    /// persisted per-comment mention bit the roll-up folds into involvement.
+    fn seed_review_comment(
+        conn: &Connection,
+        comment_id: i64,
+        thread_id: i64,
+        author_login: &str,
+        created_at: i64,
+        mentions_viewer: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at, mentions_viewer)
+                VALUES (?1, ?2, ?3, 'body', ?4, ?5)",
+            params![
+                comment_id,
+                thread_id,
+                author_login,
+                created_at,
+                mentions_viewer
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Insert one PR-level issue comment. `mentions_viewer` is the persisted
+    /// per-comment mention bit for the general-stream unit.
+    fn seed_issue_comment(
+        conn: &Connection,
+        comment_id: i64,
+        author_login: &str,
+        created_at: i64,
+        mentions_viewer: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at, mentions_viewer)
+                VALUES (?1, 100, ?2, 'body', ?3, ?4)",
+            params![comment_id, author_login, created_at, mentions_viewer],
+        )
+        .unwrap();
+    }
+
+    /// Set the explicit per-thread "seen" watermark for account 1.
+    fn seed_thread_seen(conn: &Connection, node_id: &str, seen_at: i64) {
+        conn.execute(
+            "INSERT INTO thread_read_state (account_id, review_thread_node_id, seen_at)
+                VALUES (1, ?1, ?2)",
+            params![node_id, seen_at],
+        )
+        .unwrap();
     }
 
     fn read_needs_attention(conn: &Connection) -> i64 {
@@ -1048,26 +1185,199 @@ mod tests {
         .unwrap()
     }
 
+    // ===== (A) a review thread needs me (ADR 0031) =====
+
     #[test]
-    fn signal_one_authored_with_unresolved_involved_threads() {
+    fn unit_needs_me_other_reply_after_my_last_comment_fires() {
+        // I am involved (I commented at t=10); a later other-authored reply
+        // (t=20) sits past my engagement watermark (my own latest comment),
+        // so the thread needs me.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", true, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
+        seed_review_comment(&conn, 6002, 5001, "bob", 20, 0);
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
     #[test]
-    fn signal_one_no_fire_when_not_author() {
+    fn unit_needs_me_uninvolved_unmentioned_non_author_does_not_fire() {
+        // A thread with only other-authored comments, where I never commented,
+        // am not mentioned, and didn't author the PR: not involved, so even a
+        // fresh reply doesn't light it.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", true, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "bob", 10, 0);
+        seed_review_comment(&conn, 6002, 5001, "carol", 20, 0);
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
     #[test]
-    fn signal_two_pending_requested_reviewer() {
+    fn unit_needs_me_my_own_reply_only_does_not_fire() {
+        // I am involved (I commented), but there is no other-authored comment
+        // past my watermark, so the unit is settled.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
+        seed_review_comment(&conn, 6002, 5001, "alice", 20, 0);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    #[test]
+    fn unit_needs_me_other_reply_older_than_last_engaged_does_not_fire() {
+        // The other reply (t=10) predates my latest comment (t=30); my reply is
+        // the engagement watermark, so the older other comment doesn't nag.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "bob", 10, 0);
+        seed_review_comment(&conn, 6002, 5001, "alice", 30, 0);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    #[test]
+    fn unit_needs_me_other_reply_older_than_seen_watermark_does_not_fire() {
+        // I marked the thread seen at t=25; the only other reply is at t=20,
+        // before that watermark, so it doesn't re-light. (Involved via mention
+        // so the involvement gate passes.)
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "bob", 20, 1);
+        seed_thread_seen(&conn, "RT_a", 25);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    // ===== author-gate removal (ADR 0031) =====
+
+    #[test]
+    fn non_author_participant_relights_on_new_reply_after_seen_mention() {
+        // I was mentioned (involved), engaged by replying at t=20 (my watermark
+        // advances to 20), then a NEW other reply lands at t=30. The old
+        // author-only gate would keep a non-author dark; the unit-watermark
+        // model re-lights it.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "bob", 10, 1); // mentions me
+        seed_review_comment(&conn, 6002, 5001, "alice", 20, 0); // my reply (engage)
+        seed_review_comment(&conn, 6003, 5001, "bob", 30, 0); // new other reply
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+    }
+
+    // ===== mention fold-in (ADR 0031): roll-up reads mentions_viewer =====
+
+    #[test]
+    fn mention_in_thread_i_never_commented_in_fires() {
+        // I never commented and didn't author the PR, but a comment carries
+        // `mentions_viewer = 1`, so I am involved; the same other-authored
+        // comment is newer than my (zero) watermark, so the unit needs me.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 0);
+        seed_review_comment(&conn, 6001, 5001, "bob", 10, 1);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+    }
+
+    #[test]
+    fn mention_counter_alone_no_longer_fires() {
+        // The roll-up reads `mentions_viewer`, not `mentioned_count_unread`. A
+        // bumped legacy counter with no qualifying comment must not light the
+        // row (the counter is vestigial for the roll-up).
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET mentioned_count_unread = 5
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    // ===== resolved-thread nags (ADR 0031) =====
+
+    #[test]
+    fn resolved_thread_with_newer_other_reply_fires() {
+        // Resolved threads need no special branch: a reply newer than the
+        // watermark satisfies the generic predicate. I engaged at t=10; an
+        // other reply at t=30 (after the thread resolved) still nags.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 1);
+        seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
+        seed_review_comment(&conn, 6002, 5001, "bob", 30, 0);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+    }
+
+    #[test]
+    fn resolved_thread_quiet_does_not_fire() {
+        // Resolved + no other reply past my watermark: stays quiet.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_thread(&conn, 5001, "RT_a", 1);
+        seed_review_comment(&conn, 6001, 5001, "alice", 10, 0);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    // ===== (B) the general stream needs me (ADR 0031) =====
+
+    #[test]
+    fn general_stream_other_reply_after_my_comment_fires() {
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_issue_comment(&conn, 7001, "alice", 10, 0);
+        seed_issue_comment(&conn, 7002, "bob", 20, 0);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+    }
+
+    #[test]
+    fn general_stream_mention_when_i_never_posted_fires() {
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_issue_comment(&conn, 7001, "bob", 10, 1);
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+    }
+
+    #[test]
+    fn general_stream_settled_by_seen_watermark_does_not_fire() {
+        // I'm involved via a mention; the relation's general_stream_seen_at is
+        // ahead of the only other comment, so the unit is settled.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_issue_comment(&conn, 7001, "bob", 20, 1);
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET general_stream_seen_at = 25
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    // ===== (C) requested reviewer (host-gated) =====
+
+    #[test]
+    fn requested_reviewer_with_no_conversation_fires_then_clears_on_removal() {
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
                 VALUES (100, 'alice', 'user')",
@@ -1076,12 +1386,20 @@ mod tests {
         .unwrap();
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
+
+        conn.execute(
+            "DELETE FROM requested_reviewers WHERE pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 0);
     }
 
     #[test]
-    fn signal_two_no_fire_for_other_reviewers() {
+    fn requested_reviewer_other_login_does_not_fire() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
                 VALUES (100, 'carol', 'user')",
@@ -1092,33 +1410,28 @@ mod tests {
         assert_eq!(read_needs_attention(&conn), 0);
     }
 
+    // ===== (D) CHANGES_REQUESTED on my authored PR (host-gated) =====
+
     #[test]
-    fn signal_three_unread_mentions() {
+    fn changes_requested_on_my_pr_fires_then_clears_on_approval() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_pr_with_decision(&conn, "alice", "alice", Some("CHANGES_REQUESTED"));
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert_eq!(read_needs_attention(&conn), 1);
+
         conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 2
-              WHERE account_id = 1 AND pull_request_id = 100",
+            "UPDATE pull_requests SET review_decision = 'APPROVED' WHERE id = 100",
             [],
         )
         .unwrap();
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert_eq!(read_needs_attention(&conn), 1);
+        assert_eq!(read_needs_attention(&conn), 0);
     }
 
     #[test]
-    fn signal_four_changes_requested_on_authored_pr() {
+    fn changes_requested_on_other_authored_pr_does_not_fire() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", false, Some("CHANGES_REQUESTED"));
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert_eq!(read_needs_attention(&conn), 1);
-    }
-
-    #[test]
-    fn signal_four_no_fire_when_not_author() {
-        let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, Some("CHANGES_REQUESTED"));
+        seed_pr_with_decision(&conn, "alice", "bob", Some("CHANGES_REQUESTED"));
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
     }
@@ -1126,7 +1439,7 @@ mod tests {
     #[test]
     fn negative_no_signals_clears_flag() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
         // Pre-set the flag so the recompute has to actively clear it.
         conn.execute(
             "UPDATE pull_request_viewer_relations
@@ -1137,21 +1450,6 @@ mod tests {
         .unwrap();
         recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
-    }
-
-    #[test]
-    fn combined_signals_one_and_three_still_fire() {
-        let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", true, None);
-        conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 3
-              WHERE account_id = 1 AND pull_request_id = 100",
-            [],
-        )
-        .unwrap();
-        recompute_needs_attention(&conn, 1, 100, None).unwrap();
-        assert_eq!(read_needs_attention(&conn), 1);
     }
 
     #[test]
@@ -1186,18 +1484,117 @@ mod tests {
         assert_eq!(exists, 0);
     }
 
+    // ===== host isolation (issue #169, ADR 0031) =====
+
+    #[test]
+    fn rollup_host_isolation_activity_on_host_a_does_not_light_host_b() {
+        // Same login `me` on two hosts. The PR lives on github.com (account 1).
+        // A fresh other-authored reply on a thread `me` is mentioned in lights
+        // account 1's relation but NOT account 2's (github.acme.corp), because
+        // the roll-up requires the viewer's host to equal the PR's owning host.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at) VALUES
+                (1, 'a', 'github.com', 'me', 0),
+                (2, 'b', 'github.acme.corp', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at) VALUES
+                (1, 100, 0),
+                (2, 100, 0);
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (5001, 100, 0, 0, 'RT_h');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at, mentions_viewer)
+                VALUES (6001, 5001, 'bob', 'ping @me', 10, 1);",
+        )
+        .unwrap();
+
+        recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        recompute_needs_attention(&conn, 2, 100, None).unwrap();
+
+        let read = |account: i64| -> i64 {
+            conn.query_row(
+                "SELECT needs_attention FROM pull_request_viewer_relations
+                  WHERE account_id = ?1 AND pull_request_id = 100",
+                params![account],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(read(1), 1, "host A (PR's host) lights");
+        assert_eq!(read(2), 0, "host B (different host) must stay dark");
+    }
+
+    #[test]
+    fn rollup_no_relation_row_with_fresh_activity_stays_zero() {
+        // A Tracked/Team PR with no relation row for the viewer: fresh
+        // conversation activity can't light a relation that doesn't exist
+        // (the recompute UPDATE matches zero rows). Pairs with the conversation
+        // surface reporting `is_involved = 0` in the same shape.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (5001, 100, 0, 0, 'RT_n');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at, mentions_viewer)
+                VALUES (6001, 5001, 'bob', 'ping @alice', 10, 1);",
+        )
+        .unwrap();
+
+        let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
+        assert!(triggers.is_empty());
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0, "no relation row exists to light");
+    }
+
     // ===== notification trigger emission (ADR 0017 decision 1, issue #192) =====
     //
     // The recompute helper returns triggers describing transitions observed
     // in the same call. The sync worker / commands dispatch them to the
     // notification sink after the transaction commits.
 
+    /// Drive a clean 0 -> 1 attention flip via the requested-reviewer branch
+    /// (D-free role obligation), the simplest roll-up signal to seed without
+    /// conversation state.
+    fn make_requested_reviewer(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'alice', 'user')",
+            [],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn returns_needs_attention_trigger_on_zero_to_one_flip() {
         let conn = fresh_db();
-        // Author == viewer + unresolved involved thread fires signal 1, so a
-        // baseline-zero row flips to 1 on this call.
-        seed_account_repo_pr(&conn, "alice", "alice", true, None);
+        // Requested reviewer fires branch (C), so a baseline-zero row flips to
+        // 1 on this call.
+        seed_account_repo_pr(&conn, "alice", "bob");
+        make_requested_reviewer(&conn);
         let triggers = recompute_needs_attention(&conn, 1, 100, None).unwrap();
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].kind, NotificationKind::NeedsAttention);
@@ -1208,7 +1605,8 @@ mod tests {
     #[test]
     fn returns_empty_vec_when_already_at_one() {
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "alice", true, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
+        make_requested_reviewer(&conn);
         // First call flips 0 -> 1 and emits the trigger.
         let _ = recompute_needs_attention(&conn, 1, 100, None).unwrap();
         // Second call is a steady-state 1 -> 1 transition; no trigger.
@@ -1222,11 +1620,11 @@ mod tests {
         // A jump from 0 to 2 fires exactly one Mention trigger, not two -
         // the trigger is about "a new unread mention landed since the last
         // recompute" rather than "one toast per mention" (ADR 0017 decision 1).
-        // The caller (mimicking the sync worker's mention scan that ran just
-        // before this recompute) passes the pre-scan baseline; the helper
-        // compares the baseline to the post-UPDATE row value.
+        // The Mention trigger still reads the legacy `mentioned_count_unread`
+        // (the dispatch path isn't rewritten until the next slice, #433); only
+        // the `needs_attention` roll-up moved off the counter.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET mentioned_count_unread = 2
@@ -1235,19 +1633,28 @@ mod tests {
         )
         .unwrap();
         let triggers = recompute_needs_attention(&conn, 1, 100, Some(0)).unwrap();
-        // Both kinds fire: the counter jump emits a Mention trigger, and the
-        // attention column moves 0 -> 1 because mentioned_count_unread > 0.
         let mention_count = triggers
             .iter()
             .filter(|t| t.kind == NotificationKind::Mention)
             .count();
         assert_eq!(mention_count, 1, "single trigger per recompute call");
+        // The bumped counter no longer flips the roll-up (it reads
+        // `mentions_viewer`, not the counter), so no NeedsAttention trigger.
+        assert!(
+            triggers
+                .iter()
+                .all(|t| t.kind != NotificationKind::NeedsAttention),
+            "the legacy counter must not flip the roll-up under ADR 0031"
+        );
     }
 
     #[test]
     fn returns_both_triggers_when_both_transitions_happen() {
+        // Branch (C) flips the roll-up 0 -> 1 (NeedsAttention trigger) while the
+        // legacy counter increase emits the Mention trigger in the same call.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
+        make_requested_reviewer(&conn);
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET mentioned_count_unread = 1
@@ -1269,7 +1676,7 @@ mod tests {
         // equal to the post-UPDATE value (they don't bump the counter on the
         // way in). The helper must not surface a phantom Mention trigger.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET mentioned_count_unread = 0
@@ -1289,7 +1696,7 @@ mod tests {
         // Clearing attention is not a notification event - the in-app badge
         // turning off is signal enough. Only the rising edge fires a toast.
         let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob", false, None);
+        seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "UPDATE pull_request_viewer_relations
                 SET needs_attention = 1
@@ -2641,8 +3048,12 @@ mod tests {
     #[test]
     fn mark_view_read_keeps_attention_when_other_signals_still_fire() {
         let conn = fresh_db();
-        // Author == viewer + unresolved involved thread keeps signal 1 firing
-        // even after the read flip (mentions go to zero, but threads stay).
+        // A review thread with a fresh other-authored reply past my engagement
+        // watermark keeps the roll-up's (A) branch firing after the read flip:
+        // mark_view_read zeroes the legacy mention counter but the bulk
+        // recompute re-derives attention from the conversation watermarks, and
+        // the thread still needs me (ADR 0031). alice authored a comment at
+        // t=1; bob replied at t=2 (newer than her watermark).
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (1, 'a', 'github.com', 'alice', 0);
@@ -2656,8 +3067,9 @@ mod tests {
                 (id, pull_request_id, is_resolved, is_outdated, node_id)
                 VALUES (5001, 100, 0, 0, 'RT_seed');
              INSERT INTO review_comments
-                (id, review_thread_id, author_login, body, created_at)
-                VALUES (6001, 5001, 'alice', 'note', 1);
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (6001, 5001, 'alice', 'note', 1),
+                (6002, 5001, 'bob',   'reply', 2);
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
                  is_involved, relation_observed_at, mentioned_count_unread,
@@ -2679,7 +3091,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             needs_attention, 1,
-            "thread-driven signal still fires after the mention flip"
+            "thread-driven (A) signal still fires after the mention-counter flip"
         );
     }
 
@@ -2984,13 +3396,17 @@ mod tests {
         ))
         .unwrap();
         if unresolved_involved_thread {
+            // `me` engaged at t=1; a later other-authored reply at t=2 lights
+            // the (A) branch of the roll-up for whichever account shares the
+            // PR's host (ADR 0031). The host gate is what the test pins.
             conn.execute_batch(
                 "INSERT INTO review_threads
                     (id, pull_request_id, is_resolved, is_outdated, node_id)
                     VALUES (5001, 100, 0, 0, 'RT_xhost');
                  INSERT INTO review_comments
-                    (id, review_thread_id, author_login, body, created_at)
-                    VALUES (6001, 5001, 'me', 'note', 1);",
+                    (id, review_thread_id, author_login, body, created_at) VALUES
+                    (6001, 5001, 'me',  'note',  1),
+                    (6002, 5001, 'bob', 'reply', 2);",
             )
             .unwrap();
         }
@@ -3008,10 +3424,10 @@ mod tests {
 
     #[test]
     fn recompute_does_not_leak_authored_thread_signal_across_hosts() {
-        // PR is authored by `me` on github.com with an unresolved involved
-        // thread. Recomputing the github.com relation flags it (signal 1);
-        // recomputing the same-login GHES relation must stay 0 - account 2's
-        // identity does not own this PR.
+        // PR is authored by `me` on github.com with a thread that has a fresh
+        // other-authored reply. Recomputing the github.com relation flags it
+        // (roll-up branch A); recomputing the same-login GHES relation must
+        // stay 0 - account 2's identity does not own this PR.
         let conn = fresh_db();
         seed_command_path_cross_host_collision(&conn, "me", None, true);
 
@@ -3021,7 +3437,7 @@ mod tests {
         assert_eq!(
             read_needs_attention_for(&conn, 1, 100),
             1,
-            "github.com viewer authored the PR; signal 1 fires"
+            "github.com viewer is involved with a fresh reply; (A) fires"
         );
         assert_eq!(
             read_needs_attention_for(&conn, 2, 100),

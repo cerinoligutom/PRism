@@ -26,7 +26,7 @@ use prism_lib::dashboard::query::list_pull_requests as inner_list_pull_requests;
 use prism_lib::dashboard::query::list_view_counts;
 use prism_lib::dashboard::types::DashboardPullRequest;
 use prism_lib::dashboard::{
-    DashboardSort, DashboardView, DashboardViewCounts, ReviewerEntry, ReviewerState,
+    DashboardSort, DashboardView, DashboardViewCounts, MyReviewState, ReviewerEntry, ReviewerState,
 };
 use prism_lib::db::migrate;
 use prism_lib::triage::types::ChipKey;
@@ -2522,4 +2522,162 @@ fn union_resolved_thread_with_two_in_scope_authors_counts_once() {
     assert_eq!(threads.resolved_involved, 1);
     assert_eq!(threads.unresolved_involved, 0);
     assert_eq!(threads.resolved_uninvolved, 0);
+}
+
+// ===== my_review_state derivation (ADR 0031) =====
+//
+// Precedence (highest wins): author > requested > changes-requested >
+// approved > commented > none. Derived server-side and host-gated. The shared
+// fixture covers author / requested / none; a dedicated fixture pins the
+// submitted-review states and the requested-outranks-submitted rule.
+
+#[test]
+fn my_review_state_author_when_viewer_authored() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // alice (account 1) authored PR 100.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Authored,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 100).unwrap();
+    assert_eq!(pr.my_review_state, MyReviewState::Author);
+}
+
+#[test]
+fn my_review_state_requested_outranks_submitted_review() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // alice (account 1) on PR 400: review-requested AND has a submitted
+    // CHANGES_REQUESTED review. `requested` outranks `changes-requested`.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Assigned,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 400).unwrap();
+    assert_eq!(pr.my_review_state, MyReviewState::Requested);
+}
+
+#[test]
+fn my_review_state_none_when_only_involved() {
+    let conn = fresh_db();
+    seed_fixture(&conn);
+    // alice (account 1) on PR 200: involved (commented), not author / requested
+    // / reviewer of record.
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let pr = rows.iter().find(|r| r.id == 200).unwrap();
+    assert_eq!(pr.my_review_state, MyReviewState::None);
+}
+
+/// Seed one account (alice) and four PRs whose only relationship to alice is a
+/// single submitted review in the named state, plus one PR she neither
+/// authored, was requested on, nor reviewed. Lets each submitted-state map be
+/// asserted in isolation (no author / requested confound).
+fn seed_my_review_state_fixture(conn: &Connection) {
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'alice-acct', 'github.com', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'alice', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, is_draft, author_login,
+             created_at, updated_at, base_ref, head_ref) VALUES
+            (610, 10, 1, 'cr',   'open', 0, 'someone', 0, 100, 'main', 'a'),
+            (620, 10, 2, 'appr', 'open', 0, 'someone', 0, 100, 'main', 'b'),
+            (630, 10, 3, 'comm', 'open', 0, 'someone', 0, 100, 'main', 'c'),
+            (640, 10, 4, 'none', 'open', 0, 'someone', 0, 100, 'main', 'd');
+
+        -- alice is involved on each (so they surface in the Watching view) but
+        -- her only role on 610/620/630 is the submitted review; 640 has none.
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, relation_observed_at) VALUES
+            (1, 610, 0, 0, 1, 0),
+            (1, 620, 0, 0, 1, 0),
+            (1, 630, 0, 0, 1, 0),
+            (1, 640, 0, 0, 1, 0);
+
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9610, 610, 'alice', 'CHANGES_REQUESTED', 500),
+            (9620, 620, 'alice', 'APPROVED',          500),
+            (9630, 630, 'alice', 'COMMENTED',         500);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn my_review_state_maps_each_submitted_state() {
+    let conn = fresh_db();
+    seed_my_review_state_fixture(&conn);
+    let rows = list_pull_requests(
+        &conn,
+        DashboardView::Watching,
+        DashboardSort::Updated,
+        Some(1),
+    )
+    .unwrap();
+    let state_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().my_review_state;
+    assert_eq!(state_of(610), MyReviewState::ChangesRequested);
+    assert_eq!(state_of(620), MyReviewState::Approved);
+    assert_eq!(state_of(630), MyReviewState::Commented);
+    assert_eq!(state_of(640), MyReviewState::None);
+}
+
+#[test]
+fn my_review_state_host_gated_off_host_login_reads_none() {
+    // alice's login on a DIFFERENT host than the PR must not lift the state
+    // above `none`, even though the submitted review's login string matches.
+    let conn = fresh_db();
+    conn.execute_batch(
+        r#"
+        INSERT INTO accounts (id, label, host, login, created_at) VALUES
+            (1, 'owner-acct', 'github.com', 'owner', 0),
+            (2, 'alice-ghe',  'github.acme.corp', 'alice', 0);
+
+        INSERT INTO repos (id, account_id, owner, name, visibility) VALUES
+            (10, 1, 'owner', 'web', 'public');
+
+        INSERT INTO pull_requests
+            (id, repo_id, number, title, state, is_draft, author_login,
+             created_at, updated_at, base_ref, head_ref) VALUES
+            (700, 10, 1, 'x', 'open', 0, 'someone', 0, 100, 'main', 'a');
+
+        -- account 2 (github.acme.corp) is involved on a github.com PR.
+        INSERT INTO pull_request_viewer_relations
+            (account_id, pull_request_id, is_authored, is_review_requested,
+             is_involved, relation_observed_at) VALUES
+            (2, 700, 0, 0, 1, 0);
+
+        INSERT INTO reviews (id, pull_request_id, reviewer_login, state, submitted_at) VALUES
+            (9700, 700, 'alice', 'APPROVED', 500);
+        "#,
+    )
+    .unwrap();
+
+    // Unified view so account 2's relation surfaces the PR; the host gate keys
+    // off the PR's owning host (github.com), which account 2 is not on.
+    let rows =
+        list_pull_requests(&conn, DashboardView::Watching, DashboardSort::Updated, None).unwrap();
+    let pr = rows.iter().find(|r| r.id == 700).unwrap();
+    assert_eq!(
+        pr.my_review_state,
+        MyReviewState::None,
+        "off-host login must not lift my_review_state"
+    );
 }

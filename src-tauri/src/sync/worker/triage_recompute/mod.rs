@@ -1,10 +1,13 @@
-//! Mention scan + four-signal `needs_attention` recompute (ADR 0015, M4-B).
+//! Mention scan + `needs_attention` roll-up recompute (ADR 0031; supersedes
+//! the ADR 0015 four-signal composite).
 //!
 //! Runs inside the same DB transaction as `enrichment::write_pr_updates` so the
-//! recompute sees the freshest threads, requested reviewers, and review
-//! decision. Returns the (possibly empty) [`NotificationTrigger`]s for the
-//! ADR 0017 transitions observed in this cycle - the caller dispatches after
-//! commit.
+//! recompute sees the freshest threads, comments, requested reviewers, and
+//! review decision. The scan sets the per-comment `mentions_viewer` bit the
+//! roll-up folds into involvement (and still bumps the legacy
+//! `mentioned_count_unread` counter the existing dispatch trigger reads).
+//! Returns the (possibly empty) [`NotificationTrigger`]s for the ADR 0017
+//! transitions observed in this cycle - the caller dispatches after commit.
 
 use rusqlite::params;
 
@@ -20,9 +23,9 @@ mod tests;
 use mentions::mentions_viewer;
 
 /// Count new `@<viewer-login>` mentions across the PR's comment bodies since
-/// the per-(account, PR) watermark, bump the unread counter by that count,
-/// advance the watermark to now, then recompute the four-signal
-/// `needs_attention` composite. See ADR 0015 and `docs/contracts/triage-ux.md`.
+/// the per-(account, PR) watermark, set `mentions_viewer = 1` on each matched
+/// comment, bump the legacy unread counter by that count, advance the watermark
+/// to now, then recompute the `needs_attention` roll-up. See ADR 0031.
 ///
 /// Watermark advance runs unconditionally so a cycle with zero new comments
 /// still moves the cursor forward and the next scan starts from now.
@@ -107,46 +110,76 @@ pub(super) fn scan_mentions_and_recompute_attention(
         )
         .unwrap_or(0);
 
-    // Pull bodies from review + issue comments newer than the watermark and
-    // not authored by the viewer. Scan in Rust (word-boundary aware) rather
+    // Pull (id, body) from review + issue comments newer than the watermark
+    // and not authored by the viewer. Scan in Rust (word-boundary aware) rather
     // than via SQLite REGEXP so the worker doesn't need to register a custom
     // SQL function. Bodies are bounded by the per-PR comment volume on the
     // GitHub side; for v1 sizes a memory pass is cheap.
+    //
+    // A match does two things: it bumps the legacy `mentioned_count_unread`
+    // counter (still read by the existing dispatch trigger; the next slice,
+    // #433, retires it) and sets the persisted per-comment `mentions_viewer`
+    // bit that the ADR-0031 roll-up folds into involvement. The bit is set,
+    // never cleared (idempotent); re-running over an already-flagged comment is
+    // a no-op write. Collecting the matched ids first keeps the borrow of the
+    // prepared statement from overlapping the UPDATE.
     let mut new_mentions: i64 = 0;
+    let mut matched_review_ids: Vec<i64> = Vec::new();
+    let mut matched_issue_ids: Vec<i64> = Vec::new();
     {
         let mut review_stmt = tx.prepare(
-            "SELECT c.body
+            "SELECT c.id, c.body
                FROM review_comments c
                JOIN review_threads t ON t.id = c.review_thread_id
               WHERE t.pull_request_id = ?1
                 AND c.author_login != ?2
                 AND c.created_at > ?3",
         )?;
-        let bodies = review_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
-            row.get::<_, String>(0)
+        let matches = review_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
-        for body in bodies {
-            if mentions_viewer(&body?, &viewer_login) {
+        for matched in matches {
+            let (id, body) = matched?;
+            if mentions_viewer(&body, &viewer_login) {
                 new_mentions += 1;
+                matched_review_ids.push(id);
             }
         }
     }
     {
         let mut issue_stmt = tx.prepare(
-            "SELECT ic.body
+            "SELECT ic.id, ic.body
                FROM issue_comments ic
               WHERE ic.pull_request_id = ?1
                 AND ic.author_login != ?2
                 AND ic.created_at > ?3",
         )?;
-        let bodies = issue_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
-            row.get::<_, String>(0)
+        let matches = issue_stmt.query_map(params![pr_id, viewer_login, watermark], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
-        for body in bodies {
-            if mentions_viewer(&body?, &viewer_login) {
+        for matched in matches {
+            let (id, body) = matched?;
+            if mentions_viewer(&body, &viewer_login) {
                 new_mentions += 1;
+                matched_issue_ids.push(id);
             }
         }
+    }
+
+    // Set the per-comment mention bit on each matched row. ADR 0031: a mention
+    // is one reason a unit involves the viewer, so the roll-up reads this bit
+    // rather than the relation-level counter.
+    for id in &matched_review_ids {
+        tx.execute(
+            "UPDATE review_comments SET mentions_viewer = 1 WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    for id in &matched_issue_ids {
+        tx.execute(
+            "UPDATE issue_comments SET mentions_viewer = 1 WHERE id = ?1",
+            params![id],
+        )?;
     }
 
     // Bump counter and advance watermark. Watermark moves forward on every
