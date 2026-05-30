@@ -34,6 +34,41 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0022_notifications_read_at.sql"),
     include_str!("../../migrations/0023_notification_retention.sql"),
     include_str!("../../migrations/0024_drop_review_thread_head_denorm.sql"),
+    include_str!("../../migrations/0025_conversation_unit_read_state.sql"),
+];
+
+/// Migration filenames in apply order, kept in lockstep with
+/// [`MIGRATION_SOURCES`]. `include_str!` discards the path, so the sequence-
+/// integrity test reads the `NNNN_` prefixes from here instead. A length
+/// mismatch between the two lists fails the test, catching an entry added to
+/// one but not the other.
+#[cfg(test)]
+const MIGRATION_FILENAMES: &[&str] = &[
+    "0001_init.sql",
+    "0002_dashboard_fields.sql",
+    "0003_accounts_expires_at.sql",
+    "0004_conversation_depth.sql",
+    "0005_threads_breakdown.sql",
+    "0006_users_table.sql",
+    "0007_review_thread_url.sql",
+    "0008_comment_urls.sql",
+    "0009_comment_body_html.sql",
+    "0010_triage_state.sql",
+    "0011_review_url.sql",
+    "0012_archive_and_settings.sql",
+    "0013_rename_team_tracked.sql",
+    "0014_diff_hunk.sql",
+    "0015_index_review_comments_author_login.sql",
+    "0016_rename_pull_requests_draft.sql",
+    "0017_rename_relation_last_seen_at.sql",
+    "0018_last_seen_version.sql",
+    "0019_auto_update_settings.sql",
+    "0020_auto_archive_days.sql",
+    "0021_notifications.sql",
+    "0022_notifications_read_at.sql",
+    "0023_notification_retention.sql",
+    "0024_drop_review_thread_head_denorm.sql",
+    "0025_conversation_unit_read_state.sql",
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -127,6 +162,8 @@ mod tests {
             "app_settings",
             // 0021 persistent notifications inbox.
             "notifications",
+            // 0025 conversation-unit read-state (ADR 0031, issue #431).
+            "thread_read_state",
         ];
         for name in expected {
             let count: i64 = conn
@@ -1003,5 +1040,199 @@ mod tests {
             msg.contains("check") || msg.contains("constraint"),
             "expected CHECK constraint failure, got: {err}"
         );
+    }
+
+    /// Migration filenames must form a gapless `1..=N` sequence with no
+    /// duplicate version number, and `N` must equal `MIGRATION_SOURCES.len()`
+    /// (the invariant `rusqlite_migration` encodes in `user_version`). This
+    /// catches a skipped number, a re-used number from two PRs mid-flight, or
+    /// a `MIGRATION_FILENAMES` entry that drifts out of step with
+    /// `MIGRATION_SOURCES`.
+    #[test]
+    fn migration_sources_are_a_gapless_unique_sequence() {
+        assert_eq!(
+            MIGRATION_FILENAMES.len(),
+            MIGRATION_SOURCES.len(),
+            "MIGRATION_FILENAMES and MIGRATION_SOURCES must stay in lockstep"
+        );
+
+        let versions: Vec<u32> = MIGRATION_FILENAMES
+            .iter()
+            .map(|name| {
+                let prefix = name
+                    .split('_')
+                    .next()
+                    .unwrap_or_else(|| panic!("migration filename has no prefix: {name}"));
+                prefix
+                    .parse::<u32>()
+                    .unwrap_or_else(|_| panic!("migration filename prefix is not numeric: {name}"))
+            })
+            .collect();
+
+        for (index, version) in versions.iter().enumerate() {
+            let expected = index as u32 + 1;
+            assert_eq!(
+                *version, expected,
+                "migration at position {index} must be version {expected}, found {version} \
+                 (gap, duplicate, or out-of-order migration number)"
+            );
+        }
+
+        assert_eq!(
+            versions.len(),
+            MIGRATION_SOURCES.len(),
+            "version count must equal MIGRATION_SOURCES.len()"
+        );
+    }
+
+    /// Migration 0025 (ADR 0031, issue #431) adds the conversation-unit
+    /// read-state foundation. Assert the new table and every new column land
+    /// on a fresh DB so a regression in 0025 trips here rather than mid-feature.
+    #[test]
+    fn migration_0025_adds_conversation_unit_read_state_schema() {
+        let conn = fresh();
+
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'table' AND name = 'thread_read_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 1, "0025 must create thread_read_state");
+
+        let added_columns = [
+            ("pull_request_viewer_relations", "general_stream_seen_at"),
+            ("pull_request_viewer_relations", "last_emitted_activity_at"),
+            ("notifications", "unit_kind"),
+            ("notifications", "unit_ref"),
+            ("notifications", "deep_link_url"),
+            ("review_comments", "mentions_viewer"),
+            ("issue_comments", "mentions_viewer"),
+        ];
+        for (table, column) in added_columns {
+            let sql = format!("SELECT name FROM pragma_table_info('{table}')");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(
+                names.iter().any(|n| n == column),
+                "0025 must add {table}.{column}"
+            );
+        }
+    }
+
+    /// `thread_read_state` cascades with its account: the watermark has no
+    /// meaning once the viewer identity is gone, matching the FK the ADR 0031
+    /// schema declares. Mirrors the other `*_cascade_on_account_delete` tests.
+    #[test]
+    fn thread_read_state_cascades_on_account_delete() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO thread_read_state
+                (account_id, review_thread_node_id, seen_at)
+                VALUES (1, 'RT_1', 5);",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM accounts WHERE id = 1", [])
+            .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM thread_read_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "thread_read_state must cascade with its account");
+    }
+
+    /// 0025 must apply cleanly on top of a populated post-0024 schema: it is
+    /// additive, so existing `pull_request_viewer_relations` and
+    /// `notifications` rows survive and the new columns default. Replays up
+    /// through 0024, seeds a relation and an inbox row, runs 0025, then reads
+    /// both back to prove the rows persisted with NULL defaults on the new
+    /// nullable columns.
+    #[test]
+    fn migration_0025_preserves_existing_rows_and_defaults_new_columns() {
+        // 0025 sits at zero-index 24 (NNNN numbers start at 0001), so
+        // `take(24)` lands every migration up through 0024 and stops before
+        // 0025.
+        const PRE_0025_PREFIX: usize = 24;
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_0025 = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(PRE_0025_PREFIX)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_0025.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 42, 't', 'open', 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at)
+                VALUES (1, 100, 1, 0, 1, 7);
+             INSERT INTO notifications
+                (id, kind, account_id, pull_request_id,
+                 owner, repo, pr_number, pr_title, title, body)
+                VALUES (1, 'needs_attention', 1, 100,
+                        'owner', 'repo', 42, 't',
+                        'Needs your attention', 'owner/repo #42 - t');",
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        // The relation row survives and its new watermark columns default NULL.
+        let (observed_at, general_seen, last_emitted): (i64, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT relation_observed_at, general_stream_seen_at, last_emitted_activity_at
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(observed_at, 7, "pre-0025 relation row must survive");
+        assert_eq!(
+            general_seen, None,
+            "general_stream_seen_at must default NULL"
+        );
+        assert_eq!(
+            last_emitted, None,
+            "last_emitted_activity_at must default NULL"
+        );
+
+        // The inbox row survives and its new unit columns default NULL.
+        let (pr_title, unit_kind, unit_ref, deep_link): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT pr_title, unit_kind, unit_ref, deep_link_url
+                   FROM notifications WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(pr_title, "t", "pre-0025 inbox row must survive");
+        assert_eq!(unit_kind, None, "unit_kind must default NULL");
+        assert_eq!(unit_ref, None, "unit_ref must default NULL");
+        assert_eq!(deep_link, None, "deep_link_url must default NULL");
     }
 }

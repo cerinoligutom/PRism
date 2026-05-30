@@ -46,3 +46,6 @@
 
 # Claude Code agent worktrees (transient — created by Agent tool isolation:worktree)
 .claude/worktrees/
+
+# Claude Code agent scratch memory (transient — never tracked)
+.claude/agent-memory/
