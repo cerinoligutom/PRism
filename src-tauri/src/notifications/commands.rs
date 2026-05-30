@@ -152,6 +152,9 @@ mod tests {
                 pr_title: format!("PR {number}"),
                 title: "Needs your attention".to_string(),
                 body: Some(format!("owner/web #{number}")),
+                unit_kind: None,
+                unit_ref: None,
+                deep_link_url: None,
             },
         )
         .unwrap()

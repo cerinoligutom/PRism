@@ -37,7 +37,9 @@ pub use formatter::format_trigger;
 pub use pending::{PendingPayloadQueue, PendingPayloadQueueHandle};
 pub use runtime::{PluginPermissionAsker, TauriNotificationSink};
 pub use sink::{NotificationSink, NotificationSinkHandle, PermissionAsker};
-pub use types::{Notification, NotificationKind, NotificationSnapshot, NotificationTrigger};
+pub use types::{
+    Notification, NotificationKind, NotificationSnapshot, NotificationTrigger, NotificationUnitKind,
+};
 
 #[cfg(test)]
 mod tests {

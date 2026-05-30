@@ -782,3 +782,289 @@ fn mention_scan_still_increments_same_host_relation_row() {
 
     assert_eq!(read_mention_count(&db, 1, pr_id), 1);
 }
+
+// ===== edge-with-re-arm dispatch (ADR 0031) =====
+//
+// `write_pr_updates` returns the per-unit triggers the sync worker dispatches
+// after commit. These tests drive the re-arm logic end-to-end through that
+// path so the per-PR `last_emitted_activity_at` dedup is exercised exactly as
+// the worker runs it.
+
+use crate::notify::{NotificationKind, NotificationUnitKind};
+
+fn read_last_emitted(db: &DbHandle, account_id: i64, pr_id: i64) -> i64 {
+    db.lock()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(last_emitted_activity_at, 0)
+               FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+}
+
+/// Seed a thread (`me` authored the PR + engaged) with one other-authored
+/// reply at `reply_at`. Returns nothing; the caller drives the cycles.
+fn seed_authored_thread_with_reply(db: &DbHandle, node_id: &str, my_at: i64, reply_at: i64) {
+    db.lock()
+        .unwrap()
+        .execute_batch(&format!(
+            "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, line)
+                VALUES (1001, 100, 0, 0, '{node_id}', 'src/a.rs', 4);
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'me',  'mine',  {my_at}),
+                (2002, 1001, 'bob', 'reply', {reply_at});"
+        ))
+        .unwrap();
+}
+
+#[test]
+fn rearm_emits_once_then_stays_quiet_then_refires_on_new_reply() {
+    // 3-cycle re-arm test (per-PR): a crossing fires exactly one dispatch and
+    // advances last_emitted; a quiet cycle with the PR still needing me fires
+    // nothing; a genuinely-new later reply fires again exactly once.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    seed_authored_thread_with_reply(&db, "RT_a", 10, 20);
+
+    // Cycle 1: crossing at t=20 -> one trigger, last_emitted advances to 20.
+    let t1 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(t1.len(), 1, "first crossing emits exactly one trigger");
+    assert_eq!(t1[0].kind, NotificationKind::NeedsAttention);
+    assert_eq!(t1[0].unit_kind, NotificationUnitKind::Thread);
+    assert_eq!(t1[0].unit_ref.as_deref(), Some("RT_a"));
+    assert_eq!(t1[0].newest_activity_at, 20);
+    assert_eq!(read_last_emitted(&db, 1, pr_id), 20);
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+
+    // Cycle 2: no new activity, PR still needs me -> zero dispatch, watermark
+    // unchanged.
+    let t2 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(t2.is_empty(), "no new activity must not re-fire");
+    assert_eq!(read_last_emitted(&db, 1, pr_id), 20);
+
+    // Cycle 3: a genuinely-new later other reply at t=30 -> fires once more.
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (2003, 1001, 'carol', 'again', 30)",
+            [],
+        )
+        .unwrap();
+    let t3 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(t3.len(), 1, "a new later reply re-fires exactly once");
+    assert_eq!(t3[0].newest_activity_at, 30);
+    assert_eq!(read_last_emitted(&db, 1, pr_id), 30);
+}
+
+#[test]
+fn two_units_one_cycle_emit_one_trigger_tagged_with_newest() {
+    // Per-PR coarseness: two units crossing in one cycle produce ONE trigger,
+    // tagged with the unit holding the newest crossing activity.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, line)
+                VALUES (1001, 100, 0, 0, 'RT_old', 'a.rs', 1),
+                       (1002, 100, 0, 0, 'RT_new', 'b.rs', 2);
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'me',  'mine', 5),
+                (2002, 1001, 'bob', 'old reply', 20),
+                (2003, 1002, 'me',  'mine', 5),
+                (2004, 1002, 'bob', 'new reply', 40);",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(triggers.len(), 1, "two units in one cycle => one trigger");
+    assert_eq!(
+        triggers[0].unit_ref.as_deref(),
+        Some("RT_new"),
+        "tagged with the unit holding the newest crossing activity"
+    );
+    assert_eq!(triggers[0].newest_activity_at, 40);
+}
+
+#[test]
+fn marking_a_unit_seen_re_arms_for_a_later_reply() {
+    // read re-arms: marking the thread seen advances its watermark; a later
+    // new other-reply dispatches again.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    seed_authored_thread_with_reply(&db, "RT_r", 10, 20);
+
+    let t1 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(t1.len(), 1);
+
+    // Mark the thread seen past the last reply.
+    {
+        let conn = db.lock().unwrap();
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_r", 25).unwrap();
+    }
+    // Cycle with no new activity: the PR no longer needs me (seen past the
+    // reply), so no dispatch.
+    let t2 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(t2.is_empty(), "seen past the reply => quiet");
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+
+    // A later new other reply re-lights and re-fires.
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (2003, 1001, 'bob', 'later', 30)",
+            [],
+        )
+        .unwrap();
+    let t3 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(t3.len(), 1, "later reply past the seen mark re-fires");
+    assert_eq!(t3[0].newest_activity_at, 30);
+}
+
+#[test]
+fn dedup_same_comment_across_cycles_fires_once_old_comment_never() {
+    // A single new comment seen across two cycles fires one toast; an old
+    // (pre-watermark) comment fires nothing.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+
+    // Pre-seed last_emitted past an old comment so it never fires.
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_request_viewer_relations
+                SET last_emitted_activity_at = 100
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES (1001, 100, 0, 0, 'RT_d');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2001, 1001, 'me',  'mine', 5),
+                (2002, 1001, 'bob', 'old',  50);",
+        )
+        .unwrap();
+
+    // Old comment (t=50) is below the last_emitted watermark (100) -> no fire.
+    let t_old = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(t_old.is_empty(), "pre-watermark comment must not fire");
+
+    // A genuinely-new comment at t=150 fires once.
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (2003, 1001, 'bob', 'new', 150)",
+            [],
+        )
+        .unwrap();
+    let first = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(first.len(), 1, "new comment fires once");
+    // Same comment, next cycle, nothing new -> no re-fire.
+    let second = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        second.is_empty(),
+        "same comment must not re-fire next cycle"
+    );
+}
+
+#[test]
+fn general_stream_three_comments_one_cycle_emit_at_most_one() {
+    // The general stream is one unit: three new other issue_comments in one
+    // cycle produce at most one general-unit toast; marking the stream seen
+    // clears it.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+             INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at) VALUES
+                (3001, 100, 'bob',   'one',   10),
+                (3002, 100, 'carol', 'two',   20),
+                (3003, 100, 'dave',  'three', 30);",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(
+        triggers.len(),
+        1,
+        "general stream is one unit => one trigger"
+    );
+    assert_eq!(triggers[0].unit_kind, NotificationUnitKind::General);
+    assert!(triggers[0].unit_ref.is_none());
+    assert_eq!(triggers[0].newest_activity_at, 30);
+
+    // Marking the stream seen clears it: next cycle, no new activity, no fire,
+    // roll-up drops to 0.
+    {
+        let conn = db.lock().unwrap();
+        crate::triage::units::advance_general_stream_seen(&conn, 1, pr_id, 40).unwrap();
+    }
+    let after = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(after.is_empty(), "seen general stream stays quiet");
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+}
+
+#[test]
+fn node_id_keying_survives_thread_delete_and_readd() {
+    // node_id keying: a thread seen at one row id keeps the watermark after a
+    // delete + re-add under a new row id, so the re-arm dedup still applies.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    seed_authored_thread_with_reply(&db, "RT_keep", 10, 20);
+
+    write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_keep", 25).unwrap();
+    }
+
+    // Delete + re-add the thread node under a new row id, replaying the same
+    // comments (a paginated fetch can do this).
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM review_threads WHERE id = 1001;
+             INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id, path, line)
+                VALUES (1009, 100, 0, 0, 'RT_keep', 'src/a.rs', 4);
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                (2101, 1009, 'me',  'mine',  10),
+                (2102, 1009, 'bob', 'reply', 20);",
+        )
+        .unwrap();
+
+    // The seen watermark (25) still applies via node_id, so the replayed
+    // reply (20) is below it -> quiet.
+    let after = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        after.is_empty(),
+        "node-keyed seen survives delete+re-add; replayed reply stays quiet"
+    );
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+}

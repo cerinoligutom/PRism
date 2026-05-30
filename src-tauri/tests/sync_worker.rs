@@ -2107,24 +2107,24 @@ async fn rate_budget_guard_emits_rate_limit_pause_activity() {
     );
 }
 
-// ===== ADR 0017 notification trigger dispatch (issue #192) =====
+// ===== ADR 0031 edge-with-re-arm dispatch (was ADR 0017 issue #192) =====
 
-/// A sync cycle that flips a PR into the needs-attention bucket dispatches
-/// exactly one `NeedsAttention` trigger to the sink. The PR detail fixture
-/// requests `dave` as a reviewer; seeding the active viewer as `dave` with a
-/// relation row at baseline `needs_attention = 0` makes the cycle's
-/// enrichment write flip the column 0 -> 1 (signal 2 from ADR 0015) and emit
-/// the trigger.
+/// A sync cycle where a conversation unit crosses the per-PR dispatch
+/// watermark dispatches exactly one per-unit `NeedsAttention` trigger. ADR
+/// 0031: dispatch is conversation-unit-driven (a thread / general-stream
+/// crossing), not role-obligation-driven. The fixture's PR is authored by
+/// `alice`, with two threads carrying other-authored comments (bob@12:00,
+/// carol@13:00 on `src/main.rs:88`). Seeding the viewer as `alice` makes her
+/// involved in both threads (PR author); both cross the watermark, and the
+/// single per-PR trigger is tagged with the newest unit (thread2).
 #[tokio::test]
-async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
+async fn cycle_dispatches_one_unit_trigger_when_a_thread_crosses() {
     let server = MockServer::start().await;
     let harness = setup_harness(&server);
-    let account = seed_account(&harness, 1, "dave");
+    let account = seed_account(&harness, 1, "alice");
     seed_repo_with_pr(&harness, 100, 1, "owner", "repo", 999, 42);
 
-    // Baseline relation row for dave on PR 999: not yet attention, no mentions.
-    // The fixture's `dave` requestedReviewer entry will flip signal 2 on
-    // recompute.
+    // Baseline relation row for alice on PR 999: no prior dispatch.
     harness
         .db
         .lock()
@@ -2133,7 +2133,7 @@ async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
                  is_involved, relation_observed_at, needs_attention)
-                VALUES (1, 999, 0, 1, 0, strftime('%s','now'), 0)",
+                VALUES (1, 999, 1, 0, 0, strftime('%s','now'), 0)",
             [],
         )
         .unwrap();
@@ -2163,7 +2163,11 @@ async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
     assert_eq!(report.outcome, CycleOutcome::Completed);
 
     let dispatched = harness.notify_sink.snapshot();
-    assert_eq!(dispatched.len(), 1, "exactly one trigger on a 0 -> 1 flip");
+    assert_eq!(
+        dispatched.len(),
+        1,
+        "two units crossing in one cycle dispatch exactly one per-PR trigger"
+    );
     assert_eq!(dispatched[0].title, "Needs your attention");
     assert!(
         dispatched[0].body.contains("owner/repo"),
@@ -2174,6 +2178,20 @@ async fn cycle_dispatches_needs_attention_trigger_on_zero_to_one_flip() {
         dispatched[0].body.contains("#42"),
         "body carries the PR number: {:?}",
         dispatched[0].body
+    );
+    // Tagged with the newest crossing unit (thread2 on src/main.rs:88).
+    assert!(
+        dispatched[0].body.contains("src/main.rs"),
+        "tagged with the newest unit's file:line: {:?}",
+        dispatched[0].body
+    );
+    // A second steady-state cycle re-fires nothing (per-PR dedup).
+    let report2 = prism_lib::sync::worker::run_one_cycle(&ctx, &client, &account).await;
+    assert_eq!(report2.outcome, CycleOutcome::Completed);
+    assert_eq!(
+        harness.notify_sink.snapshot().len(),
+        1,
+        "no new activity must not re-fire on the next cycle"
     );
 }
 

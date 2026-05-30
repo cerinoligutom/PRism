@@ -32,6 +32,13 @@ const NOTIFICATION_OPEN_PR_EVENT = "notification://open-pr";
 interface NotificationOpenPrPayload {
   readonly account_id: number;
   readonly pull_request_id: number;
+  // ADR 0031: the toast threads the conversation unit it points at so a later
+  // slice can reconcile the exact thread / general stream on click. Routing +
+  // open already clears the unit via the conversation auto-mark-seen, so these
+  // are carried for that follow-up, not required by the current router.
+  readonly unit_kind?: "thread" | "general" | null;
+  readonly unit_ref?: string | null;
+  readonly deep_link_url?: string | null;
 }
 
 interface PrRouteMetadata {

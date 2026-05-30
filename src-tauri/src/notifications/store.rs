@@ -32,8 +32,8 @@ pub fn insert(conn: &Connection, n: &NotificationInsert) -> rusqlite::Result<i64
         "INSERT INTO notifications
             (kind, account_id, pull_request_id,
              owner, repo, pr_number, pr_node_id, pr_title,
-             title, body)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             title, body, unit_kind, unit_ref, deep_link_url)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             n.kind,
             n.account_id,
@@ -45,6 +45,9 @@ pub fn insert(conn: &Connection, n: &NotificationInsert) -> rusqlite::Result<i64
             n.pr_title,
             n.title,
             n.body,
+            n.unit_kind,
+            n.unit_ref,
+            n.deep_link_url,
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -92,28 +95,56 @@ fn prune_to_cap(conn: &Connection, cap: i64) -> rusqlite::Result<usize> {
     )
 }
 
+/// The per-row derived unread flag as a SQL boolean expression correlated to a
+/// `notifications n` row (ADR 0031). A LIVE row (`pull_request_id` NOT NULL)
+/// with a `unit_kind` is unread iff ITS OWN unit still needs the viewer -
+/// resolved against the same per-unit watermark shape the roll-up uses, gated
+/// to the row's own unit (NOT the PR roll-up, which would over-count a PR with
+/// one lit + one settled unit). A legacy live row (`unit_kind IS NULL`) and an
+/// ORPHAN row (`pull_request_id IS NULL`) both fall back to `read_at IS NULL`.
+///
+/// Returns a fragment that evaluates to 1 (unread) / 0 (read). Embedded by
+/// [`list`] (projection) and [`count_unread`] (predicate) so both surfaces
+/// derive read-state from one definition.
+fn unread_expr() -> String {
+    format!(
+        "CASE
+            WHEN n.pull_request_id IS NULL THEN (CASE WHEN n.read_at IS NULL THEN 1 ELSE 0 END)
+            WHEN n.unit_kind IS NULL THEN (CASE WHEN n.read_at IS NULL THEN 1 ELSE 0 END)
+            ELSE ({predicate})
+         END",
+        predicate = crate::triage::units::row_unit_needs_me_predicate(),
+    )
+}
+
 /// Read up to `limit` inbox rows, newest first.
 ///
 /// `before_id = Some(id)` enables future cursor pagination by skipping every
 /// row with `id >= before_id`. Both args optional: omit `limit` for the
 /// full list, omit `before_id` for "from the top".
+///
+/// Each row carries the per-row derived `unread` flag (ADR 0031), computed via
+/// [`unread_expr`] so the list and the count agree by construction.
 pub fn list(
     conn: &Connection,
     limit: Option<i64>,
     before_id: Option<i64>,
 ) -> rusqlite::Result<Vec<Notification>> {
-    let mut sql = String::from(
-        "SELECT id, kind, account_id, pull_request_id,
-                owner, repo, pr_number, pr_node_id, pr_title,
-                title, body, created_at, read_at
-           FROM notifications",
+    let mut sql = format!(
+        "SELECT n.id, n.kind, n.account_id, n.pull_request_id,
+                n.owner, n.repo, n.pr_number, n.pr_node_id, n.pr_title,
+                n.title, n.body, n.created_at, n.read_at,
+                n.unit_kind, n.unit_ref, n.deep_link_url,
+                ({unread}) AS unread
+           FROM notifications n",
+        unread = unread_expr(),
     );
     let mut binds: Vec<rusqlite::types::Value> = Vec::with_capacity(2);
     if let Some(id) = before_id {
-        sql.push_str(" WHERE id < ?1");
+        sql.push_str(" WHERE n.id < ?1");
         binds.push(rusqlite::types::Value::Integer(id));
     }
-    sql.push_str(" ORDER BY id DESC");
+    sql.push_str(" ORDER BY n.id DESC");
     if let Some(n) = limit {
         let placeholder = if binds.is_empty() { "?1" } else { "?2" };
         sql.push_str(&format!(" LIMIT {placeholder}"));
@@ -137,38 +168,45 @@ pub fn delete_all(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM notifications", [])
 }
 
-/// Mark one row read, stamping `read_at` with the current epoch seconds.
+/// Mark one ORPHAN row read, stamping `read_at` with the current epoch
+/// seconds (ADR 0031). LIVE rows (`pull_request_id` NOT NULL) clear by the
+/// referenced unit being seen, not by a `read_at` write, so the
+/// `pull_request_id IS NULL` guard makes this a no-op on them.
 ///
-/// Idempotent: rows whose `read_at` is already non-NULL are skipped via the
-/// `WHERE read_at IS NULL` predicate, so a double-click on the same row
-/// keeps the original read time. Returns the rows actually updated (0 or 1).
+/// Idempotent: an orphan row whose `read_at` is already non-NULL is skipped
+/// via `read_at IS NULL`, so a double click keeps the original read time.
+/// Returns the rows actually updated (0 or 1).
 pub fn mark_read(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE notifications
             SET read_at = strftime('%s', 'now')
-          WHERE id = ?1 AND read_at IS NULL",
+          WHERE id = ?1 AND pull_request_id IS NULL AND read_at IS NULL",
         params![id],
     )
 }
 
-/// Mark every unread row read in one transaction.
-///
+/// Mark every unread ORPHAN row read in one transaction (ADR 0031). LIVE rows
+/// are untouched - their read-state is derived from the unit watermark.
 /// Returns the rows actually updated so the caller can avoid a redundant
 /// refetch when the list was already fully read.
 pub fn mark_all_read(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE notifications
             SET read_at = strftime('%s', 'now')
-          WHERE read_at IS NULL",
+          WHERE pull_request_id IS NULL AND read_at IS NULL",
         [],
     )
 }
 
-/// Count unread rows. Backed by the partial index on `read_at IS NULL` so the
-/// query stays cheap as the table approaches the count cap (#380).
+/// Count unread inbox rows (ADR 0031): live-rows-whose-unit-still-needs-me
+/// plus orphan-rows-with-null-`read_at`. Uses the same [`unread_expr`] the
+/// list projects, so the sidebar chip and the list agree by construction.
 pub fn count_unread(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row(
-        "SELECT COUNT(*) FROM notifications WHERE read_at IS NULL",
+        &format!(
+            "SELECT COUNT(*) FROM notifications n WHERE ({unread}) = 1",
+            unread = unread_expr(),
+        ),
         [],
         |row| row.get(0),
     )
@@ -181,11 +219,16 @@ pub fn count_unread(conn: &Connection) -> rusqlite::Result<i64> {
 pub fn find(conn: &Connection, id: i64) -> rusqlite::Result<Option<Notification>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
-        "SELECT id, kind, account_id, pull_request_id,
-                owner, repo, pr_number, pr_node_id, pr_title,
-                title, body, created_at, read_at
-           FROM notifications
-          WHERE id = ?1",
+        &format!(
+            "SELECT n.id, n.kind, n.account_id, n.pull_request_id,
+                    n.owner, n.repo, n.pr_number, n.pr_node_id, n.pr_title,
+                    n.title, n.body, n.created_at, n.read_at,
+                    n.unit_kind, n.unit_ref, n.deep_link_url,
+                    ({unread}) AS unread
+               FROM notifications n
+              WHERE n.id = ?1",
+            unread = unread_expr(),
+        ),
         params![id],
         map_row,
     )
@@ -207,6 +250,10 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification> {
         body: row.get(10)?,
         created_at: row.get(11)?,
         read_at: row.get(12)?,
+        unit_kind: row.get(13)?,
+        unit_ref: row.get(14)?,
+        deep_link_url: row.get(15)?,
+        unread: row.get::<_, i64>(16)? != 0,
     })
 }
 
@@ -226,6 +273,9 @@ mod tests {
         conn
     }
 
+    /// Orphan-style insert (`pull_request_id: None`, `unit_kind: None`). Read
+    /// state falls back to `read_at`, exercising the orphan / legacy branch of
+    /// [`unread_expr`].
     fn sample(owner: &str, repo: &str, number: i64, title: &str) -> NotificationInsert {
         NotificationInsert {
             kind: "needs_attention".to_string(),
@@ -238,6 +288,9 @@ mod tests {
             pr_title: title.to_string(),
             title: "Needs your attention".to_string(),
             body: Some(format!("{owner}/{repo} #{number} - {title}")),
+            unit_kind: None,
+            unit_ref: None,
+            deep_link_url: None,
         }
     }
 
@@ -520,5 +573,309 @@ mod tests {
         // Newest first: the freshest pr_number must be 55, the oldest 6.
         assert_eq!(rows[0].pr_number, 55);
         assert_eq!(rows[49].pr_number, 6);
+    }
+
+    // ===== per-row derived inbox unread (ADR 0031, the central correctness
+    // claim) =====
+    //
+    // A LIVE row (pull_request_id NOT NULL) is unread iff ITS OWN unit still
+    // needs me - resolved against the unit watermark, NOT the PR roll-up. An
+    // orphan row is unread iff read_at IS NULL. mark_read only touches orphan
+    // rows.
+
+    /// Seed an account, repo, PR (`me` authors it on github.com) and a
+    /// relation row so the unit predicates resolve.
+    fn seed_live_fixture(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'web', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 42, 'Add a thing', 'open', 'alice',
+                        0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0);",
+        )
+        .unwrap();
+    }
+
+    /// Insert a thread with one other-authored reply newer than my own
+    /// comment, so the thread unit lights for account 1 ('alice' authored
+    /// the PR -> involved).
+    fn seed_lit_thread(conn: &Connection, thread_id: i64, node_id: &str, reply_at: i64) {
+        conn.execute_batch(&format!(
+            "INSERT INTO review_threads
+                (id, pull_request_id, is_resolved, is_outdated, node_id)
+                VALUES ({thread_id}, 100, 0, 0, '{node_id}');
+             INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at) VALUES
+                ({thread_id}01, {thread_id}, 'alice', 'mine', 5),
+                ({thread_id}02, {thread_id}, 'bob',   'reply', {reply_at});"
+        ))
+        .unwrap();
+    }
+
+    /// Insert a LIVE inbox row pointing at a thread unit.
+    fn insert_thread_row(conn: &Connection, node_id: &str) -> i64 {
+        insert(
+            conn,
+            &NotificationInsert {
+                kind: "needs_attention".to_string(),
+                account_id: 1,
+                pull_request_id: Some(100),
+                owner: "owner".to_string(),
+                repo: "web".to_string(),
+                pr_number: 42,
+                pr_node_id: None,
+                pr_title: "Add a thing".to_string(),
+                title: "Needs your attention".to_string(),
+                body: Some("owner/web #42".to_string()),
+                unit_kind: Some("thread".to_string()),
+                unit_ref: Some(node_id.to_string()),
+                deep_link_url: Some(format!("https://x/{node_id}")),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn live_row_follows_its_own_unit_not_the_pr_rollup() {
+        // THE must-fix: a PR with two units each having an inbox row; mark ONE
+        // unit seen -> only that unit's row reads as read (no write to
+        // notifications.read_at); new activity in it -> flips back; the
+        // sibling row is unaffected.
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        seed_lit_thread(&conn, 200, "RT_lit", 20);
+        seed_lit_thread(&conn, 300, "RT_sib", 20);
+        let lit = insert_thread_row(&conn, "RT_lit");
+        let sib = insert_thread_row(&conn, "RT_sib");
+
+        // Both units lit -> both rows unread, count = 2.
+        assert_eq!(count_unread(&conn).unwrap(), 2);
+        assert!(find(&conn, lit).unwrap().unwrap().unread);
+        assert!(find(&conn, sib).unwrap().unwrap().unread);
+
+        // Mark ONE unit seen past its reply. No write to read_at.
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_lit", 25).unwrap();
+        let lit_row = find(&conn, lit).unwrap().unwrap();
+        assert!(!lit_row.unread, "the seen unit's row reads as read");
+        assert_eq!(lit_row.read_at, None, "no read_at write on a live row");
+        assert!(
+            find(&conn, sib).unwrap().unwrap().unread,
+            "the sibling unit's row is unaffected"
+        );
+        assert_eq!(
+            count_unread(&conn).unwrap(),
+            1,
+            "only the lit sibling counts"
+        );
+
+        // New activity in the seen unit re-lights its row.
+        conn.execute(
+            "INSERT INTO review_comments
+                (id, review_thread_id, author_login, body, created_at)
+                VALUES (299, 200, 'carol', 'later', 30)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            find(&conn, lit).unwrap().unwrap().unread,
+            "new activity past the seen mark re-lights the row"
+        );
+        assert_eq!(count_unread(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn live_general_stream_row_follows_general_unit() {
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        // A lit general stream: an other-authored issue_comment with no seen.
+        conn.execute(
+            "INSERT INTO issue_comments
+                (id, pull_request_id, author_login, body, created_at)
+                VALUES (5001, 100, 'bob', 'discuss', 20)",
+            [],
+        )
+        .unwrap();
+        let id = insert(
+            &conn,
+            &NotificationInsert {
+                kind: "needs_attention".to_string(),
+                account_id: 1,
+                pull_request_id: Some(100),
+                owner: "owner".to_string(),
+                repo: "web".to_string(),
+                pr_number: 42,
+                pr_node_id: None,
+                pr_title: "Add a thing".to_string(),
+                title: "Needs your attention".to_string(),
+                body: Some("owner/web #42 - General discussion".to_string()),
+                unit_kind: Some("general".to_string()),
+                unit_ref: None,
+                deep_link_url: Some("https://x/pr".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(find(&conn, id).unwrap().unwrap().unread);
+        crate::triage::units::advance_general_stream_seen(&conn, 1, 100, 25).unwrap();
+        assert!(
+            !find(&conn, id).unwrap().unwrap().unread,
+            "seen general stream reads as read"
+        );
+    }
+
+    #[test]
+    fn legacy_live_row_falls_back_to_read_at() {
+        // A live row with unit_kind IS NULL (pre-0025) uses the read_at
+        // fallback, and mark_read does NOT clear it (it's not an orphan).
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        let id = insert(
+            &conn,
+            &NotificationInsert {
+                kind: "needs_attention".to_string(),
+                account_id: 1,
+                pull_request_id: Some(100),
+                owner: "owner".to_string(),
+                repo: "web".to_string(),
+                pr_number: 42,
+                pr_node_id: None,
+                pr_title: "Add a thing".to_string(),
+                title: "Needs your attention".to_string(),
+                body: None,
+                unit_kind: None,
+                unit_ref: None,
+                deep_link_url: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            find(&conn, id).unwrap().unwrap().unread,
+            "no read_at => unread"
+        );
+        // mark_read is orphan-only: a live legacy row is NOT cleared by it.
+        assert_eq!(
+            mark_read(&conn, id).unwrap(),
+            0,
+            "live row ignores mark_read"
+        );
+        assert!(
+            find(&conn, id).unwrap().unwrap().unread,
+            "live legacy row still unread after mark_read"
+        );
+    }
+
+    #[test]
+    fn orphan_row_uses_read_at_and_mark_read_clears_it() {
+        // An orphan row (pull_request_id NULL) is unread iff read_at IS NULL;
+        // mark_read clears it; live rows ignore mark_read.
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        seed_lit_thread(&conn, 200, "RT_lit", 20);
+        let live = insert_thread_row(&conn, "RT_lit");
+        let orphan = insert(&conn, &sample("o", "a", 1, "t")).unwrap();
+
+        assert_eq!(count_unread(&conn).unwrap(), 2, "lit live + unread orphan");
+
+        // mark_read on the live row is a no-op.
+        assert_eq!(mark_read(&conn, live).unwrap(), 0);
+        // mark_read on the orphan clears it.
+        assert_eq!(mark_read(&conn, orphan).unwrap(), 1);
+        assert!(!find(&conn, orphan).unwrap().unwrap().unread);
+        assert!(
+            find(&conn, live).unwrap().unwrap().unread,
+            "live row untouched"
+        );
+        assert_eq!(
+            count_unread(&conn).unwrap(),
+            1,
+            "only the lit live row remains"
+        );
+    }
+
+    #[test]
+    fn deleted_pr_orphan_counts_one_then_clears() {
+        // PR deleted (pull_request_id NULL via ON DELETE SET NULL), read_at
+        // NULL -> counts 1 unread; mark_read clears it.
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        seed_lit_thread(&conn, 200, "RT_x", 20);
+        let id = insert_thread_row(&conn, "RT_x");
+        assert!(find(&conn, id).unwrap().unwrap().unread);
+
+        // Delete the PR; ON DELETE SET NULL orphans the inbox row.
+        conn.execute("DELETE FROM pull_requests WHERE id = 100", [])
+            .unwrap();
+        let row = find(&conn, id).unwrap().unwrap();
+        assert_eq!(row.pull_request_id, None, "PR delete orphans the row");
+        assert!(row.unread, "orphan with null read_at counts as unread");
+        assert_eq!(count_unread(&conn).unwrap(), 1);
+
+        assert_eq!(
+            mark_read(&conn, id).unwrap(),
+            1,
+            "orphan clears via mark_read"
+        );
+        assert_eq!(count_unread(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn convergence_badge_equals_inbox_unread_for_two_unit_one_lit_pr() {
+        // Convergence: count_needs_attention_global (badge) == derived inbox
+        // unread for live rows, on a two-unit PR with one lit unit (one badge
+        // count; exactly one unread inbox row - the lit unit; the settled
+        // unit's row reads read).
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        seed_lit_thread(&conn, 200, "RT_lit", 20);
+        seed_lit_thread(&conn, 300, "RT_settled", 20);
+        // Settle one unit by marking it seen past its reply.
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_settled", 25).unwrap();
+        let lit = insert_thread_row(&conn, "RT_lit");
+        let settled = insert_thread_row(&conn, "RT_settled");
+
+        // Recompute the roll-up so the badge reads the lit PR.
+        crate::triage::query::recompute_needs_attention(&conn, 1, 100).unwrap();
+        let badge = crate::notify::count_needs_attention_global(&conn).unwrap();
+        assert_eq!(badge, 1, "one PR lights the badge");
+
+        assert_eq!(
+            count_unread(&conn).unwrap(),
+            1,
+            "exactly one unread inbox row"
+        );
+        assert!(
+            find(&conn, lit).unwrap().unwrap().unread,
+            "lit unit row unread"
+        );
+        assert!(
+            !find(&conn, settled).unwrap().unwrap().unread,
+            "settled unit row reads read despite the PR roll-up being lit"
+        );
+    }
+
+    #[test]
+    fn list_projects_per_row_unread_flag() {
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        seed_lit_thread(&conn, 200, "RT_lit", 20);
+        seed_lit_thread(&conn, 300, "RT_settled", 20);
+        crate::triage::units::advance_thread_seen(&conn, 1, "RT_settled", 25).unwrap();
+        let lit = insert_thread_row(&conn, "RT_lit");
+        let settled = insert_thread_row(&conn, "RT_settled");
+
+        let rows = list(&conn, None, None).unwrap();
+        let lit_row = rows.iter().find(|r| r.id == lit).unwrap();
+        let settled_row = rows.iter().find(|r| r.id == settled).unwrap();
+        assert!(lit_row.unread, "list projects unread for the lit unit");
+        assert!(
+            !settled_row.unread,
+            "list projects read for the settled unit"
+        );
     }
 }
