@@ -43,7 +43,6 @@ impl NotificationPermissionState {
 pub struct AppSettings {
     pub notifications_enabled: bool,
     pub notify_on_needs_attention: bool,
-    pub notify_on_mention: bool,
     pub notification_permission_state: NotificationPermissionState,
     /// Last app version the user dismissed the in-app "What's new" dialog
     /// against. `None` means the cursor has never been written (fresh
@@ -106,7 +105,6 @@ impl AppSettings {
         conn.query_row(
             "SELECT notifications_enabled,
                     notify_on_needs_attention,
-                    notify_on_mention,
                     notification_permission_state,
                     last_seen_version,
                     auto_update_enabled,
@@ -120,20 +118,19 @@ impl AppSettings {
               WHERE id = 1",
             [],
             |row| {
-                let perm: String = row.get(3)?;
+                let perm: String = row.get(2)?;
                 Ok(Self {
                     notifications_enabled: row.get::<_, i64>(0)? != 0,
                     notify_on_needs_attention: row.get::<_, i64>(1)? != 0,
-                    notify_on_mention: row.get::<_, i64>(2)? != 0,
                     notification_permission_state: NotificationPermissionState::from_storage(&perm),
-                    last_seen_version: row.get(4)?,
-                    auto_update_enabled: row.get::<_, i64>(5)? != 0,
-                    auto_update_interval_seconds: row.get(6)?,
-                    auto_update_last_check_at: row.get(7)?,
-                    auto_update_last_failure_message: row.get(8)?,
-                    auto_archive_days: row.get(9)?,
-                    notification_retention_max: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    last_seen_version: row.get(3)?,
+                    auto_update_enabled: row.get::<_, i64>(4)? != 0,
+                    auto_update_interval_seconds: row.get(5)?,
+                    auto_update_last_check_at: row.get(6)?,
+                    auto_update_last_failure_message: row.get(7)?,
+                    auto_archive_days: row.get(8)?,
+                    notification_retention_max: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             },
         )
@@ -161,7 +158,6 @@ mod tests {
             settings.notify_on_needs_attention,
             "needs-attention trigger defaults ON"
         );
-        assert!(settings.notify_on_mention, "mention trigger defaults ON");
         assert_eq!(
             settings.notification_permission_state,
             NotificationPermissionState::Unprompted,

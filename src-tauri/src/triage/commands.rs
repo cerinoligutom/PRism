@@ -106,7 +106,7 @@ pub fn mark_pr_read<R: Runtime>(
 /// owner. Per-account writes are independent so a partial failure doesn't roll
 /// back successes (ADR 0016 mark-read option 1).
 ///
-/// `mentioned_count_unread` is _not_ rewritten - the next sync cycle re-counts
+/// The mention-scan watermark is _not_ rewritten - the next sync cycle re-scans
 /// comments past the existing `mention_scan_watermark_at` if any matched.
 /// Recomputes `needs_attention` synchronously for each touched pair.
 ///
@@ -439,12 +439,11 @@ mod tests {
         }
     }
 
-    /// Helper: read the four triage columns for the test fixture's row.
-    fn read_triage(db: &DbHandle) -> (Option<i64>, Option<i64>, i64, i64) {
+    /// Helper: read the triage read-state columns for the test fixture's row.
+    fn read_triage(db: &DbHandle) -> (Option<i64>, Option<i64>, i64) {
         let conn = db.lock().unwrap();
         conn.query_row(
-            "SELECT read_at, read_pr_updated_at,
-                    mentioned_count_unread, needs_attention
+            "SELECT read_at, read_pr_updated_at, needs_attention
                FROM pull_request_viewer_relations
               WHERE account_id = 1 AND pull_request_id = 100",
             [],
@@ -453,7 +452,6 @@ mod tests {
                     row.get::<_, Option<i64>>(0)?,
                     row.get::<_, Option<i64>>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
                 ))
             },
         )
@@ -488,33 +486,13 @@ mod tests {
         let db = fresh_db();
         seed(&db, "bob", 1_700_000_000, 0, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (read_at, read_pr_updated_at, mentioned, _) = read_triage(&db);
+        let (read_at, read_pr_updated_at, _) = read_triage(&db);
         assert!(read_at.is_some(), "read_at should be set");
         assert_eq!(
             read_pr_updated_at,
             Some(1_700_000_000),
             "read_pr_updated_at snapshots pr.updated_at"
         );
-        assert_eq!(mentioned, 0, "mentioned_count_unread reset to zero");
-    }
-
-    #[test]
-    fn mark_pr_read_resets_mention_counter() {
-        let db = fresh_db();
-        seed(&db, "bob", 1_700_000_000, 0, None);
-        {
-            let conn = db.lock().unwrap();
-            conn.execute(
-                "UPDATE pull_request_viewer_relations
-                    SET mentioned_count_unread = 5
-                  WHERE account_id = 1 AND pull_request_id = 100",
-                [],
-            )
-            .unwrap();
-        }
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (_, _, mentioned, _) = read_triage(&db);
-        assert_eq!(mentioned, 0);
     }
 
     #[test]
@@ -526,28 +504,30 @@ mod tests {
         // me (ADR 0031).
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (_, _, _, needs_attention) = read_triage(&db);
+        let (_, _, needs_attention) = read_triage(&db);
         assert_eq!(needs_attention, 1);
     }
 
     #[test]
-    fn mark_pr_read_clears_attention_when_only_signal_was_mention() {
+    fn mark_pr_read_clears_attention_when_no_signal_remains() {
         let db = fresh_db();
         seed(&db, "bob", 1_700_000_000, 0, None);
         {
             let conn = db.lock().unwrap();
             conn.execute(
                 "UPDATE pull_request_viewer_relations
-                    SET mentioned_count_unread = 3, needs_attention = 1
+                    SET needs_attention = 1
                   WHERE account_id = 1 AND pull_request_id = 100",
                 [],
             )
             .unwrap();
         }
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (_, _, mentioned, needs_attention) = read_triage(&db);
-        assert_eq!(mentioned, 0);
-        assert_eq!(needs_attention, 0, "read flip drops the only signal");
+        let (_, _, needs_attention) = read_triage(&db);
+        assert_eq!(
+            needs_attention, 0,
+            "read flip + recompute drops a stale flag with no qualifying signal"
+        );
     }
 
     #[test]
@@ -588,31 +568,9 @@ mod tests {
         seed(&db, "bob", 1_700_000_000, 0, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
         invoke_mark_pr_unread(&db, 100, 1).unwrap();
-        let (read_at, read_pr_updated_at, _, _) = read_triage(&db);
+        let (read_at, read_pr_updated_at, _) = read_triage(&db);
         assert!(read_at.is_none());
         assert!(read_pr_updated_at.is_none());
-    }
-
-    #[test]
-    fn mark_pr_unread_preserves_mention_counter() {
-        let db = fresh_db();
-        seed(&db, "bob", 1_700_000_000, 0, None);
-        {
-            let conn = db.lock().unwrap();
-            conn.execute(
-                "UPDATE pull_request_viewer_relations
-                    SET mentioned_count_unread = 4
-                  WHERE account_id = 1 AND pull_request_id = 100",
-                [],
-            )
-            .unwrap();
-        }
-        invoke_mark_pr_unread(&db, 100, 1).unwrap();
-        let (_, _, mentioned, _) = read_triage(&db);
-        assert_eq!(
-            mentioned, 4,
-            "unread flip never touches the mention counter"
-        );
     }
 
     #[test]
@@ -622,7 +580,7 @@ mod tests {
         invoke_mark_pr_read(&db, 100, 1).unwrap();
         // After mark_pr_read the (A) branch keeps needs_attention = 1 (the
         // threads still carry a fresh other-authored reply).
-        let (_, _, _, before) = read_triage(&db);
+        let (_, _, before) = read_triage(&db);
         assert_eq!(before, 1);
         // Delete the other-authored replies so no comment past my watermark
         // remains; the units settle and the recompute clears the roll-up.
@@ -634,7 +592,7 @@ mod tests {
                 .unwrap();
         }
         invoke_mark_pr_unread(&db, 100, 1).unwrap();
-        let (_, _, _, after) = read_triage(&db);
+        let (_, _, after) = read_triage(&db);
         assert_eq!(after, 0, "no unit needs me after the other replies clear");
     }
 
@@ -687,21 +645,20 @@ mod tests {
         let db = fresh_db();
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        // After mark_pr_read, the relation has read_at set, mentions = 0,
-        // and the (A) branch keeps needs_attention = 1 (the seeded threads
-        // still carry a fresh other-authored reply).
-        let (read_at_before, _, _, attention_before) = read_triage(&db);
+        // After mark_pr_read, the relation has read_at set, and the (A) branch
+        // keeps needs_attention = 1 (the seeded threads still carry a fresh
+        // other-authored reply).
+        let (read_at_before, _, attention_before) = read_triage(&db);
         assert!(read_at_before.is_some());
         assert_eq!(attention_before, 1);
 
         invoke_mark_pr_archived(&db, 100, 1).unwrap();
 
-        let (read_at_after, _, mentions_after, attention_after) = read_triage(&db);
+        let (read_at_after, _, attention_after) = read_triage(&db);
         assert_eq!(
             read_at_after, read_at_before,
             "archive write must not touch read_at"
         );
-        assert_eq!(mentions_after, 0);
         assert_eq!(
             attention_after, attention_before,
             "archive write must not touch needs_attention"

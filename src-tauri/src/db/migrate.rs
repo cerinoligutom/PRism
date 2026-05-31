@@ -36,6 +36,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0024_drop_review_thread_head_denorm.sql"),
     include_str!("../../migrations/0025_conversation_unit_read_state.sql"),
     include_str!("../../migrations/0026_role_obligation_dispatch.sql"),
+    include_str!("../../migrations/0027_drop_dead_notification_columns.sql"),
 ];
 
 /// Migration filenames in apply order, kept in lockstep with
@@ -71,6 +72,7 @@ const MIGRATION_FILENAMES: &[&str] = &[
     "0024_drop_review_thread_head_denorm.sql",
     "0025_conversation_unit_read_state.sql",
     "0026_role_obligation_dispatch.sql",
+    "0027_drop_dead_notification_columns.sql",
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -657,7 +659,6 @@ mod tests {
         let expected = [
             "read_at",
             "read_pr_updated_at",
-            "mentioned_count_unread",
             "mention_scan_watermark_at",
             "needs_attention",
         ];

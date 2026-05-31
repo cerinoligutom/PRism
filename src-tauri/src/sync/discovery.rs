@@ -412,13 +412,12 @@ fn upsert_viewer_relation(
     // OR-combine the flag bits on conflict so a PR that shows up in multiple
     // queries (e.g. authored + involves) ends with all matching flags set.
     //
-    // The four triage columns (read_at, read_pr_updated_at,
-    // mentioned_count_unread, needs_attention) and the mention-scan
-    // watermark belong to the M4 read-state surface (ADR 0015). They
-    // survive every discovery pass:
+    // The triage read-state columns (read_at, read_pr_updated_at,
+    // needs_attention) and the mention-scan watermark belong to the M4
+    // read-state surface (ADR 0015). They survive every discovery pass:
     //
     //  * The INSERT path leans on the migration-0010 defaults
-    //    (NULL / 0 / 0 / 0) since this clause runs on the first discovery
+    //    (NULL / 0 / 0) since this clause runs on the first discovery
     //    of a (account, PR) pair, before any open or scan.
     //  * The UPDATE path omits them so existing values (set by
     //    `mark_pr_read`, `mark_pr_unread`, the conversation auto-mark hook,
@@ -649,8 +648,8 @@ mod tests {
 
     #[test]
     fn upsert_viewer_relation_preserves_triage_columns_across_cycles() {
-        // M4 / ADR 0015: the four triage columns (read_at, read_pr_updated_at,
-        // mentioned_count_unread, needs_attention) plus mention_scan_watermark_at
+        // M4 / ADR 0015: the triage read-state columns (read_at,
+        // read_pr_updated_at, needs_attention) plus mention_scan_watermark_at
         // must survive every discovery pass. Mark-read writes set the values
         // outside the discovery cycle; the next cycle's UPSERT must not blank
         // them.
@@ -667,7 +666,6 @@ mod tests {
                 "UPDATE pull_request_viewer_relations
                     SET read_at = 1_500,
                         read_pr_updated_at = 1_400,
-                        mentioned_count_unread = 3,
                         mention_scan_watermark_at = 1_500,
                         needs_attention = 1
                   WHERE account_id = 1 AND pull_request_id = ?1",
@@ -678,10 +676,9 @@ mod tests {
         // Next cycle's discovery upserts the same (account, PR) pair.
         upsert_viewer_relation(&db, 1, pr_id, DiscoveryRelation::Involves, 2000).unwrap();
 
-        let (read_at, read_updated, mentioned, watermark, attention, last_seen): (
+        let (read_at, read_updated, watermark, attention, last_seen): (
             Option<i64>,
             Option<i64>,
-            i64,
             i64,
             i64,
             i64,
@@ -689,7 +686,7 @@ mod tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT read_at, read_pr_updated_at, mentioned_count_unread,
+                "SELECT read_at, read_pr_updated_at,
                         mention_scan_watermark_at, needs_attention, relation_observed_at
                    FROM pull_request_viewer_relations
                   WHERE account_id = 1 AND pull_request_id = ?1",
@@ -701,14 +698,12 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
-                        row.get(5)?,
                     ))
                 },
             )
             .unwrap();
         assert_eq!(read_at, Some(1_500), "read_at preserved across cycle");
         assert_eq!(read_updated, Some(1_400), "read_pr_updated_at preserved");
-        assert_eq!(mentioned, 3, "mentioned_count_unread preserved");
         assert_eq!(watermark, 1_500, "mention_scan_watermark_at preserved");
         assert_eq!(attention, 1, "needs_attention preserved");
         assert_eq!(last_seen, 2000, "relation_observed_at advanced as expected");

@@ -14,7 +14,7 @@
 //! account (ADR 0016). The relation-backed views GROUP BY `pr.id` so a PR
 //! authored by account A and review-requested for account B surfaces as one
 //! row whose triage signals are merged (`unread = MAX`,
-//! `needs_attention = MAX`, `mentioned_count_unread = SUM`) and whose
+//! `needs_attention = MAX`) and whose
 //! `account_ids` carries every relation owner. The Tracked view's union path
 //! keeps the same GROUP BY but joins relations without an account scope so
 //! every relation row a PR has feeds the aggregations; PRs in tracked repos
@@ -104,13 +104,12 @@ const PR_PROJECTION_COLUMNS: &str = "
         WHEN pr.updated_at > COALESCE(rel.read_pr_updated_at, 0) THEN 1
         ELSE 0
     END AS unread,
-    COALESCE(rel.needs_attention, 0) AS needs_attention,
-    COALESCE(rel.mentioned_count_unread, 0) AS mentioned_count_unread
+    COALESCE(rel.needs_attention, 0) AS needs_attention
 ";
 
 /// Unified-mode projection. Adds the per-relation merge aggregations
-/// (`MAX(unread)`, `MAX(needs_attention)`, `SUM(mentioned_count_unread)`) and
-/// the comma-separated `account_ids` marker. `host` is read from the repo's
+/// (`MAX(unread)`, `MAX(needs_attention)`) and the comma-separated
+/// `account_ids` marker. `host` is read from the repo's
 /// owning account (`acc_repo`) because the repo, not the relation, anchors
 /// the PR to exactly one host; the URL builder needs the right host for
 /// `https://{host}/...` regardless of which accounts have relations. The
@@ -154,8 +153,7 @@ const PR_PROJECTION_COLUMNS_UNION: &str = "
             WHEN pr.updated_at > COALESCE(rel.read_pr_updated_at, 0) THEN 1
             ELSE 0
         END) AS unread,
-    MAX(COALESCE(rel.needs_attention, 0)) AS needs_attention,
-    SUM(COALESCE(rel.mentioned_count_unread, 0)) AS mentioned_count_unread
+    MAX(COALESCE(rel.needs_attention, 0)) AS needs_attention
 ";
 
 /// Whether the query runs the single-account-scoped projection or the
@@ -474,7 +472,7 @@ fn relation_view_query(
 
 /// Tracked view: PRs in repos opted into Tracked. The relation row is read
 /// account-scoped via a LEFT JOIN so the triage projections (`unread`,
-/// `needs_attention`, `mentioned_count_unread`) reflect the active account.
+/// `needs_attention`) reflect the active account.
 /// Without an account filter (the union case) the LEFT JOIN drops the
 /// per-account predicate so every relation row for the PR feeds the merge
 /// aggregations; PRs in tracked repos with no relation rows still surface
@@ -911,18 +909,12 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
     // ADR 0015 ("Read-state storage") and `docs/contracts/triage-ux.md`
     // ("Read-state derivation").
     //
-    // In the unified path the column carries `MAX(...)` / `SUM(...)` over
-    // every relation row the GROUP BY folded together, so the same scalar
-    // read works for both shapes. When no relation joined, MAX returns NULL
-    // and Option<i64> would surface that; the outer COALESCE in the SQL
-    // pins the default to 0 either way.
+    // In the unified path the column carries `MAX(...)` over every relation row
+    // the GROUP BY folded together, so the same scalar read works for both
+    // shapes. When no relation joined, MAX returns NULL and the outer COALESCE
+    // in the SQL pins the default to 0.
     let unread: i64 = row.get(30)?;
     let needs_attention: i64 = row.get(31)?;
-    // SUM in SQLite returns NULL when every aggregated row is NULL (i.e. no
-    // relation joined). The outer COALESCE keeps the column non-NULL in the
-    // single-account path; the union path needs the Option<i64> read because
-    // `SUM(COALESCE(..., 0))` over zero rows still returns NULL.
-    let mentioned_count_unread: i64 = row.get::<_, Option<i64>>(32)?.unwrap_or(0);
 
     let pr_number: i64 = row.get(1)?;
     let url = format!("https://{account_host}/{repo_owner}/{repo_name}/pull/{pr_number}");
@@ -961,7 +953,6 @@ fn project_pr_row(row: &Row<'_>) -> Result<DashboardPullRequest, rusqlite::Error
         account_ids,
         unread: unread != 0,
         needs_attention: needs_attention != 0,
-        mentioned_count_unread,
     })
 }
 
@@ -1352,9 +1343,9 @@ mod tests {
     }
 
     /// M4-C: Tracked view LEFT JOINs the relations table so the triage
-    /// projections (`unread`, `needs_attention`, `mentioned_count_unread`)
-    /// reflect the active account. With no account scope the join
-    /// short-circuits via `ON 0` so the COALESCE defaults trip.
+    /// projections (`unread`, `needs_attention`) reflect the active account.
+    /// With no account scope the join short-circuits via `ON 0` so the
+    /// COALESCE defaults trip.
     #[test]
     fn tracked_query_left_joins_relations_when_account_scoped() {
         let (sql, _) = view_query(DashboardView::Tracked, DashboardSort::Updated, Some(1), &[]);
@@ -1441,7 +1432,7 @@ mod tests {
         assert!(sql.contains("rel.account_id ="), "SQL: {sql}");
     }
 
-    /// M4-C: the SELECT projects three triage columns derived from the
+    /// M4-C: the SELECT projects the triage columns derived from the
     /// `pull_request_viewer_relations rel` alias.
     #[test]
     fn projection_includes_triage_columns() {
@@ -1458,10 +1449,6 @@ mod tests {
         assert!(
             sql.contains("COALESCE(rel.needs_attention, 0) AS needs_attention"),
             "expected needs_attention column; SQL: {sql}"
-        );
-        assert!(
-            sql.contains("COALESCE(rel.mentioned_count_unread, 0) AS mentioned_count_unread"),
-            "expected mentioned_count_unread column; SQL: {sql}"
         );
     }
 

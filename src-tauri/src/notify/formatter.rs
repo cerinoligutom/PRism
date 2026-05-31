@@ -167,8 +167,8 @@ mod tests {
                         0, 0, 'main', 'feat');
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, relation_observed_at,
-                 mention_scan_watermark_at, mentioned_count_unread)
-                VALUES (1, {pr_id}, 0, 100, 0);"
+                 mention_scan_watermark_at)
+                VALUES (1, {pr_id}, 0, 100);"
         ))
         .unwrap();
     }

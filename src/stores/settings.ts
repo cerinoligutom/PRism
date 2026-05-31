@@ -26,7 +26,6 @@ export type NotificationPermissionState = "unprompted" | "granted" | "denied";
 export interface AppSettings {
   readonly notifications_enabled: boolean;
   readonly notify_on_needs_attention: boolean;
-  readonly notify_on_mention: boolean;
   readonly notification_permission_state: NotificationPermissionState;
   /**
    * Last app version the user dismissed the in-app "What's new" dialog
@@ -74,7 +73,6 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   notifications_enabled: true,
   notify_on_needs_attention: true,
-  notify_on_mention: true,
   notification_permission_state: "unprompted",
   last_seen_version: null,
   auto_update_enabled: false,
@@ -95,7 +93,6 @@ const DEFAULT_SETTINGS: AppSettings = {
 export interface AppSettingsUpdate {
   readonly notifications_enabled: boolean;
   readonly notify_on_needs_attention: boolean;
-  readonly notify_on_mention: boolean;
   readonly auto_update_enabled: boolean;
   readonly auto_update_interval_seconds: number;
   readonly auto_archive_days: number;
@@ -111,7 +108,6 @@ export const useAppSettings = defineStore("app-settings", () => {
   const notifyOnNeedsAttention = computed(
     () => settings.value.notify_on_needs_attention,
   );
-  const notifyOnMention = computed(() => settings.value.notify_on_mention);
   const permissionState = computed(() => settings.value.notification_permission_state);
   const lastSeenVersion = computed(() => settings.value.last_seen_version);
   const autoUpdateEnabled = computed(() => settings.value.auto_update_enabled);
@@ -149,7 +145,6 @@ export const useAppSettings = defineStore("app-settings", () => {
       ...previous,
       notifications_enabled: prefs.notifications_enabled,
       notify_on_needs_attention: prefs.notify_on_needs_attention,
-      notify_on_mention: prefs.notify_on_mention,
       auto_update_enabled: prefs.auto_update_enabled,
       auto_update_interval_seconds: prefs.auto_update_interval_seconds,
       auto_archive_days: prefs.auto_archive_days,
@@ -167,7 +162,6 @@ export const useAppSettings = defineStore("app-settings", () => {
         prefs: {
           notifications_enabled: prefs.notifications_enabled,
           notify_on_needs_attention: prefs.notify_on_needs_attention,
-          notify_on_mention: prefs.notify_on_mention,
           notification_permission_state: previous.notification_permission_state,
           last_seen_version: previous.last_seen_version,
           auto_update_enabled: prefs.auto_update_enabled,
@@ -236,7 +230,6 @@ export const useAppSettings = defineStore("app-settings", () => {
     lastError,
     notificationsEnabled,
     notifyOnNeedsAttention,
-    notifyOnMention,
     permissionState,
     lastSeenVersion,
     autoUpdateEnabled,

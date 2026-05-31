@@ -112,15 +112,12 @@ const activeChipsList = computed<readonly ChipKey[]>(() =>
 );
 
 // Issue #336: gate the "Mark all read" action on the view + chip filter
-// having at least one unread / mention. Reads `pullRequests` (the backend's
+// having at least one unread row. Reads `pullRequests` (the backend's
 // view + chip filtered list) instead of `filteredPullRequests` because the
 // in-memory search is client-side; the Rust command doesn't know about
 // search, so the button state should match what the backend would mark.
 const hasUnreadInView = computed<boolean>(() =>
-  dashboard.pullRequests.some(
-    (pr: DashboardPullRequest) =>
-      pr.unread || pr.mentioned_count_unread > 0,
-  ),
+  dashboard.pullRequests.some((pr: DashboardPullRequest) => pr.unread),
 );
 
 // View labels are nicer than the kebab keys when surfaced in copy ("12 of

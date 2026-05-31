@@ -137,6 +137,8 @@ ALTER TABLE issue_comments  ADD COLUMN mentions_viewer INTEGER NOT NULL DEFAULT 
 --   settings.notify_on_mention. Stop reading them; a later cleanup ADR may drop them.
 ```
 
+> **Correction (2026-05-31)** (ADR [0032](0032-prune-pre-0031-notification-remnants.md)): the comment above wrongly lists `mention_scan_watermark_at` as deprecated. It is _not_ vestigial - the sync worker reads it as the mention-scan watermark and advances it every cycle, so it is KEPT. ADR 0032 drops only `mentioned_count_unread` and `notify_on_mention` (migration 0027).
+
 `0025` is the next free migration number; `migrate.rs` asserts `version == MIGRATION_SOURCES.len()`, so the branch verifies no other migration PR is mid-flight before claiming it.
 
 ### Left-edge encoding
