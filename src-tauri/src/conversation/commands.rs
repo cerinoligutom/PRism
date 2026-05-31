@@ -7,7 +7,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use thiserror::Error;
 
 use crate::conversation::query;
@@ -16,6 +16,7 @@ use crate::conversation::types::{
 };
 use crate::db::DbHandle;
 use crate::notify::refresh_from_db as refresh_badge_from_db;
+use crate::sync::DASHBOARD_REFRESH_EVENT;
 
 /// User-facing error shape for `conversation::*` commands. Internal failures
 /// (lock poison, rusqlite errors) fold into a single opaque variant so
@@ -102,8 +103,10 @@ pub fn load_pr_conversation<R: Runtime>(
 
 /// Explicitly mark one review thread seen for one account (ADR 0031). Backs a
 /// later frontend "Mark seen" affordance: advances the per-thread seen
-/// watermark (keyed on `node_id`), recomputes the roll-up, and refreshes the
-/// badge. Re-arms on the next other-authored reply past the watermark.
+/// watermark (keyed on `node_id`), recomputes the roll-up, refreshes the
+/// badge, and emits [`DASHBOARD_REFRESH_EVENT`] so the dashboard rows,
+/// conversation drawer, and inbox chip reconcile without waiting for the next
+/// sync tick. Re-arms on the next other-authored reply past the watermark.
 #[tauri::command]
 pub fn mark_thread_seen<R: Runtime>(
     pull_request_id: i64,
@@ -124,12 +127,14 @@ pub fn mark_thread_seen<R: Runtime>(
         tx.commit()
             .map_err(|e| internal(&format!("commit tx: {e}")))?;
     }
+    emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
     Ok(())
 }
 
 /// Explicitly mark a PR's general comment stream seen for one account (ADR
-/// 0031). Companion to [`mark_thread_seen`] for the general-stream unit.
+/// 0031). Companion to [`mark_thread_seen`] for the general-stream unit. Emits
+/// [`DASHBOARD_REFRESH_EVENT`] on commit for the same surface reconcile.
 #[tauri::command]
 pub fn mark_general_stream_seen<R: Runtime>(
     pull_request_id: i64,
@@ -154,8 +159,18 @@ pub fn mark_general_stream_seen<R: Runtime>(
         tx.commit()
             .map_err(|e| internal(&format!("commit tx: {e}")))?;
     }
+    emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
     Ok(())
+}
+
+/// Fire-and-forget refresh signal. A failed emit logs and continues - the
+/// command's write already succeeded, and the frontend can recover via the
+/// next sync-cycle reload. Mirrors `triage::commands::emit_dashboard_refresh`.
+fn emit_dashboard_refresh<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(err) = app.emit(DASHBOARD_REFRESH_EVENT, ()) {
+        tracing::warn!(event = DASHBOARD_REFRESH_EVENT, %err, "failed to emit refresh event");
+    }
 }
 
 /// Resolve the owning account of a PR's repo. The conversation surface uses
