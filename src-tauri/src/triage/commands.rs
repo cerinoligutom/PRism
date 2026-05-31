@@ -1,25 +1,18 @@
 //! Tauri command surface for the triage module.
 //!
-//! Wave 2-A fills in the read-state writers: `mark_pr_read` resets the
-//! mention counter and refreshes the read watermarks; `mark_pr_unread` clears
-//! the read watermark while leaving the mention counter alone (only the sync
-//! scanner ever bumps it). Both recompute `needs_attention` inside the same
-//! transaction via [`crate::triage::query::recompute_needs_attention`].
+//! `recompute_needs_attention` (via [`crate::triage::query`]) backs the
+//! conversation hydrator and the sync recompute; this file exposes the
+//! attention-count reads and the archive writers.
 //!
-//! Wave 2-C adds `list_sidebar_attention_counts` - the per-view COUNT(*)
-//! that drives the sidebar nav's `.has-attention` boost.
+//! `list_sidebar_attention_counts` is the per-view COUNT(*) that drives the
+//! sidebar nav's `.has-attention` boost.
 //!
-//! Wave 2-D fills in `list_filter_chip_counts`. See
+//! `list_filter_chip_counts` (Wave 2-D) backs the chip rail. See
 //! `docs/contracts/triage-ux.md` ("Tauri command surface") for the contract.
 //!
 //! M6 wave 1 adds `mark_pr_archived` / `mark_pr_unarchived` (ADR 0018). Both
 //! commands fire [`DASHBOARD_REFRESH_EVENT`] on success so the frontend can
 //! reload the affected views without waiting for the next sync tick.
-//!
-//! Issue #336 adds `mark_view_read` - the "Mark all read" command that
-//! bulk-flips read state on every relation row matching the active view +
-//! chip filter. Same per-row semantics as `mark_pr_read`, applied to the row
-//! set the dashboard list would project.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
@@ -30,7 +23,7 @@ use crate::db::DbHandle;
 use crate::notify::refresh_from_db as refresh_badge_from_db;
 use crate::sync::DASHBOARD_REFRESH_EVENT;
 use crate::triage::query;
-use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
+use crate::triage::types::{FilterChipCounts, SidebarAttentionCounts};
 
 /// User-facing error shape for `triage::*` commands. Internal failures (lock
 /// poison, rusqlite errors mid-transaction) fold into a single opaque variant
@@ -47,107 +40,6 @@ fn internal(message: &str) -> TriageCommandError {
     TriageCommandError::Internal
 }
 
-/// Mark a PR as read.
-///
-/// `account_id = Some(id)` flips the read state for that single relation;
-/// `account_id = None` (ADR 0016, unified mode) fans the flip out across every
-/// existing relation owner for the PR. Each per-account write is independent:
-/// a per-account failure during the fan-out logs and continues so partial
-/// progress persists, matching ADR 0016's mark-read option 1.
-///
-/// In single-account mode the existing semantics hold: the relation row is
-/// UPSERTed (so a PR the viewer reached without a prior discovery pass still
-/// flips read). In multi-account mode the fan-out only writes to existing
-/// relation rows - upserting against arbitrary accounts would manufacture
-/// rows the sync cycle never validated.
-///
-/// The composite `needs_attention` flag is recomputed for each touched
-/// `(account, PR)` pair inside the same transaction.
-#[tauri::command]
-pub fn mark_pr_read<R: Runtime>(
-    pull_request_id: i64,
-    account_id: Option<i64>,
-    db: State<'_, DbHandle>,
-    app_handle: AppHandle<R>,
-) -> Result<(), TriageCommandError> {
-    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| internal(&format!("begin tx: {e}")))?;
-    match account_id {
-        Some(id) => {
-            query::mark_read(&tx, id, pull_request_id)
-                .map_err(|e| internal(&format!("mark read: {e}")))?;
-            // ADR 0031: the read/clear recompute no longer emits toasts - all
-            // dispatch lives on the sync re-arm path. Just refresh the column.
-            query::recompute_needs_attention(&tx, id, pull_request_id)
-                .map_err(|e| internal(&format!("recompute needs_attention: {e}")))?;
-        }
-        None => {
-            apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
-                query::mark_read(tx, acct, pull_request_id)?;
-                query::recompute_needs_attention(tx, acct, pull_request_id)?;
-                Ok(())
-            })
-            .map_err(|e| internal(&format!("mark read multi: {e}")))?;
-        }
-    }
-    tx.commit()
-        .map_err(|e| internal(&format!("commit tx: {e}")))?;
-    drop(conn);
-    refresh_badge_from_db(&app_handle, &db);
-    Ok(())
-}
-
-/// Flip a PR back to unread.
-///
-/// `account_id = Some(id)` clears the read watermark on that single relation;
-/// `account_id = None` fans the clear out across every existing relation
-/// owner. Per-account writes are independent so a partial failure doesn't roll
-/// back successes (ADR 0016 mark-read option 1).
-///
-/// The mention-scan watermark is _not_ rewritten - the next sync cycle re-scans
-/// comments past the existing `mention_scan_watermark_at` if any matched.
-/// Recomputes `needs_attention` synchronously for each touched pair.
-///
-/// No-op when the relation row doesn't exist; the contract is "Team-view PRs
-/// never get a row" and marking such a PR unread is not a meaningful
-/// operation.
-#[tauri::command]
-pub fn mark_pr_unread<R: Runtime>(
-    pull_request_id: i64,
-    account_id: Option<i64>,
-    db: State<'_, DbHandle>,
-    app_handle: AppHandle<R>,
-) -> Result<(), TriageCommandError> {
-    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| internal(&format!("begin tx: {e}")))?;
-    match account_id {
-        Some(id) => {
-            query::mark_unread(&tx, id, pull_request_id)
-                .map_err(|e| internal(&format!("mark unread: {e}")))?;
-            // ADR 0031: read/clear recompute no longer emits toasts.
-            query::recompute_needs_attention(&tx, id, pull_request_id)
-                .map_err(|e| internal(&format!("recompute needs_attention: {e}")))?;
-        }
-        None => {
-            apply_to_all_relation_owners(&tx, pull_request_id, |tx, acct| {
-                query::mark_unread(tx, acct, pull_request_id)?;
-                query::recompute_needs_attention(tx, acct, pull_request_id)?;
-                Ok(())
-            })
-            .map_err(|e| internal(&format!("mark unread multi: {e}")))?;
-        }
-    }
-    tx.commit()
-        .map_err(|e| internal(&format!("commit tx: {e}")))?;
-    drop(conn);
-    refresh_badge_from_db(&app_handle, &db);
-    Ok(())
-}
-
 /// Manual archive write for one `(account_id, pull_request_id)` pair.
 /// ADR 0018 keeps manual + auto archive on the same `archived_at` column;
 /// this command is the manual writer the row overflow menu invokes. The
@@ -157,10 +49,10 @@ pub fn mark_pr_unread<R: Runtime>(
 ///
 /// UPSERTs the relation row so an account whose viewer hasn't opened the
 /// drawer can still archive the PR. Wraps the write in a transaction even
-/// though the underlying UPSERT is a single statement so the future addition
-/// of a recompute / cascade follow-up doesn't break the atomicity contract
-/// established by `mark_pr_read`. Emits [`DASHBOARD_REFRESH_EVENT`] on
-/// success so the frontend reloads without waiting for the next sync tick.
+/// though the underlying UPSERT is a single statement so a future recompute /
+/// cascade follow-up doesn't break the atomicity contract. Emits
+/// [`DASHBOARD_REFRESH_EVENT`] on success so the frontend reloads without
+/// waiting for the next sync tick.
 #[tauri::command]
 pub fn mark_pr_archived<R: Runtime>(
     pull_request_id: i64,
@@ -245,47 +137,6 @@ pub fn mark_pr_unarchived<R: Runtime>(
     Ok(())
 }
 
-/// Mark every PR in the active view as read.
-///
-/// Issue #336: bulk read-flip for every relation row matching the dashboard
-/// view + active chip filter. The write set is the same one the dashboard list
-/// projects, so a user clicking "Mark all read" sees every visible row's dot
-/// settle in one round-trip.
-///
-/// `account_id = Some(id)` flips only the active account's relation rows.
-/// `account_id = None` (ADR 0016 unified mode) flips every relation row for
-/// every PR the view + chips admit. Tracked-view PRs the active account has
-/// never opened (no relation row) are not touched - bulk mark-read doesn't
-/// UPSERT, since flipping read on a PR the user has never engaged with would
-/// create relation rows the sync cycle hasn't validated.
-///
-/// Returns the number of distinct PRs whose read state the call touched.
-/// Mirrors the user-visible "N marked" report the frontend renders.
-///
-/// Recomputes `needs_attention` for the same row set inside the same
-/// transaction. Per ADR 0017 decision 1, read clears don't surface as OS
-/// notifications, so this command emits no notification triggers.
-#[tauri::command]
-pub fn mark_view_read<R: Runtime>(
-    view: DashboardView,
-    account_id: Option<i64>,
-    chips: Vec<ChipKey>,
-    db: State<'_, DbHandle>,
-    app_handle: AppHandle<R>,
-) -> Result<i64, TriageCommandError> {
-    let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| internal(&format!("begin tx: {e}")))?;
-    let count = query::mark_view_read(&tx, view, account_id, &chips)
-        .map_err(|e| internal(&format!("mark view read: {e}")))?;
-    tx.commit()
-        .map_err(|e| internal(&format!("commit tx: {e}")))?;
-    drop(conn);
-    refresh_badge_from_db(&app_handle, &db);
-    Ok(count)
-}
-
 /// Fire-and-forget refresh signal. A failed emit logs and continues - the
 /// command's write already succeeded, and the frontend can recover via the
 /// next sync-cycle reload.
@@ -293,42 +144,6 @@ fn emit_dashboard_refresh<R: Runtime>(app: &AppHandle<R>) {
     if let Err(err) = app.emit(DASHBOARD_REFRESH_EVENT, ()) {
         tracing::warn!(event = DASHBOARD_REFRESH_EVENT, %err, "failed to emit refresh event");
     }
-}
-
-/// Iterate every account_id that has a relation row for `pull_request_id` and
-/// invoke `op` once per account. Per-account failures are logged and skipped
-/// (ADR 0016: "partial failures must not roll back successful per-account
-/// writes"). Returns `Ok(())` even if every per-account write fails - the
-/// outer transaction commits successful rows and surfaces nothing to the
-/// frontend. The next sync cycle reconciles.
-fn apply_to_all_relation_owners<F>(
-    tx: &rusqlite::Transaction<'_>,
-    pull_request_id: i64,
-    mut op: F,
-) -> Result<(), rusqlite::Error>
-where
-    F: FnMut(&rusqlite::Transaction<'_>, i64) -> Result<(), rusqlite::Error>,
-{
-    let mut stmt = tx.prepare(
-        "SELECT account_id FROM pull_request_viewer_relations
-          WHERE pull_request_id = ?1
-          ORDER BY account_id",
-    )?;
-    let account_ids: Vec<i64> = stmt
-        .query_map([pull_request_id], |row| row.get::<_, i64>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(stmt);
-    for account_id in account_ids {
-        if let Err(err) = op(tx, account_id) {
-            tracing::warn!(
-                pull_request_id,
-                account_id,
-                %err,
-                "per-account triage write failed",
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Count how many PRs in the current view would match each filter chip
@@ -458,142 +273,19 @@ mod tests {
         .unwrap()
     }
 
-    /// Drive the same write path as the Tauri command without booting the
-    /// state container. Mirrors the body of [`super::mark_pr_read`].
+    /// Advance the PR read watermark + recompute the roll-up, mirroring the
+    /// open path (`conversation::commands::load_pr_conversation`). The archive
+    /// tests use this to set up a row that actually has `read_at` + an
+    /// attention flag, so they can pin "archive leaves read-state alone".
     fn invoke_mark_pr_read(db: &DbHandle, pr: i64, account: i64) -> Result<(), String> {
         let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
-        query::mark_read(&tx, account, pr).map_err(|e| format!("mark read: {e}"))?;
+        crate::triage::units::advance_read_watermark(&tx, account, pr, 1_700_000_000)
+            .map_err(|e| format!("advance read watermark: {e}"))?;
         query::recompute_needs_attention(&tx, account, pr)
             .map_err(|e| format!("recompute needs_attention: {e}"))?;
         tx.commit().map_err(|e| format!("commit tx: {e}"))?;
         Ok(())
-    }
-
-    /// Mirrors [`super::mark_pr_unread`].
-    fn invoke_mark_pr_unread(db: &DbHandle, pr: i64, account: i64) -> Result<(), String> {
-        let mut conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
-        let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
-        query::mark_unread(&tx, account, pr).map_err(|e| format!("mark unread: {e}"))?;
-        query::recompute_needs_attention(&tx, account, pr)
-            .map_err(|e| format!("recompute needs_attention: {e}"))?;
-        tx.commit().map_err(|e| format!("commit tx: {e}"))?;
-        Ok(())
-    }
-
-    #[test]
-    fn mark_pr_read_sets_read_watermark_and_captures_updated_at() {
-        let db = fresh_db();
-        seed(&db, "bob", 1_700_000_000, 0, None);
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (read_at, read_pr_updated_at, _) = read_triage(&db);
-        assert!(read_at.is_some(), "read_at should be set");
-        assert_eq!(
-            read_pr_updated_at,
-            Some(1_700_000_000),
-            "read_pr_updated_at snapshots pr.updated_at"
-        );
-    }
-
-    #[test]
-    fn mark_pr_read_recomputes_needs_attention_against_remaining_signals() {
-        let db = fresh_db();
-        // Two threads with a fresh other-authored reply keep the roll-up's (A)
-        // branch firing even after the read flip - the legacy mention counter
-        // is zeroed, but the conversation watermark still says the threads need
-        // me (ADR 0031).
-        seed(&db, "alice", 1_700_000_000, 2, None);
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (_, _, needs_attention) = read_triage(&db);
-        assert_eq!(needs_attention, 1);
-    }
-
-    #[test]
-    fn mark_pr_read_clears_attention_when_no_signal_remains() {
-        let db = fresh_db();
-        seed(&db, "bob", 1_700_000_000, 0, None);
-        {
-            let conn = db.lock().unwrap();
-            conn.execute(
-                "UPDATE pull_request_viewer_relations
-                    SET needs_attention = 1
-                  WHERE account_id = 1 AND pull_request_id = 100",
-                [],
-            )
-            .unwrap();
-        }
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let (_, _, needs_attention) = read_triage(&db);
-        assert_eq!(
-            needs_attention, 0,
-            "read flip + recompute drops a stale flag with no qualifying signal"
-        );
-    }
-
-    #[test]
-    fn mark_pr_read_upserts_relation_row_when_missing() {
-        let db = fresh_db();
-        // Seed account + PR but no relation row.
-        {
-            let conn = db.lock().unwrap();
-            conn.execute_batch(
-                "INSERT INTO accounts (id, label, host, login, created_at)
-                    VALUES (1, 'a', 'github.com', 'alice', 0);
-                 INSERT INTO repos (id, account_id, owner, name, visibility)
-                    VALUES (10, 1, 'owner', 'repo', 'public');
-                 INSERT INTO pull_requests
-                    (id, repo_id, number, title, state, is_draft, author_login,
-                     created_at, updated_at, base_ref, head_ref)
-                    VALUES (100, 10, 1, 't', 'open', 0, 'bob',
-                            0, 1_700_000_000, 'main', 'feat');",
-            )
-            .unwrap();
-        }
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        let conn = db.lock().unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pull_request_viewer_relations
-                  WHERE account_id = 1 AND pull_request_id = 100",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "row created by the auto-mark hook");
-    }
-
-    #[test]
-    fn mark_pr_unread_clears_read_watermark() {
-        let db = fresh_db();
-        seed(&db, "bob", 1_700_000_000, 0, None);
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        invoke_mark_pr_unread(&db, 100, 1).unwrap();
-        let (read_at, read_pr_updated_at, _) = read_triage(&db);
-        assert!(read_at.is_none());
-        assert!(read_pr_updated_at.is_none());
-    }
-
-    #[test]
-    fn mark_pr_unread_recomputes_needs_attention() {
-        let db = fresh_db();
-        seed(&db, "alice", 1_700_000_000, 2, None);
-        invoke_mark_pr_read(&db, 100, 1).unwrap();
-        // After mark_pr_read the (A) branch keeps needs_attention = 1 (the
-        // threads still carry a fresh other-authored reply).
-        let (_, _, before) = read_triage(&db);
-        assert_eq!(before, 1);
-        // Delete the other-authored replies so no comment past my watermark
-        // remains; the units settle and the recompute clears the roll-up.
-        // (Resolving alone would NOT clear it - a resolved thread with a fresh
-        // reply still nags under ADR 0031.)
-        {
-            let conn = db.lock().unwrap();
-            conn.execute("DELETE FROM review_comments WHERE author_login = 'bob'", [])
-                .unwrap();
-        }
-        invoke_mark_pr_unread(&db, 100, 1).unwrap();
-        let (_, _, after) = read_triage(&db);
-        assert_eq!(after, 0, "no unit needs me after the other replies clear");
     }
 
     // ===== archive (M6 wave 1) =====
@@ -645,9 +337,9 @@ mod tests {
         let db = fresh_db();
         seed(&db, "alice", 1_700_000_000, 2, None);
         invoke_mark_pr_read(&db, 100, 1).unwrap();
-        // After mark_pr_read, the relation has read_at set, and the (A) branch
-        // keeps needs_attention = 1 (the seeded threads still carry a fresh
-        // other-authored reply).
+        // After advancing the read watermark, the relation has read_at set, and
+        // the (A) branch keeps needs_attention = 1 (the seeded threads still
+        // carry a fresh other-authored reply).
         let (read_at_before, _, attention_before) = read_triage(&db);
         assert!(read_at_before.is_some());
         assert_eq!(attention_before, 1);

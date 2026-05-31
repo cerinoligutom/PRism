@@ -187,11 +187,17 @@ async function loadConversation(): Promise<void> {
 async function scrollToPendingThread(): Promise<void> {
   const target = threadDeepLink.takePendingThread();
   if (target === null) return;
-  const present = (conversation.value?.threads ?? []).some(
+  const targetThread = (conversation.value?.threads ?? []).find(
     (t) => t.node_id === target,
   );
-  if (!present) return;
+  if (targetThread === undefined) return;
   activeTab.value = "threads";
+  // ADR 0033 deep-link-to-seen: arriving at a thread via a notification deep
+  // link is genuine attention, so mark it seen (same handler as the manual
+  // button / expand-to-seen). No-op when already seen or with no relation owner.
+  if (canMarkSeen.value && targetThread.unread) {
+    void onMarkThreadSeen(targetThread);
+  }
   await nextTick();
   const el = document.getElementById(threadAnchorId(target));
   if (el === null) return;
@@ -212,6 +218,10 @@ async function onMarkGeneralStreamSeen(): Promise<void> {
   await store.markGeneralStreamSeen(props.pullRequestId, accountIds.value);
 }
 
+async function onMarkReviewsSeen(): Promise<void> {
+  await store.markReviewsSeen(props.pullRequestId, accountIds.value);
+}
+
 function setTab(next: TabKey): void {
   activeTab.value = next;
 }
@@ -221,12 +231,49 @@ function retry(): void {
   void loadConversation();
 }
 
+/**
+ * Tab-dwell auto-seen (ADR 0033). Staying on the Comments tab for ~1s marks the
+ * general stream seen; staying on the Reviews tab marks the reviews unit seen.
+ * Dwell (not scroll-to-end) is the deliberate-interaction signal; hover is
+ * explicitly not a trigger. The pending timer is cleared on every tab change
+ * and on unmount so no mark-seen fires for a tab the user only passed through.
+ */
+const DWELL_MS = 1000;
+let dwellTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearDwellTimer(): void {
+  if (dwellTimer !== null) {
+    clearTimeout(dwellTimer);
+    dwellTimer = null;
+  }
+}
+
+watch(
+  activeTab,
+  (tab) => {
+    clearDwellTimer();
+    if (!canMarkSeen.value) return;
+    if (tab !== "comments" && tab !== "reviews") return;
+    dwellTimer = setTimeout(() => {
+      dwellTimer = null;
+      // Re-check the active tab: a fast switch-and-back could land the timer
+      // on the wrong unit otherwise. Mark-seen is MAX-only / idempotent, so
+      // firing on an already-seen unit is harmless.
+      if (activeTab.value !== tab) return;
+      if (tab === "comments") void onMarkGeneralStreamSeen();
+      else void onMarkReviewsSeen();
+    }, DWELL_MS);
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   store.acquire(props.pullRequestId);
   void loadConversation();
 });
 
 onBeforeUnmount(() => {
+  clearDwellTimer();
   store.release(props.pullRequestId);
 });
 
@@ -383,10 +430,21 @@ watch(
             />
           </template>
 
-          <ReviewsTab
-            v-else-if="activeTab === 'reviews'"
-            :reviews="conversation.reviews"
-          />
+          <template v-else-if="activeTab === 'reviews'">
+            <div
+              v-if="canMarkSeen && conversation.reviews.length > 0"
+              class="pr-conversation__col-head pr-conversation__col-head--end"
+            >
+              <PRismButton
+                variant="ghost"
+                size="sm"
+                @click="onMarkReviewsSeen"
+              >
+                Mark all seen
+              </PRismButton>
+            </div>
+            <ReviewsTab :reviews="conversation.reviews" />
+          </template>
 
           <template v-else-if="activeTab === 'comments'">
             <div

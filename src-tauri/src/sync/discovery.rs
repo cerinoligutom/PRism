@@ -419,9 +419,9 @@ fn upsert_viewer_relation(
     //  * The INSERT path leans on the migration-0010 defaults
     //    (NULL / 0 / 0) since this clause runs on the first discovery
     //    of a (account, PR) pair, before any open or scan.
-    //  * The UPDATE path omits them so existing values (set by
-    //    `mark_pr_read`, `mark_pr_unread`, the conversation auto-mark hook,
-    //    and the M4-B sync-cycle mention scanner) are preserved verbatim.
+    //  * The UPDATE path omits them so existing values (set by the
+    //    conversation auto-mark-on-open hook and the M4-B sync-cycle mention
+    //    scanner) are preserved verbatim.
     //
     // The explicit `pull_request_viewer_relations.x` references in each
     // UPDATE row guard against accidental clobbering if a future edit adds
