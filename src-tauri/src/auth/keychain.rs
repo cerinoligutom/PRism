@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::auth::store::AccountId;
 
-const SERVICE: &str = "com.cerinoligutom.prism";
+const SERVICE: &str = "com.zeferinix.prism";
 
 /// Number of attempts for keychain reads that hit transient `PlatformFailure`.
 ///

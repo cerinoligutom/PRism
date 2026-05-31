@@ -391,9 +391,9 @@ mod linux {
 
     /// Application URI used by D-Bus launcher receivers to match the signal
     /// against a running app. Derived from `tauri.conf.json`'s `identifier`
-    /// (com.cerinoligutom.prism) - if the Linux bundle ever ships a different
+    /// (com.zeferinix.prism) - if the Linux bundle ever ships a different
     /// `.desktop` basename, update this constant to match.
-    const DESKTOP_ENTRY_URI: &str = "application://com.cerinoligutom.prism.desktop";
+    const DESKTOP_ENTRY_URI: &str = "application://com.zeferinix.prism.desktop";
     const INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
     const SIGNAL: &str = "Update";
 
@@ -429,7 +429,7 @@ mod linux {
 
         #[test]
         fn launcher_object_path_is_stable_for_known_uri() {
-            // Hand-computed crc32 of "application://com.cerinoligutom.prism.desktop"
+            // Hand-computed crc32 of "application://com.zeferinix.prism.desktop"
             // pins the expected receiver path; if this changes silently the
             // launcher will stop matching our signal.
             let path = launcher_object_path(DESKTOP_ENTRY_URI);
