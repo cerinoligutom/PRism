@@ -838,7 +838,7 @@ fn rearm_emits_once_then_stays_quiet_then_refires_on_new_reply() {
     assert_eq!(t1[0].kind, NotificationKind::NeedsAttention);
     assert_eq!(t1[0].unit_kind, NotificationUnitKind::Thread);
     assert_eq!(t1[0].unit_ref.as_deref(), Some("RT_a"));
-    assert_eq!(t1[0].newest_activity_at, 20);
+    assert_eq!(t1[0].newest_activity_at, Some(20));
     assert_eq!(read_last_emitted(&db, 1, pr_id), 20);
     assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
 
@@ -860,7 +860,7 @@ fn rearm_emits_once_then_stays_quiet_then_refires_on_new_reply() {
         .unwrap();
     let t3 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
     assert_eq!(t3.len(), 1, "a new later reply re-fires exactly once");
-    assert_eq!(t3[0].newest_activity_at, 30);
+    assert_eq!(t3[0].newest_activity_at, Some(30));
     assert_eq!(read_last_emitted(&db, 1, pr_id), 30);
 }
 
@@ -894,7 +894,7 @@ fn two_units_one_cycle_emit_one_trigger_tagged_with_newest() {
         Some("RT_new"),
         "tagged with the unit holding the newest crossing activity"
     );
-    assert_eq!(triggers[0].newest_activity_at, 40);
+    assert_eq!(triggers[0].newest_activity_at, Some(40));
 }
 
 #[test]
@@ -931,7 +931,7 @@ fn marking_a_unit_seen_re_arms_for_a_later_reply() {
         .unwrap();
     let t3 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
     assert_eq!(t3.len(), 1, "later reply past the seen mark re-fires");
-    assert_eq!(t3[0].newest_activity_at, 30);
+    assert_eq!(t3[0].newest_activity_at, Some(30));
 }
 
 #[test]
@@ -1016,7 +1016,7 @@ fn general_stream_three_comments_one_cycle_emit_at_most_one() {
     );
     assert_eq!(triggers[0].unit_kind, NotificationUnitKind::General);
     assert!(triggers[0].unit_ref.is_none());
-    assert_eq!(triggers[0].newest_activity_at, 30);
+    assert_eq!(triggers[0].newest_activity_at, Some(30));
 
     // Marking the stream seen clears it: next cycle, no new activity, no fire,
     // roll-up drops to 0.
@@ -1067,4 +1067,313 @@ fn node_id_keying_survives_thread_delete_and_readd() {
         "node-keyed seen survives delete+re-add; replayed reply stays quiet"
     );
     assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+}
+
+// ===== role-obligation dispatch (ADR 0031 amendment, issue #450) =====
+//
+// The viewer NEWLY acquiring a role obligation - becomes a requested reviewer,
+// OR their authored PR flips to CHANGES_REQUESTED - fires ONE role trigger,
+// deduped via `last_emitted_role` so it does not re-fire while the obligation
+// persists, re-armed when it clears and later reappears. A separate dedup from
+// `last_emitted_activity_at`: a PR may emit both a conversation trigger and a
+// role trigger in one cycle.
+
+fn read_last_emitted_role(db: &DbHandle, account_id: i64, pr_id: i64) -> Option<String> {
+    db.lock()
+        .unwrap()
+        .query_row(
+            "SELECT last_emitted_role FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+}
+
+/// Filter the cycle's triggers down to role-obligation kinds (the two role
+/// `unit_kind`s) so a conversation trigger in the same cycle doesn't confuse
+/// the role-only assertions.
+fn role_triggers(
+    triggers: &[crate::notify::NotificationTrigger],
+) -> Vec<&crate::notify::NotificationTrigger> {
+    triggers
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.unit_kind,
+                NotificationUnitKind::ReviewRequest | NotificationUnitKind::ChangesRequested
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn becoming_requested_reviewer_emits_one_role_trigger() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    let roles = role_triggers(&triggers);
+    assert_eq!(roles.len(), 1, "becoming a requested reviewer emits once");
+    assert_eq!(roles[0].unit_kind, NotificationUnitKind::ReviewRequest);
+    assert!(roles[0].unit_ref.is_none());
+    assert!(roles[0].newest_activity_at.is_none(), "role carries no ts");
+    assert!(
+        roles[0].deep_link_url.is_some(),
+        "PR conversation deep link"
+    );
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id).as_deref(),
+        Some("review_request")
+    );
+}
+
+#[test]
+fn still_requested_next_cycle_emits_nothing() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+
+    let first = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(role_triggers(&first).len(), 1);
+
+    // Cycle 2: obligation persists, nothing else changed -> zero role triggers.
+    let second = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        role_triggers(&second).is_empty(),
+        "the same obligation must not re-fire while it persists"
+    );
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id).as_deref(),
+        Some("review_request")
+    );
+}
+
+#[test]
+fn removed_from_requested_reviewers_rearms_then_refires() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+    assert_eq!(
+        role_triggers(&write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap()).len(),
+        1
+    );
+
+    // Removed (review submitted): the marker re-arms to NULL.
+    db.lock()
+        .unwrap()
+        .execute(
+            "DELETE FROM requested_reviewers WHERE pull_request_id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+    let cleared = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        role_triggers(&cleared).is_empty(),
+        "clearing the obligation emits nothing"
+    );
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id),
+        None,
+        "marker re-arms to NULL when the obligation clears"
+    );
+
+    // Re-added: emits again.
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+    let readded = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(
+        role_triggers(&readded).len(),
+        1,
+        "re-adding the obligation re-fires once"
+    );
+}
+
+#[test]
+fn authored_pr_changes_requested_emits_then_rearms_on_approval_then_refires() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests
+                SET author_login = 'me', review_decision = 'CHANGES_REQUESTED'
+              WHERE id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+
+    let t1 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    let r1 = role_triggers(&t1);
+    assert_eq!(r1.len(), 1, "CHANGES_REQUESTED on my PR emits once");
+    assert_eq!(r1[0].unit_kind, NotificationUnitKind::ChangesRequested);
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id).as_deref(),
+        Some("changes_requested")
+    );
+
+    // Decision flips to APPROVED -> re-arm.
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests SET review_decision = 'APPROVED' WHERE id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+    let t2 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(role_triggers(&t2).is_empty(), "approval emits nothing");
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id),
+        None,
+        "approval re-arms the marker"
+    );
+
+    // Flips back to CHANGES_REQUESTED -> emits again.
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests SET review_decision = 'CHANGES_REQUESTED' WHERE id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+    let t3 = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(
+        role_triggers(&t3).len(),
+        1,
+        "flipping back to CHANGES_REQUESTED re-fires"
+    );
+}
+
+#[test]
+fn changes_requested_wins_when_both_obligations_hold() {
+    // Author + requested are mutually exclusive in practice; if both somehow
+    // held, prefer 'changes_requested'.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE pull_requests
+                SET author_login = 'me', review_decision = 'CHANGES_REQUESTED'
+              WHERE id = 100;
+             INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    let roles = role_triggers(&triggers);
+    assert_eq!(roles.len(), 1, "exactly one role trigger");
+    assert_eq!(
+        roles[0].unit_kind,
+        NotificationUnitKind::ChangesRequested,
+        "changes_requested wins over review_request"
+    );
+}
+
+#[test]
+fn changes_requested_on_other_authors_pr_emits_no_role_trigger() {
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests
+                SET author_login = 'someone-else', review_decision = 'CHANGES_REQUESTED'
+              WHERE id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        role_triggers(&triggers).is_empty(),
+        "CHANGES_REQUESTED on a PR I didn't author is not my obligation"
+    );
+    assert_eq!(read_last_emitted_role(&db, 1, pr_id), None);
+}
+
+#[test]
+fn conversation_crossing_and_new_role_in_one_cycle_emit_both() {
+    // Separate dedups: a conversation crossing AND a new role obligation in one
+    // cycle produce two triggers (one conversation, one role).
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    // 'me' authored the PR + a thread crossing, AND CHANGES_REQUESTED on it.
+    seed_authored_thread_with_reply(&db, "RT_both", 10, 20);
+    db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE pull_requests SET review_decision = 'CHANGES_REQUESTED' WHERE id = ?1",
+            params![pr_id],
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(triggers.len(), 2, "one conversation + one role trigger");
+    let conv = triggers
+        .iter()
+        .filter(|t| t.unit_kind == NotificationUnitKind::Thread)
+        .count();
+    let role = role_triggers(&triggers);
+    assert_eq!(conv, 1, "the thread crossing emits");
+    assert_eq!(role.len(), 1, "the role obligation emits");
+    assert_eq!(role[0].unit_kind, NotificationUnitKind::ChangesRequested);
+    // Both dedup markers advanced.
+    assert_eq!(read_last_emitted(&db, 1, pr_id), 20);
+    assert_eq!(
+        read_last_emitted_role(&db, 1, pr_id).as_deref(),
+        Some("changes_requested")
+    );
+}
+
+#[test]
+fn role_dispatch_is_a_noop_cross_host() {
+    // Account 2 (github.acme.corp) shares login `me`; a requested-reviewer
+    // record on the github.com PR refers to the github.com identity, so
+    // account 2's scan early-exits on the host mismatch and emits no role
+    // trigger / sets no marker.
+    let (db, repo_id, pr_id) = seed_db_with_cross_host_login_collision();
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'me', 'user');",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 2, repo_id, pr_id, None, None).unwrap();
+    assert!(
+        role_triggers(&triggers).is_empty(),
+        "cross-host account must not emit a role trigger"
+    );
+    assert_eq!(
+        read_last_emitted_role(&db, 2, pr_id),
+        None,
+        "cross-host scan must not touch the marker"
+    );
 }

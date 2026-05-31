@@ -43,9 +43,16 @@ export interface Notification {
    * orphan row (`pull_request_id === null`); a live row's unread state is
    * derived into `unread`. */
   readonly read_at: number | null;
-  /** Conversation unit this row points at (ADR 0031): `'thread'` |
-   * `'general'` | `null` (legacy / PR-level row). */
-  readonly unit_kind: "thread" | "general" | null;
+  /** Conversation unit or role obligation this row points at (ADR 0031): a
+   * conversation unit (`'thread'` | `'general'`), a role obligation
+   * (`'review_request'` | `'changes_requested'`, from the 2026-05-31
+   * amendment), or `null` (legacy / PR-level row). */
+  readonly unit_kind:
+    | "thread"
+    | "general"
+    | "review_request"
+    | "changes_requested"
+    | null;
   /** Review thread `node_id` when `unit_kind === 'thread'`, else `null`. */
   readonly unit_ref: string | null;
   /** Deep link to the exact unit (thread url or PR conversation url). */

@@ -36,9 +36,11 @@ pub enum NotificationKind {
     Mention,
 }
 
-/// Which conversation unit a trigger / inbox row points at (ADR 0031). A
-/// review thread is keyed on its GraphQL `node_id`; the PR's general comment
-/// stream is one dismissible unit per PR with no ref.
+/// Which conversation unit or role obligation a trigger / inbox row points at
+/// (ADR 0031, role obligations added by the 2026-05-31 amendment). A review
+/// thread is keyed on its GraphQL `node_id`; the PR's general comment stream is
+/// one dismissible unit per PR with no ref; the two role kinds are PR-level
+/// obligations with no `unit_ref` and the PR conversation URL as the deep link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationUnitKind {
@@ -46,43 +48,58 @@ pub enum NotificationUnitKind {
     Thread,
     /// The PR's general comment stream (`unit_ref` is `None`).
     General,
+    /// The viewer became a requested reviewer (`unit_ref` is `None`).
+    ReviewRequest,
+    /// The viewer's authored PR flipped to CHANGES_REQUESTED (`unit_ref` is
+    /// `None`).
+    ChangesRequested,
 }
 
 impl NotificationUnitKind {
     /// String storage for the `notifications.unit_kind` column. Matches the
-    /// `'thread'` / `'general'` values the per-unit roll-up SQL compares
-    /// against and the `#[serde(rename_all = "snake_case")]` wire form.
+    /// `'thread'` / `'general'` / `'review_request'` / `'changes_requested'`
+    /// values the per-row unread SQL compares against and the
+    /// `#[serde(rename_all = "snake_case")]` wire form.
     pub fn as_storage(self) -> &'static str {
         match self {
             NotificationUnitKind::Thread => "thread",
             NotificationUnitKind::General => "general",
+            NotificationUnitKind::ReviewRequest => "review_request",
+            NotificationUnitKind::ChangesRequested => "changes_requested",
         }
     }
 }
 
-/// One newly-observed unit crossing, addressed at the PR that produced it and
-/// tagged with the conversation unit holding the newest crossing activity
-/// (ADR 0031 edge-with-re-arm). The per-cycle sync recompute emits these after
-/// the per-PR dispatch watermark advances; the worker hands them to the
-/// [`super::NotificationSink`] once the enclosing transaction commits.
+/// One newly-observed unit crossing or role obligation, addressed at the PR
+/// that produced it and tagged with the unit / role it points at (ADR 0031
+/// edge-with-re-arm; role obligations added by the 2026-05-31 amendment). The
+/// per-cycle sync recompute emits these after the per-PR dispatch watermark
+/// (conversation) or the per-PR `last_emitted_role` marker (role) advances; the
+/// worker hands them to the [`super::NotificationSink`] once the enclosing
+/// transaction commits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationTrigger {
     pub account_id: i64,
     pub pull_request_id: i64,
     pub kind: NotificationKind,
-    /// The conversation unit this emit is tagged with (the unit holding the
-    /// newest crossing activity in this cycle).
+    /// The conversation unit or role obligation this emit is tagged with (the
+    /// unit holding the newest crossing activity in this cycle, or the role
+    /// kind that newly applies).
     pub unit_kind: NotificationUnitKind,
     /// The review thread `node_id` when `unit_kind` is
-    /// [`NotificationUnitKind::Thread`]; `None` for the general stream.
+    /// [`NotificationUnitKind::Thread`]; `None` for the general stream and the
+    /// role kinds.
     pub unit_ref: Option<String>,
     /// Deep link for the toast click: the thread's `url`, or the PR
-    /// conversation URL for the general stream. `None` when neither resolves.
+    /// conversation URL for the general stream and the role kinds. `None` when
+    /// neither resolves.
     pub deep_link_url: Option<String>,
-    /// `created_at` of the newest crossing comment. The sink advances the
-    /// per-PR `last_emitted_activity_at` to this value (MAX-only) so the same
-    /// activity never re-fires.
-    pub newest_activity_at: i64,
+    /// `created_at` of the newest crossing comment for a conversation unit. The
+    /// sink advances the per-PR `last_emitted_activity_at` to this value
+    /// (MAX-only) so the same activity never re-fires. `None` for a role
+    /// trigger - role dedup runs through `last_emitted_role`, not this
+    /// watermark, so a role obligation carries no activity timestamp.
+    pub newest_activity_at: Option<i64>,
 }
 
 /// Formatted dispatch unit consumed by [`super::NotificationSink::dispatch`].

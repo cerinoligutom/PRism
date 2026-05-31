@@ -436,6 +436,114 @@ mod tests {
         );
     }
 
+    /// A role-obligation notification (review-requested), the shape
+    /// `format_trigger` produces for a `review_request` trigger. The gate
+    /// (`decide_dispatch`) never inspects the notification, so this routes
+    /// through the same master-switch + `notify_on_needs_attention` path as a
+    /// conversation toast (ADR 0031 amendment, issue #450).
+    fn role_notification() -> Notification {
+        Notification {
+            title: "Review requested".to_string(),
+            body: "You've been asked to review owner/web #42".to_string(),
+            payload: json!({
+                "account_id": 1,
+                "pull_request_id": 100,
+                "unit_kind": "review_request",
+            }),
+            snapshot: None,
+        }
+    }
+
+    fn settings_with(
+        master: bool,
+        needs_attention: bool,
+        perm: NotificationPermissionState,
+    ) -> AppSettings {
+        AppSettings {
+            notifications_enabled: master,
+            notify_on_needs_attention: needs_attention,
+            notify_on_mention: true,
+            notification_permission_state: perm,
+            last_seen_version: None,
+            auto_update_enabled: false,
+            auto_update_interval_seconds: 21600,
+            auto_update_last_check_at: None,
+            auto_update_last_failure_message: None,
+            auto_archive_days: 30,
+            notification_retention_max: 500,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn role_dispatch_suppressed_by_needs_attention_toggle_off() {
+        // notify_on_needs_attention = false suppresses role dispatch: the gate
+        // returns false, so the role toast never reaches the sink.
+        let db = fresh_db();
+        write_settings(
+            &db,
+            &settings_with(true, false, NotificationPermissionState::Granted),
+        );
+        let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
+        let sink = RecordingSink::default();
+
+        if decide_dispatch(&db, &asker) {
+            sink.dispatch(&role_notification());
+        }
+
+        assert!(
+            sink.dispatched.lock().unwrap().is_empty(),
+            "toggle OFF suppresses the role toast"
+        );
+    }
+
+    #[test]
+    fn role_dispatch_suppressed_by_master_switch_off() {
+        // Master OFF suppresses role dispatch regardless of the per-trigger
+        // toggle.
+        let db = fresh_db();
+        write_settings(
+            &db,
+            &settings_with(false, true, NotificationPermissionState::Granted),
+        );
+        let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
+        let sink = RecordingSink::default();
+
+        if decide_dispatch(&db, &asker) {
+            sink.dispatch(&role_notification());
+        }
+
+        assert!(
+            sink.dispatched.lock().unwrap().is_empty(),
+            "master OFF suppresses the role toast regardless"
+        );
+    }
+
+    #[test]
+    fn role_dispatch_proceeds_when_enabled_and_granted() {
+        // Positive control: master ON + toggle ON + Granted dispatches the
+        // role toast through the shared sink.
+        let db = fresh_db();
+        write_settings(
+            &db,
+            &settings_with(true, true, NotificationPermissionState::Granted),
+        );
+        let asker = ScriptedAsker::new(NotificationPermissionState::Granted);
+        let sink = RecordingSink::default();
+
+        if decide_dispatch(&db, &asker) {
+            sink.dispatch(&role_notification());
+        }
+
+        let captured = sink.dispatched.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "enabled + granted dispatches the role toast"
+        );
+        assert_eq!(captured[0].title, "Review requested");
+    }
+
     #[test]
     fn recording_sink_captures_dispatched_notification() {
         // Confirms the trait surface is narrow enough for the future

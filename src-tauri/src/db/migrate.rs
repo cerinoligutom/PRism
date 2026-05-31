@@ -35,6 +35,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0023_notification_retention.sql"),
     include_str!("../../migrations/0024_drop_review_thread_head_denorm.sql"),
     include_str!("../../migrations/0025_conversation_unit_read_state.sql"),
+    include_str!("../../migrations/0026_role_obligation_dispatch.sql"),
 ];
 
 /// Migration filenames in apply order, kept in lockstep with
@@ -69,6 +70,7 @@ const MIGRATION_FILENAMES: &[&str] = &[
     "0023_notification_retention.sql",
     "0024_drop_review_thread_head_denorm.sql",
     "0025_conversation_unit_read_state.sql",
+    "0026_role_obligation_dispatch.sql",
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct
@@ -1234,5 +1236,79 @@ mod tests {
         assert_eq!(unit_kind, None, "unit_kind must default NULL");
         assert_eq!(unit_ref, None, "unit_ref must default NULL");
         assert_eq!(deep_link, None, "deep_link_url must default NULL");
+    }
+
+    /// Migration 0026 (ADR 0031 amendment, issue #450) adds the per-PR
+    /// role-obligation dispatch dedup column. Assert it lands and defaults NULL
+    /// on a fresh DB so a role trigger is re-armed before its first emission.
+    #[test]
+    fn migration_0026_adds_last_emitted_role_column() {
+        let conn = fresh();
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('pull_request_viewer_relations')")
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "last_emitted_role"),
+            "0026 must add pull_request_viewer_relations.last_emitted_role"
+        );
+    }
+
+    /// 0026 must apply cleanly on top of a populated post-0025 schema: it is
+    /// additive, so an existing relation row survives and the new column
+    /// defaults NULL. Replays up through 0025, seeds a relation row, runs 0026,
+    /// then reads it back.
+    #[test]
+    fn migration_0026_preserves_existing_rows_and_defaults_new_column() {
+        // 0026 sits at zero-index 25 (NNNN numbers start at 0001), so
+        // `take(25)` lands every migration up through 0025 and stops before
+        // 0026.
+        const PRE_0026_PREFIX: usize = 25;
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn).unwrap();
+        let pre_0026 = Migrations::new(
+            MIGRATION_SOURCES
+                .iter()
+                .take(PRE_0026_PREFIX)
+                .map(|sql| M::up(sql))
+                .collect(),
+        );
+        pre_0026.to_latest(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'alice', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 42, 't', 'open', 'bob', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, is_authored, is_review_requested,
+                 is_involved, relation_observed_at)
+                VALUES (1, 100, 1, 0, 1, 7);",
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        let (observed_at, last_emitted_role): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT relation_observed_at, last_emitted_role
+                   FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(observed_at, 7, "pre-0026 relation row must survive");
+        assert_eq!(
+            last_emitted_role, None,
+            "last_emitted_role must default NULL (re-armed)"
+        );
     }
 }

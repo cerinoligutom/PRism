@@ -101,7 +101,7 @@ pub fn advance_read_watermark(
 /// `notifications n` row. Resolves `n.unit_kind` / `n.unit_ref` against the
 /// same per-unit watermark shape the roll-up uses, host-gated.
 ///
-/// Result `1` (unread) iff EITHER:
+/// Result `1` (unread) iff ANY of:
 ///
 /// - `n.unit_kind = 'thread'`: the review thread whose `node_id = n.unit_ref`
 ///   on `n.pull_request_id` is involved-and-lit for `n.account_id` - I authored
@@ -111,12 +111,20 @@ pub fn advance_read_watermark(
 /// - `n.unit_kind = 'general'`: the same shape over `n.pull_request_id`'s
 ///   `issue_comments`, watermark `MAX(rel.general_stream_seen_at, my latest
 ///   issue_comment.created_at)`.
+/// - `n.unit_kind = 'review_request'`: the viewer is STILL in
+///   `requested_reviewers` for `n.pull_request_id` (host-gated, roll-up branch
+///   C). The obligation clears from GitHub state - submitting a review drops
+///   the viewer - so the row derives read with no `read_at` write.
+/// - `n.unit_kind = 'changes_requested'`: the PR STILL has `review_decision =
+///   'CHANGES_REQUESTED'` and `author_login = viewer.login` (host-gated,
+///   roll-up branch D). The obligation clears when the decision flips.
 ///
-/// `0` otherwise (the unit settled, or the kind/ref don't resolve). A row with
-/// `unit_kind IS NULL` is NOT handled here - the caller falls back to `read_at`
-/// for legacy rows. Host isolation matches the roll-up: every branch joins the
-/// PR's owning host (`repos -> accounts`) and requires it to equal the
-/// viewer's host before a login-string match counts (issue #169, ADR 0031).
+/// `0` otherwise (the unit settled, the obligation cleared, or the kind/ref
+/// don't resolve). A row with `unit_kind IS NULL` is NOT handled here - the
+/// caller falls back to `read_at` for legacy rows. Host isolation matches the
+/// roll-up: every branch joins the PR's owning host (`repos -> accounts`) and
+/// requires it to equal the viewer's host before a login-string match counts
+/// (issue #169, ADR 0031).
 ///
 /// References only `n.account_id`, `n.pull_request_id`, `n.unit_kind`, and
 /// `n.unit_ref`, so a caller can embed it under any `notifications n` scope.
@@ -206,6 +214,28 @@ pub(crate) fn row_unit_needs_me_predicate() -> &'static str {
                           )
                       )
                )
+        ))
+        OR (n.unit_kind = 'review_request' AND EXISTS (
+            SELECT 1
+              FROM requested_reviewers rr
+              JOIN pull_requests pr ON pr.id = rr.pull_request_id
+              JOIN accounts viewer ON viewer.id = n.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE rr.pull_request_id = n.pull_request_id
+               AND rr.login = viewer.login
+               AND pr_host_acc.host = viewer.host
+        ))
+        OR (n.unit_kind = 'changes_requested' AND EXISTS (
+            SELECT 1
+              FROM pull_requests pr
+              JOIN accounts viewer ON viewer.id = n.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE pr.id = n.pull_request_id
+               AND pr.author_login = viewer.login
+               AND pr_host_acc.host = viewer.host
+               AND pr.review_decision = 'CHANGES_REQUESTED'
         ))
     ) THEN 1 ELSE 0 END"
 }
