@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { useTauriListener } from "@/composables/useTauriListener";
+import { useDashboardStore } from "@/stores/dashboard";
+import { useNotificationsStore } from "@/stores/notifications";
 import type { HydratedConversation } from "@/types/conversation";
 
 /**
@@ -80,6 +82,100 @@ export const useConversationStore = defineStore("conversation", () => {
   }
 
   /**
+   * Advance the per-unit "seen" watermark for one review thread (ADR 0031),
+   * fanned across every relation owner the viewer holds for the PR so a
+   * unified-mode row settles uniformly - mirroring `auto_mark_units_seen`'s
+   * fan-out on the Rust side.
+   *
+   * `mark_thread_seen` recomputes `needs_attention` and refreshes the dock
+   * badge but, unlike the triage commands, does NOT emit `dashboard://refresh`
+   * (it's reached only from the conversation surface, not the sync worker). So
+   * this action reconciles the surfaces itself: an optimistic local flip of
+   * `thread.unread` for snappiness, then a conversation re-read plus a refresh
+   * of the dashboard rows and the notifications chip once the writes land.
+   */
+  async function markThreadSeen(
+    pullRequestId: number,
+    accountIds: readonly number[],
+    threadNodeId: string,
+  ): Promise<void> {
+    if (accountIds.length === 0) return;
+    flipThreadUnreadOptimistically(pullRequestId, threadNodeId);
+    try {
+      await Promise.allSettled(
+        accountIds.map((accountId) =>
+          invoke("mark_thread_seen", {
+            pullRequestId,
+            accountId,
+            threadNodeId,
+          }),
+        ),
+      );
+    } finally {
+      await reconcileAfterSeen(pullRequestId);
+    }
+  }
+
+  /**
+   * Advance the general-comment-stream "seen" watermark for the PR (ADR 0031),
+   * fanned across relation owners. Companion to [`markThreadSeen`] for the
+   * stream unit; same no-emit reconciliation.
+   */
+  async function markGeneralStreamSeen(
+    pullRequestId: number,
+    accountIds: readonly number[],
+  ): Promise<void> {
+    if (accountIds.length === 0) return;
+    try {
+      await Promise.allSettled(
+        accountIds.map((accountId) =>
+          invoke("mark_general_stream_seen", { pullRequestId, accountId }),
+        ),
+      );
+    } finally {
+      await reconcileAfterSeen(pullRequestId);
+    }
+  }
+
+  /**
+   * Optimistically clear a single thread's `unread` cue in the cached
+   * conversation so the card settles in the same paint as the click. The
+   * `reconcileAfterSeen` re-read replaces it with canonical state.
+   */
+  function flipThreadUnreadOptimistically(
+    pullRequestId: number,
+    threadNodeId: string,
+  ): void {
+    const cached = cache.value.get(pullRequestId);
+    if (cached === undefined) return;
+    let touched = false;
+    const threads = cached.threads.map((t) => {
+      if (t.node_id !== threadNodeId || !t.unread) return t;
+      touched = true;
+      return { ...t, unread: false };
+    });
+    if (!touched) return;
+    cache.value.set(pullRequestId, { ...cached, threads });
+  }
+
+  /**
+   * Re-read the affected conversation and refresh the dashboard rows + the
+   * notifications chip. The seen commands don't emit `dashboard://refresh`, so
+   * the watermark advance won't reach those surfaces on its own.
+   */
+  async function reconcileAfterSeen(pullRequestId: number): Promise<void> {
+    const dashboard = useDashboardStore();
+    const notifications = useNotificationsStore();
+    await Promise.allSettled([
+      dispatchLoad(pullRequestId, { background: true }),
+      dashboard.load(),
+      notifications.list.length > 0
+        ? notifications.load()
+        : notifications.loadUnreadCount(),
+    ]);
+  }
+
+  /**
    * Mark `pullRequestId` as visible in the UI. Pairs with `release(prId)` on
    * unmount. A non-zero refcount means a completed sync cycle re-reads the
    * cache entry in place instead of evicting it, so the drawer / route
@@ -139,6 +235,8 @@ export const useConversationStore = defineStore("conversation", () => {
     load,
     invalidate,
     clearError,
+    markThreadSeen,
+    markGeneralStreamSeen,
     acquire,
     release,
     bind,

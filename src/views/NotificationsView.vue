@@ -6,6 +6,7 @@ import { useRouter } from "vue-router";
 
 import NotificationRow from "@/components/notifications/NotificationRow.vue";
 import PRismButton from "@/components/ui/PRismButton.vue";
+import { useThreadDeepLink } from "@/composables/useThreadDeepLink";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
 import { useAppSettings } from "@/stores/settings";
@@ -40,6 +41,7 @@ const notifications = useNotificationsStore();
 const dashboard = useDashboardStore();
 const settings = useAppSettings();
 const toast = useToastStore();
+const threadDeepLink = useThreadDeepLink();
 
 onMounted(async () => {
   // Load the settings row alongside the inbox so the cap-reached footer
@@ -67,6 +69,16 @@ async function openNotification(notification: Notification): Promise<void> {
   // the deep-link work below doesn't wait on the backend write; the store
   // updates the row locally before the IPC round-trip lands.
   void notifications.markRead(notification.id);
+
+  // Record the conversation-unit target (ADR 0031) so the conversation
+  // surface scrolls to the exact thread once its threads load. Only a
+  // `'thread'` unit carries a scrollable anchor; `'general'` and legacy rows
+  // open the PR without a thread target. The conversation surface clears the
+  // target if the thread isn't present (pruned / closed), degrading to a
+  // plain PR open.
+  threadDeepLink.setPendingThread(
+    notification.unit_kind === "thread" ? notification.unit_ref : null,
+  );
 
   // State A: try the local lookup against `(host, owner, repo, pr_number)`.
   // The snapshot row doesn't carry the host directly (the v1 surface

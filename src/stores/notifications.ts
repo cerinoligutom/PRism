@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+import { useTauriListener } from "@/composables/useTauriListener";
+
+const DASHBOARD_REFRESH_EVENT = "dashboard://refresh";
 
 /**
  * Mirror of `crate::notifications::types::Notification`. Keep this in
@@ -13,7 +18,11 @@ import { invoke } from "@tauri-apps/api/core";
  * link the State-A click path uses to open the local detail surface; it
  * goes `null` when the source PR row is deleted.
  *
- * `read_at` is nullable; NULL means unread (ADR 0028 decision 3).
+ * ADR 0031 narrows `read_at` to the orphan-row fallback (a live row's unread
+ * state is derived per-row against its own unit watermark) and adds the
+ * derived per-row `unread` flag plus the conversation-unit reference. Trust
+ * `unread`, not `read_at === null`, when rendering the read/unread cue and
+ * counting the chip.
  */
 export interface Notification {
   readonly id: number;
@@ -30,8 +39,21 @@ export interface Notification {
   readonly body: string | null;
   /** Unix seconds. Newest first in the list. */
   readonly created_at: number;
-  /** Unix seconds the row was marked read; `null` while unread. */
+  /** Unix seconds the row was marked read. ADR 0031: meaningful only for an
+   * orphan row (`pull_request_id === null`); a live row's unread state is
+   * derived into `unread`. */
   readonly read_at: number | null;
+  /** Conversation unit this row points at (ADR 0031): `'thread'` |
+   * `'general'` | `null` (legacy / PR-level row). */
+  readonly unit_kind: "thread" | "general" | null;
+  /** Review thread `node_id` when `unit_kind === 'thread'`, else `null`. */
+  readonly unit_ref: string | null;
+  /** Deep link to the exact unit (thread url or PR conversation url). */
+  readonly deep_link_url: string | null;
+  /** Derived per-row unread flag (ADR 0031). A live row is unread iff its own
+   * unit still needs the viewer; an orphan row is unread iff `read_at` is
+   * null. Computed server-side by `notifications::store::list`. */
+  readonly unread: boolean;
 }
 
 /**
@@ -46,17 +68,26 @@ export interface Notification {
  * round-tripping the full list. The DB and the in-memory list move
  * together, and the next `load()` reconciles either way.
  *
- * Read/unread state (issue #379): `markRead(id)` and `markAllRead()` stamp
- * `read_at` server-side and mutate the local list in place. `unreadCount`
- * is computed from the list when the inbox view is mounted; the sidebar
- * chip reads it via `loadUnreadCount()` so it stays accurate without
- * having to load the full list.
+ * Read/unread state (ADR 0031): a row's unread state is the backend-derived
+ * `unread` flag, not `read_at === null`. `load()` sets `unreadCount` by
+ * summing that flag (the same value `unread_notification_count` returns), so
+ * the chip and the dock badge agree by construction. `markRead(id)` /
+ * `markAllRead()` flip the flag locally for snappiness; the next refresh
+ * trusts the backend.
+ *
+ * Live refresh (issue #437): the dispatch hook writes inbox rows during a
+ * sync cycle and the per-unit mark-seen path advances watermarks, both of
+ * which change derived read-state. `bind()` subscribes to `dashboard://refresh`
+ * so a mounted inbox + the sidebar chip live-update mid-session instead of
+ * only on mount.
  */
 export const useNotificationsStore = defineStore("notifications", () => {
   const list = ref<readonly Notification[]>([]);
   const loading = ref(false);
   const lastError = ref<string | null>(null);
   const unreadCount = ref(0);
+
+  const listener = useTauriListener();
 
   const count = computed<number>(() => list.value.length);
   const isEmpty = computed<boolean>(() => list.value.length === 0);
@@ -70,10 +101,10 @@ export const useNotificationsStore = defineStore("notifications", () => {
         beforeId: null,
       });
       list.value = rows;
-      unreadCount.value = rows.reduce(
-        (acc, n) => (n.read_at === null ? acc + 1 : acc),
-        0,
-      );
+      // ADR 0031: the chip mirrors the backend-derived count. Summing the
+      // per-row `unread` flag equals `unread_notification_count`, so we get
+      // it from the rows already in hand without a second round-trip.
+      unreadCount.value = rows.reduce((acc, n) => (n.unread ? acc + 1 : acc), 0);
     } catch (err) {
       lastError.value = formatError(err);
     } finally {
@@ -99,7 +130,7 @@ export const useNotificationsStore = defineStore("notifications", () => {
       await invoke<void>("delete_notification", { id });
       const removed = list.value.find((n) => n.id === id);
       list.value = list.value.filter((n) => n.id !== id);
-      if (removed !== undefined && removed.read_at === null) {
+      if (removed !== undefined && removed.unread) {
         unreadCount.value = Math.max(0, unreadCount.value - 1);
       }
     } catch (err) {
@@ -123,14 +154,17 @@ export const useNotificationsStore = defineStore("notifications", () => {
 
   async function markRead(id: number): Promise<void> {
     const target = list.value.find((n) => n.id === id);
-    if (target === undefined || target.read_at !== null) return;
-    // Optimistically mark locally so the row state updates the moment the
-    // user clicks. The backend write is idempotent so a duplicate land
-    // is a no-op; a failure logs but doesn't roll back - the next sync
-    // cycle's `loadUnreadCount` reconciles.
+    if (target === undefined || !target.unread) return;
+    // Optimistically flip the derived `unread` cue locally so the row state
+    // updates the moment the user clicks. ADR 0031: a LIVE row's unread state
+    // is derived from its unit watermark, so the next `dashboard://refresh`
+    // re-lights it unless the click also advanced the watermark (the open
+    // path's `auto_mark_units_seen` does). The `mark_notification_read`
+    // command only stamps `read_at` for orphan rows; it's a no-op for live
+    // ones. We trust the backend on the next refresh either way.
     const now = Math.floor(Date.now() / 1000);
     list.value = list.value.map((n) =>
-      n.id === id ? { ...n, read_at: now } : n,
+      n.id === id ? { ...n, unread: false, read_at: n.read_at ?? now } : n,
     );
     unreadCount.value = Math.max(0, unreadCount.value - 1);
     try {
@@ -144,7 +178,7 @@ export const useNotificationsStore = defineStore("notifications", () => {
     if (unreadCount.value === 0) return;
     const now = Math.floor(Date.now() / 1000);
     list.value = list.value.map((n) =>
-      n.read_at === null ? { ...n, read_at: now } : n,
+      n.unread ? { ...n, unread: false, read_at: n.read_at ?? now } : n,
     );
     unreadCount.value = 0;
     try {
@@ -153,6 +187,31 @@ export const useNotificationsStore = defineStore("notifications", () => {
       lastError.value = formatError(err);
       console.warn("notifications.markAllRead failed", err);
     }
+  }
+
+  /**
+   * Subscribe to `dashboard://refresh` so a mounted inbox + the sidebar chip
+   * live-update mid-session. The sync worker emits this at the end of each
+   * cycle (after writing new inbox rows and recomputing watermarks); triage
+   * commands emit it on commit. Reloads the full list when the inbox view is
+   * mounted (rows present), otherwise refreshes only the chip count.
+   */
+  async function bind(): Promise<void> {
+    await listener.bind(() =>
+      Promise.all([
+        listen(DASHBOARD_REFRESH_EVENT, () => {
+          if (list.value.length > 0) {
+            void load();
+          } else {
+            void loadUnreadCount();
+          }
+        }),
+      ]),
+    );
+  }
+
+  function unbind(): void {
+    listener.unbind();
   }
 
   function clearError(): void {
@@ -172,6 +231,8 @@ export const useNotificationsStore = defineStore("notifications", () => {
     clearAll,
     markRead,
     markAllRead,
+    bind,
+    unbind,
     clearError,
   };
 });

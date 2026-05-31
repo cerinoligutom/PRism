@@ -39,12 +39,24 @@ function kindLabel(kind: string): string {
   if (kind === "mention") return "Mention";
   return kind;
 }
+
+/**
+ * One-line description of the conversation unit this row points at (ADR 0031).
+ * A `'thread'` unit shows the deep-link target ("a review thread"); `'general'`
+ * shows the PR's general discussion. Legacy / PR-level rows (`null`) return an
+ * empty string so the unit line is skipped.
+ */
+function unitLabel(notification: Notification): string {
+  if (notification.unit_kind === "thread") return "Review thread";
+  if (notification.unit_kind === "general") return "General discussion";
+  return "";
+}
 </script>
 
 <template>
   <article
     class="notification-row"
-    :class="{ 'notification-row--unread': notification.read_at === null }"
+    :class="{ 'notification-row--unread': notification.unread }"
     role="button"
     tabindex="0"
     @click="onOpen(notification)"
@@ -87,6 +99,14 @@ function kindLabel(kind: string): string {
       <p class="notification-row__title">{{ notification.title }}</p>
       <p v-if="notification.body" class="notification-row__snippet">
         {{ notification.body }}
+      </p>
+      <p v-if="unitLabel(notification) !== ''" class="notification-row__unit">
+        <span class="notification-row__unit-icon" aria-hidden="true">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3.5h10v7l-2.5-2H3z" />
+          </svg>
+        </span>
+        {{ unitLabel(notification) }}
       </p>
     </div>
 
@@ -195,6 +215,20 @@ function kindLabel(kind: string): string {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.notification-row__unit {
+  margin: 2px 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-11);
+  color: var(--text-faint);
+}
+
+.notification-row__unit-icon {
+  display: inline-flex;
+  align-items: center;
 }
 
 .notification-row__actions {
