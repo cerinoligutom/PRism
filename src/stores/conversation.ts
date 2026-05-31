@@ -4,8 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { useTauriListener } from "@/composables/useTauriListener";
-import { useDashboardStore } from "@/stores/dashboard";
-import { useNotificationsStore } from "@/stores/notifications";
 import type { HydratedConversation } from "@/types/conversation";
 
 /**
@@ -87,12 +85,13 @@ export const useConversationStore = defineStore("conversation", () => {
    * unified-mode row settles uniformly - mirroring `auto_mark_units_seen`'s
    * fan-out on the Rust side.
    *
-   * `mark_thread_seen` recomputes `needs_attention` and refreshes the dock
-   * badge but, unlike the triage commands, does NOT emit `dashboard://refresh`
-   * (it's reached only from the conversation surface, not the sync worker). So
-   * this action reconciles the surfaces itself: an optimistic local flip of
-   * `thread.unread` for snappiness, then a conversation re-read plus a refresh
-   * of the dashboard rows and the notifications chip once the writes land.
+   * `mark_thread_seen` now emits `dashboard://refresh` on commit (#449), so the
+   * canonical reconcile rides the shared listeners: this store's own
+   * `handleSyncedCycle` re-reads the visible conversation, the dashboard store
+   * reloads its rows, and the notifications store refreshes the inbox / chip.
+   * This action only owns the optimistic local flip of `thread.unread` for
+   * snappiness, plus a re-read when every invoke failed (no event fires then,
+   * so nothing else rolls the optimistic flip back).
    */
   async function markThreadSeen(
     pullRequestId: number,
@@ -101,40 +100,30 @@ export const useConversationStore = defineStore("conversation", () => {
   ): Promise<void> {
     if (accountIds.length === 0) return;
     flipThreadUnreadOptimistically(pullRequestId, threadNodeId);
-    try {
-      await Promise.allSettled(
-        accountIds.map((accountId) =>
-          invoke("mark_thread_seen", {
-            pullRequestId,
-            accountId,
-            threadNodeId,
-          }),
-        ),
-      );
-    } finally {
-      await reconcileAfterSeen(pullRequestId);
-    }
+    await settleSeenInvokes(
+      pullRequestId,
+      accountIds.map((accountId) =>
+        invoke("mark_thread_seen", { pullRequestId, accountId, threadNodeId }),
+      ),
+    );
   }
 
   /**
    * Advance the general-comment-stream "seen" watermark for the PR (ADR 0031),
    * fanned across relation owners. Companion to [`markThreadSeen`] for the
-   * stream unit; same no-emit reconciliation.
+   * stream unit; same emit-driven reconcile via the shared listeners.
    */
   async function markGeneralStreamSeen(
     pullRequestId: number,
     accountIds: readonly number[],
   ): Promise<void> {
     if (accountIds.length === 0) return;
-    try {
-      await Promise.allSettled(
-        accountIds.map((accountId) =>
-          invoke("mark_general_stream_seen", { pullRequestId, accountId }),
-        ),
-      );
-    } finally {
-      await reconcileAfterSeen(pullRequestId);
-    }
+    await settleSeenInvokes(
+      pullRequestId,
+      accountIds.map((accountId) =>
+        invoke("mark_general_stream_seen", { pullRequestId, accountId }),
+      ),
+    );
   }
 
   /**
@@ -159,20 +148,24 @@ export const useConversationStore = defineStore("conversation", () => {
   }
 
   /**
-   * Re-read the affected conversation and refresh the dashboard rows + the
-   * notifications chip. The seen commands don't emit `dashboard://refresh`, so
-   * the watermark advance won't reach those surfaces on its own.
+   * Await the per-account seen invokes. On any success the backend emits
+   * `dashboard://refresh`, and the shared listeners (conversation, dashboard,
+   * notifications) reconcile every surface - so this only re-reads the
+   * conversation when every invoke failed, rolling the optimistic flip back to
+   * canonical state since no event fires on a total failure.
    */
-  async function reconcileAfterSeen(pullRequestId: number): Promise<void> {
-    const dashboard = useDashboardStore();
-    const notifications = useNotificationsStore();
-    await Promise.allSettled([
-      dispatchLoad(pullRequestId, { background: true }),
-      dashboard.load(),
-      notifications.list.length > 0
-        ? notifications.load()
-        : notifications.loadUnreadCount(),
-    ]);
+  async function settleSeenInvokes(
+    pullRequestId: number,
+    invokes: readonly Promise<unknown>[],
+  ): Promise<void> {
+    const outcomes = await Promise.allSettled(invokes);
+    const allFailed = outcomes.every((o) => o.status === "rejected");
+    if (allFailed) {
+      await dispatchLoad(pullRequestId, { background: true }).catch(() => {
+        // Swallow: the cached payload (with the optimistic flip) keeps
+        // rendering; the next sync cycle or a user retry reconciles it.
+      });
+    }
   }
 
   /**
