@@ -889,9 +889,14 @@ mod tests {
         // requested_reviewers; dropping the request clears it (no read_at write).
         let conn = fresh();
         seed_live_fixture(&conn);
+        // ADR 0033: the 'review_request' row is unread while the request is
+        // newer than the open watermark (requested_at > read_at). The seed
+        // relation row's read_at is NULL (coalesces to 0), so a positive onset
+        // keeps it unread.
         conn.execute(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'alice', 'user')",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'alice', 'user', 1000)",
             [],
         )
         .unwrap();
@@ -921,9 +926,14 @@ mod tests {
         // review_decision = 'CHANGES_REQUESTED' and author = viewer.
         let conn = fresh();
         seed_live_fixture(&conn); // 'alice' authors PR 100
-        conn.execute(
-            "UPDATE pull_requests SET review_decision = 'CHANGES_REQUESTED' WHERE id = 100",
-            [],
+                                  // ADR 0033: branch D requires a synced blocking review (state +
+                                  // positive submitted_at) past the open watermark, not just the PR-level
+                                  // decision. The seed relation row's read_at is NULL (coalesces to 0).
+        conn.execute_batch(
+            "UPDATE pull_requests SET review_decision = 'CHANGES_REQUESTED' WHERE id = 100;
+             INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at)
+                VALUES (9001, 100, 'bob', 'CHANGES_REQUESTED', 1000);",
         )
         .unwrap();
         let id = insert_role_row(&conn, "changes_requested");

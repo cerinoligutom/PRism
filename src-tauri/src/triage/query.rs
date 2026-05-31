@@ -395,6 +395,7 @@ pub(crate) fn needs_attention_case_expr() -> &'static str {
              WHERE rr.pull_request_id = rel.pull_request_id
                AND rr.login = viewer.login
                AND pr_host_acc.host = viewer.host
+               AND COALESCE(rr.requested_at, 0) > COALESCE(rel.read_at, 0)
         )
         OR EXISTS (
             SELECT 1
@@ -406,6 +407,24 @@ pub(crate) fn needs_attention_case_expr() -> &'static str {
                AND pr.author_login = viewer.login
                AND pr_host_acc.host = viewer.host
                AND pr.review_decision = 'CHANGES_REQUESTED'
+               AND COALESCE((
+                   SELECT MAX(rv.submitted_at) FROM reviews rv
+                    WHERE rv.pull_request_id = pr.id
+                      AND rv.state = 'CHANGES_REQUESTED'
+               ), 0) > COALESCE(rel.read_at, 0)
+        )
+        OR EXISTS (
+            SELECT 1
+              FROM reviews rv
+              JOIN pull_requests pr ON pr.id = rv.pull_request_id
+              JOIN accounts viewer ON viewer.id = rel.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+             WHERE rv.pull_request_id = rel.pull_request_id
+               AND pr_host_acc.host = viewer.host
+               AND rv.reviewer_login <> viewer.login
+               AND rv.mentions_viewer = 1
+               AND COALESCE(rv.submitted_at, 0) > COALESCE(rel.reviews_seen_at, 0)
         )
     ) THEN 1 ELSE 0 END"
 }
@@ -1292,8 +1311,9 @@ mod tests {
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'alice', 'user')",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'alice', 'user', 1000)",
             [],
         )
         .unwrap();
@@ -1329,6 +1349,16 @@ mod tests {
     fn changes_requested_on_my_pr_fires_then_clears_on_approval() {
         let conn = fresh_db();
         seed_pr_with_decision(&conn, "alice", "alice", Some("CHANGES_REQUESTED"));
+        // ADR 0033: branch D requires a synced blocking review (state +
+        // positive submitted_at) past the open watermark, not just the PR-level
+        // decision. The seed relation row's read_at is NULL (coalesces to 0).
+        conn.execute(
+            "INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at)
+                VALUES (9001, 100, 'bob', 'CHANGES_REQUESTED', 1000)",
+            [],
+        )
+        .unwrap();
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 1);
 
@@ -1347,6 +1377,159 @@ mod tests {
         seed_pr_with_decision(&conn, "alice", "bob", Some("CHANGES_REQUESTED"));
         recompute_needs_attention(&conn, 1, 100).unwrap();
         assert_eq!(read_needs_attention(&conn), 0);
+    }
+
+    // ===== role obligations clear on open + reviews unit (ADR 0033) =====
+
+    /// Set the relation row's open watermark directly. ADR 0033 gates the
+    /// role-obligation branches (C/D) on `read_at`; advancing it past the
+    /// obligation onset is what clears the dot when the viewer opens the PR.
+    fn set_read_at(conn: &Connection, read_at: i64) {
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET read_at = ?1
+              WHERE account_id = 1 AND pull_request_id = 100",
+            params![read_at],
+        )
+        .unwrap();
+    }
+
+    /// Insert one formal review on PR 100. `mentions_viewer` feeds branch E.
+    fn seed_review(
+        conn: &Connection,
+        review_id: i64,
+        reviewer_login: &str,
+        state: &str,
+        submitted_at: i64,
+        mentions_viewer: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at, mentions_viewer)
+                VALUES (?1, 100, ?2, ?3, ?4, ?5)",
+            params![
+                review_id,
+                reviewer_login,
+                state,
+                submitted_at,
+                mentions_viewer
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn review_owed_clears_on_open_then_rearms_on_fresh_request() {
+        // Branch C: requested at t=1000 with read_at NULL (-> 0) lights it.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        conn.execute(
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'alice', 'user', 1000)",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            1,
+            "fresh request lights branch C"
+        );
+
+        // Open the PR: read_at advances past the request onset -> clears.
+        set_read_at(&conn, 2000);
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            0,
+            "opening the PR (read_at past requested_at) clears the obligation"
+        );
+
+        // A genuinely-fresh request (later onset, e.g. re-requested after a
+        // dismiss) beats the watermark again and re-arms the dot.
+        conn.execute(
+            "UPDATE requested_reviewers SET requested_at = 3000
+              WHERE pull_request_id = 100 AND login = 'alice'",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            1,
+            "a fresh request newer than read_at re-arms branch C"
+        );
+    }
+
+    #[test]
+    fn changes_requested_clears_once_read_past_blocking_review() {
+        // Branch D: a blocking review submitted at t=1000 with read_at NULL
+        // (-> 0) lights it for the PR author.
+        let conn = fresh_db();
+        seed_pr_with_decision(&conn, "alice", "alice", Some("CHANGES_REQUESTED"));
+        seed_review(&conn, 9001, "bob", "CHANGES_REQUESTED", 1000, 0);
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            1,
+            "blocking review lights branch D"
+        );
+
+        // Open the PR past the blocking review's submitted_at -> clears, even
+        // though review_decision still reads CHANGES_REQUESTED.
+        set_read_at(&conn, 2000);
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            0,
+            "read_at past the blocking review's submitted_at clears branch D"
+        );
+    }
+
+    #[test]
+    fn reviews_unit_mentioning_review_lights_then_clears_on_seen() {
+        // Branch E: another user's review whose body mentions me, newer than
+        // reviews_seen_at (NULL -> 0), lights the reviews unit.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_review(&conn, 9001, "carol", "COMMENTED", 1000, 1);
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            1,
+            "a mentioning review past reviews_seen_at lights branch E"
+        );
+
+        // Marking the reviews stream seen past the review clears it.
+        conn.execute(
+            "UPDATE pull_request_viewer_relations
+                SET reviews_seen_at = 2000
+              WHERE account_id = 1 AND pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            0,
+            "advancing reviews_seen_at past the review clears branch E"
+        );
+    }
+
+    #[test]
+    fn reviews_unit_non_mentioning_review_does_not_fire() {
+        // Branch E only fires on a review that mentions the viewer; a review by
+        // someone else that does NOT mention me is not an attention signal.
+        let conn = fresh_db();
+        seed_account_repo_pr(&conn, "alice", "bob");
+        seed_review(&conn, 9001, "carol", "COMMENTED", 1000, 0);
+        recompute_needs_attention(&conn, 1, 100).unwrap();
+        assert_eq!(
+            read_needs_attention(&conn),
+            0,
+            "a non-mentioning review does not light branch E"
+        );
     }
 
     #[test]
@@ -1488,11 +1671,15 @@ mod tests {
 
     /// Drive a clean 0 -> 1 attention flip via the requested-reviewer branch
     /// (C role obligation), the simplest roll-up signal to seed without
-    /// conversation state.
+    /// conversation state. ADR 0033 gates branch C on `requested_at > read_at`;
+    /// the seed relation row has `read_at` NULL (coalesces to 0), so a positive
+    /// `requested_at` lights the obligation (and clears once the viewer opens
+    /// the PR and `read_at` advances past it).
     fn make_requested_reviewer(conn: &Connection) {
         conn.execute(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'alice', 'user')",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'alice', 'user', 1000)",
             [],
         )
         .unwrap();
@@ -3238,8 +3425,9 @@ mod tests {
         let conn = fresh_db();
         seed_command_path_cross_host_collision(&conn, "someone-else", None, false);
         conn.execute(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'me', 'user')",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'me', 'user', 1000)",
             [],
         )
         .unwrap();
@@ -3263,6 +3451,16 @@ mod tests {
     fn recompute_does_not_leak_changes_requested_signal_across_hosts() {
         let conn = fresh_db();
         seed_command_path_cross_host_collision(&conn, "me", Some("CHANGES_REQUESTED"), false);
+        // ADR 0033 branch D: a synced blocking review past the open watermark.
+        // Both relation rows have read_at NULL (coalesces to 0); the host gate
+        // (not the review) is what keeps account 2 dark.
+        conn.execute(
+            "INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at)
+                VALUES (9001, 100, 'reviewer', 'CHANGES_REQUESTED', 1000)",
+            [],
+        )
+        .unwrap();
 
         recompute_needs_attention(&conn, 1, 100).unwrap();
         recompute_needs_attention(&conn, 2, 100).unwrap();

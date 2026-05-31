@@ -244,6 +244,78 @@ fn write_pr_updates_replaces_requested_reviewers() {
 }
 
 #[test]
+fn write_pr_updates_preserves_requested_at_for_kept_reviewer_and_stamps_new_one() {
+    // ADR 0033 / migration 0028: the per-cycle wipe-rewrite must PRESERVE
+    // `requested_at` for a login still requested (so branch C doesn't re-light
+    // every sync after the viewer opens the PR) while stamping a freshly-added
+    // reviewer with the current cycle clock (so a genuinely-new request arms the
+    // dot).
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+
+    // Seed `dave` with a known, small onset that predates this cycle's clock.
+    db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (?1, 'dave', 'user', 500)",
+            params![pr_id],
+        )
+        .unwrap();
+
+    // Cycle carries `dave` again (kept) plus a brand-new `erin`.
+    let detail = detail_with(
+        None,
+        None,
+        None,
+        "UNKNOWN",
+        None,
+        Some(ReviewRequestConnection {
+            nodes: vec![
+                ReviewRequest {
+                    requested_reviewer: Some(RequestedReviewer::User {
+                        login: "dave".into(),
+                        avatar_url: None,
+                    }),
+                },
+                ReviewRequest {
+                    requested_reviewer: Some(RequestedReviewer::User {
+                        login: "erin".into(),
+                        avatar_url: None,
+                    }),
+                },
+            ],
+        }),
+        None,
+    );
+
+    write_pr_updates(&db, 1, repo_id, pr_id, Some(&detail), None).unwrap();
+
+    let conn = db.lock().unwrap();
+    let dave_at: i64 = conn
+        .query_row(
+            "SELECT requested_at FROM requested_reviewers
+              WHERE pull_request_id = ?1 AND login = 'dave'",
+            params![pr_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let erin_at: i64 = conn
+        .query_row(
+            "SELECT requested_at FROM requested_reviewers
+              WHERE pull_request_id = ?1 AND login = 'erin'",
+            params![pr_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dave_at, 500, "a still-requested reviewer keeps its onset");
+    assert!(
+        erin_at > 500,
+        "a newly-added reviewer is stamped with the current cycle clock (got {erin_at})"
+    );
+}
+
+#[test]
 fn write_pr_updates_clears_requested_reviewers_when_empty() {
     let (db, repo_id, pr_id) = seed_db_with_pr();
 

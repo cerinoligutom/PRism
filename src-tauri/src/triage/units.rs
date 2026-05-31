@@ -111,13 +111,18 @@ pub fn advance_read_watermark(
 /// - `n.unit_kind = 'general'`: the same shape over `n.pull_request_id`'s
 ///   `issue_comments`, watermark `MAX(rel.general_stream_seen_at, my latest
 ///   issue_comment.created_at)`.
-/// - `n.unit_kind = 'review_request'`: the viewer is STILL in
-///   `requested_reviewers` for `n.pull_request_id` (host-gated, roll-up branch
-///   C). The obligation clears from GitHub state - submitting a review drops
-///   the viewer - so the row derives read with no `read_at` write.
-/// - `n.unit_kind = 'changes_requested'`: the PR STILL has `review_decision =
-///   'CHANGES_REQUESTED'` and `author_login = viewer.login` (host-gated,
-///   roll-up branch D). The obligation clears when the decision flips.
+/// - `n.unit_kind = 'review_request'`: the viewer is in `requested_reviewers`
+///   for `n.pull_request_id` AND the request is newer than the open watermark
+///   (`requested_at > read_at`, host-gated, roll-up branch C). ADR 0033: the
+///   obligation clears on PR open (read_at advances past it) or from GitHub
+///   state (submitting drops the viewer); a fresh request re-arms it.
+/// - `n.unit_kind = 'changes_requested'`: the PR has `review_decision =
+///   'CHANGES_REQUESTED'` and `author_login = viewer.login`, and the blocking
+///   review's `submitted_at` is newer than the open watermark (host-gated,
+///   roll-up branch D). ADR 0033: clears on open, or when the decision flips.
+/// - `n.unit_kind = 'review'`: a formal review by someone else whose body
+///   `@`-mentions the viewer, newer than `rel.reviews_seen_at` (host-gated,
+///   roll-up branch E). Clears when the reviews stream is marked seen.
 ///
 /// `0` otherwise (the unit settled, the obligation cleared, or the kind/ref
 /// don't resolve). A row with `unit_kind IS NULL` is NOT handled here - the
@@ -222,9 +227,12 @@ pub(crate) fn row_unit_needs_me_predicate() -> &'static str {
               JOIN accounts viewer ON viewer.id = n.account_id
               JOIN repos r ON r.id = pr.repo_id
               JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+              JOIN pull_request_viewer_relations rel
+                ON rel.account_id = n.account_id AND rel.pull_request_id = pr.id
              WHERE rr.pull_request_id = n.pull_request_id
                AND rr.login = viewer.login
                AND pr_host_acc.host = viewer.host
+               AND COALESCE(rr.requested_at, 0) > COALESCE(rel.read_at, 0)
         ))
         OR (n.unit_kind = 'changes_requested' AND EXISTS (
             SELECT 1
@@ -232,10 +240,32 @@ pub(crate) fn row_unit_needs_me_predicate() -> &'static str {
               JOIN accounts viewer ON viewer.id = n.account_id
               JOIN repos r ON r.id = pr.repo_id
               JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+              JOIN pull_request_viewer_relations rel
+                ON rel.account_id = n.account_id AND rel.pull_request_id = pr.id
              WHERE pr.id = n.pull_request_id
                AND pr.author_login = viewer.login
                AND pr_host_acc.host = viewer.host
                AND pr.review_decision = 'CHANGES_REQUESTED'
+               AND COALESCE((
+                   SELECT MAX(rv.submitted_at) FROM reviews rv
+                    WHERE rv.pull_request_id = pr.id
+                      AND rv.state = 'CHANGES_REQUESTED'
+               ), 0) > COALESCE(rel.read_at, 0)
+        ))
+        OR (n.unit_kind = 'review' AND EXISTS (
+            SELECT 1
+              FROM reviews rv
+              JOIN pull_requests pr ON pr.id = rv.pull_request_id
+              JOIN accounts viewer ON viewer.id = n.account_id
+              JOIN repos r ON r.id = pr.repo_id
+              JOIN accounts pr_host_acc ON pr_host_acc.id = r.account_id
+              JOIN pull_request_viewer_relations rel
+                ON rel.account_id = n.account_id AND rel.pull_request_id = pr.id
+             WHERE rv.pull_request_id = n.pull_request_id
+               AND pr_host_acc.host = viewer.host
+               AND rv.reviewer_login <> viewer.login
+               AND rv.mentions_viewer = 1
+               AND COALESCE(rv.submitted_at, 0) > COALESCE(rel.reviews_seen_at, 0)
         ))
     ) THEN 1 ELSE 0 END"
 }
