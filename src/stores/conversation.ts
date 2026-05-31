@@ -10,10 +10,17 @@ import type { HydratedConversation } from "@/types/conversation";
  * Per-PR conversation cache for the drawer / route / future inline expansion.
  *
  * ADR 0029: sync owns `review_comments` / `issue_comments` persistence, so
- * `load(prId)` is now a synchronous DB read (`load_pr_conversation`). The
- * store caches the hydrated payload across re-mounts and refreshes each
- * visible PR on every completed sync cycle so new bodies, resolved flags,
- * and threads bar bucket shifts show up without the user closing the drawer.
+ * `load(prId)` is now a synchronous DB read. The store caches the hydrated
+ * payload across re-mounts and refreshes each visible PR on every completed
+ * sync cycle so new bodies, resolved flags, and threads bar bucket shifts show
+ * up without the user closing the drawer.
+ *
+ * ADR 0033 single-seam: a FOREGROUND open goes through `load_pr_conversation`,
+ * which advances the read watermark and emits `dashboard://refresh`. A
+ * BACKGROUND re-read (the `handleSyncedCycle` reaction to that very event) goes
+ * through the non-mutating `read_pr_conversation` instead - if it called the
+ * emitting `load_pr_conversation`, the emit would re-trigger `handleSyncedCycle`
+ * and spin an infinite refresh loop.
  */
 
 const DASHBOARD_REFRESH_EVENT = "dashboard://refresh";
@@ -40,8 +47,11 @@ export const useConversationStore = defineStore("conversation", () => {
   interface DispatchOptions {
     /**
      * `true` when the call is a sync-cycle refresh of an already-rendered
-     * cache entry. Suppresses the `errors` map write so a transient failure
-     * doesn't replace the visible conversation with an error overlay.
+     * cache entry. Two effects: suppresses the `errors` map write so a
+     * transient failure doesn't replace the visible conversation with an error
+     * overlay, AND routes to the non-mutating `read_pr_conversation` reader so
+     * the refresh can't re-enter the emitting `load_pr_conversation` open path
+     * (ADR 0033 single-seam loop break).
      */
     readonly background: boolean;
   }
@@ -55,7 +65,13 @@ export const useConversationStore = defineStore("conversation", () => {
       errors.value.delete(pullRequestId);
     }
     try {
-      const result = await invoke<HydratedConversation>("load_pr_conversation", {
+      // Foreground open marks + emits `dashboard://refresh`; a background
+      // re-read (driven by that event) must NOT re-emit, so it uses the
+      // pure cache reader. See the store doc comment for the loop break.
+      const command = options.background
+        ? "read_pr_conversation"
+        : "load_pr_conversation";
+      const result = await invoke<HydratedConversation>(command, {
         pullRequestId,
       });
       cache.value.set(pullRequestId, result);
@@ -122,6 +138,26 @@ export const useConversationStore = defineStore("conversation", () => {
       pullRequestId,
       accountIds.map((accountId) =>
         invoke("mark_general_stream_seen", { pullRequestId, accountId }),
+      ),
+    );
+  }
+
+  /**
+   * Advance the reviews-stream "seen" watermark for the PR (ADR 0033), fanned
+   * across relation owners. Companion to [`markGeneralStreamSeen`] for the
+   * reviews unit (a formal review whose body @-mentions the viewer); same
+   * emit-driven reconcile via the shared listeners. Lands unwired to UI in this
+   * slice - the Reviews-tab "Mark all seen" affordance arrives in phase 4.
+   */
+  async function markReviewsSeen(
+    pullRequestId: number,
+    accountIds: readonly number[],
+  ): Promise<void> {
+    if (accountIds.length === 0) return;
+    await settleSeenInvokes(
+      pullRequestId,
+      accountIds.map((accountId) =>
+        invoke("mark_reviews_seen", { pullRequestId, accountId }),
       ),
     );
   }
@@ -230,6 +266,7 @@ export const useConversationStore = defineStore("conversation", () => {
     clearError,
     markThreadSeen,
     markGeneralStreamSeen,
+    markReviewsSeen,
     acquire,
     release,
     bind,

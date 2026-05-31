@@ -225,6 +225,40 @@ fn gather_unit_crossings(
         }
     }
 
+    // Reviews stream (ADR 0033): the newest other-authored formal review whose
+    // body @-mentions the viewer, past `reviews_seen_at`. A mention-only unit,
+    // so the watermark is `reviews_seen_at` alone (no "my own comment"
+    // component like the thread / general units have). Deep-links to the PR
+    // conversation url, peer to the general stream.
+    {
+        let review: Option<i64> = tx
+            .query_row(
+                "SELECT MAX(rv.submitted_at)
+                   FROM reviews rv
+                  WHERE rv.pull_request_id = ?1
+                    AND rv.reviewer_login <> ?2
+                    AND rv.mentions_viewer = 1
+                    AND COALESCE(rv.submitted_at, 0) > COALESCE((
+                        SELECT rel.reviews_seen_at
+                          FROM pull_request_viewer_relations rel
+                         WHERE rel.account_id = ?3
+                           AND rel.pull_request_id = ?1
+                    ), 0)",
+                params![pr_id, viewer_login, account_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(newest) = review {
+            out.push(UnitCrossing {
+                unit_kind: NotificationUnitKind::Review,
+                unit_ref: None,
+                deep_link_url: pr_conversation_url(tx, pr_id)?,
+                newest_activity_at: newest,
+            });
+        }
+    }
+
     out.sort_by_key(|c| std::cmp::Reverse(c.newest_activity_at));
     Ok(out)
 }
@@ -342,7 +376,9 @@ fn role_kind_storage(kind: NotificationUnitKind) -> &'static str {
         NotificationUnitKind::ChangesRequested => "changes_requested",
         NotificationUnitKind::ReviewRequest => "review_request",
         // The conversation kinds never reach here; keep the match total.
-        NotificationUnitKind::Thread | NotificationUnitKind::General => "review_request",
+        NotificationUnitKind::Thread
+        | NotificationUnitKind::General
+        | NotificationUnitKind::Review => "review_request",
     }
 }
 

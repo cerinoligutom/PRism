@@ -1054,6 +1054,51 @@ fn general_stream_three_comments_one_cycle_emit_at_most_one() {
 }
 
 #[test]
+fn mentioning_review_emits_review_unit_then_seen_clears_it() {
+    // ADR 0033: a fresh other-authored formal review whose body @-mentions the
+    // viewer, past `reviews_seen_at`, yields a `Review`-kind trigger. Marking
+    // the reviews stream seen past it yields none. The mention bit is set by
+    // the per-cycle scanner over review bodies, so seeding a body with the
+    // @-mention exercises the full path.
+    let (db, repo_id, pr_id) = seed_db_with_pr();
+    seed_relation(&db, 1, pr_id);
+    db.lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE pull_requests SET author_login = 'me' WHERE id = 100;
+             INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at, body)
+                VALUES (8001, 100, 'bob', 'COMMENTED', 20, 'hey @me take a look');",
+        )
+        .unwrap();
+
+    let triggers = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert_eq!(
+        triggers.len(),
+        1,
+        "reviews stream is one unit => one trigger"
+    );
+    assert_eq!(triggers[0].kind, NotificationKind::NeedsAttention);
+    assert_eq!(triggers[0].unit_kind, NotificationUnitKind::Review);
+    assert!(
+        triggers[0].unit_ref.is_none(),
+        "the reviews unit carries no unit_ref (peer to the general stream)"
+    );
+    assert_eq!(triggers[0].newest_activity_at, Some(20));
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 1);
+
+    // Marking the reviews stream seen past the review clears it: next cycle, no
+    // new activity, no fire, roll-up drops to 0.
+    {
+        let conn = db.lock().unwrap();
+        crate::triage::units::advance_reviews_seen(&conn, 1, pr_id, 40).unwrap();
+    }
+    let after = write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();
+    assert!(after.is_empty(), "seen reviews stream stays quiet");
+    assert_eq!(read_needs_attention(&db, 1, pr_id), 0);
+}
+
+#[test]
 fn node_id_keying_survives_thread_delete_and_readd() {
     // node_id keying: a thread seen at one row id keeps the watermark after a
     // delete + re-add under a new row id, so the re-arm dedup still applies.

@@ -48,6 +48,10 @@ pub enum NotificationUnitKind {
     Thread,
     /// The PR's general comment stream (`unit_ref` is `None`).
     General,
+    /// A formal review whose body `@`-mentions the viewer (`unit_ref` is
+    /// `None`; the reviews stream is one dismissible unit per PR like the
+    /// general stream). ADR 0033.
+    Review,
     /// The viewer became a requested reviewer (`unit_ref` is `None`).
     ReviewRequest,
     /// The viewer's authored PR flipped to CHANGES_REQUESTED (`unit_ref` is
@@ -57,13 +61,14 @@ pub enum NotificationUnitKind {
 
 impl NotificationUnitKind {
     /// String storage for the `notifications.unit_kind` column. Matches the
-    /// `'thread'` / `'general'` / `'review_request'` / `'changes_requested'`
-    /// values the per-row unread SQL compares against and the
-    /// `#[serde(rename_all = "snake_case")]` wire form.
+    /// `'thread'` / `'general'` / `'review'` / `'review_request'` /
+    /// `'changes_requested'` values the per-row unread SQL compares against and
+    /// the `#[serde(rename_all = "snake_case")]` wire form.
     pub fn as_storage(self) -> &'static str {
         match self {
             NotificationUnitKind::Thread => "thread",
             NotificationUnitKind::General => "general",
+            NotificationUnitKind::Review => "review",
             NotificationUnitKind::ReviewRequest => "review_request",
             NotificationUnitKind::ChangesRequested => "changes_requested",
         }
