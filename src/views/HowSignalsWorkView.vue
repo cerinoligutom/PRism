@@ -240,7 +240,6 @@ function noop(): void {}
   font-size: var(--fs-13);
   color: var(--text-mute);
   line-height: var(--lh-body);
-  max-width: 620px;
 }
 
 .signals-guide__section {
@@ -273,7 +272,6 @@ function noop(): void {}
   font-size: var(--fs-13);
   color: var(--text-mute);
   line-height: var(--lh-body);
-  max-width: 620px;
 }
 
 .signals-guide__swatch-grid {
