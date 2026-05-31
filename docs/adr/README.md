@@ -38,8 +38,9 @@ Each ADR follows the [MADR](https://adr.github.io/madr/)-style template at [`000
 | [0028](0028-persistent-notifications-inbox.md) | Persistent notifications inbox | Accepted (0031 in part) | [#378](https://github.com/cerinoligutom/PRism/issues/378) |
 | [0029](0029-sync-owns-conversation-persistence.md) | Sync owns conversation persistence (supersedes 0010's lazy-hydration decision) | Accepted | [#422](https://github.com/cerinoligutom/PRism/issues/422) |
 | [0030](0030-ci-checks-json-column.md) | Per-check CI detail stored as a denormalised JSON column | Accepted | [#426](https://github.com/cerinoligutom/PRism/issues/426) |
-| [0031](0031-conversation-unit-attention-and-rearm-dispatch.md) | Conversation-unit attention model, derived inbox read-state, and edge-with-re-arm dispatch | Accepted | [#428](https://github.com/cerinoligutom/PRism/issues/428) |
+| [0031](0031-conversation-unit-attention-and-rearm-dispatch.md) | Conversation-unit attention model, derived inbox read-state, and edge-with-re-arm dispatch | Accepted (0033 in part) | [#428](https://github.com/cerinoligutom/PRism/issues/428) |
 | [0032](0032-prune-pre-0031-notification-remnants.md) | Prune the pre-0031 notification remnants (`notify_on_mention`, `mentioned_count_unread`) | Accepted | [#451](https://github.com/cerinoligutom/PRism/issues/451) |
+| [0033](0033-single-attention-dot-and-action-scoped-clearing.md) | One attention dot: open-cleared obligations, action-scoped conversation clearing, and the reviews unit | Accepted | [#456](https://github.com/cerinoligutom/PRism/issues/456) |
 
 ## Statuses
 
