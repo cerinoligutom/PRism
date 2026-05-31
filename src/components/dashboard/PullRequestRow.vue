@@ -117,6 +117,25 @@ const myReviewCopy = computed(
   () => SIGNAL_COPY.myReview[props.pullRequest.my_review_state],
 );
 
+/**
+ * Description for the attention dot, matched to the branch that lit it (ADR
+ * 0033). The dot stays driven by `needsAttention`; this only picks the
+ * one-liner. `my_review_state === "requested"` is the review-owed branch and
+ * author + `CHANGES_REQUESTED` is the changes branch (both clear on open);
+ * anything else lit the dot through a conversation. An obligation reason wins
+ * when a conversation co-occurs - it's the part opening clears.
+ */
+const attentionDescription = computed<string>(() => {
+  const { my_review_state, review_decision } = props.pullRequest;
+  if (my_review_state === "requested") {
+    return SIGNAL_COPY.attention.byReason.review_request;
+  }
+  if (my_review_state === "author" && review_decision === "CHANGES_REQUESTED") {
+    return SIGNAL_COPY.attention.byReason.changes_requested;
+  }
+  return SIGNAL_COPY.attention.byReason.conversation;
+});
+
 const branchLabel = computed<string>(() => props.pullRequest.head_ref);
 
 const linesAdditions = computed<string | null>(() =>
@@ -382,7 +401,7 @@ function onSelectKey(event: KeyboardEvent): void {
       <template #content>
         <div class="pr-row__signal-tip">
           <span class="pr-row__signal-tip-label">{{ SIGNAL_COPY.attention.label }}</span>
-          <span class="pr-row__signal-tip-desc">{{ SIGNAL_COPY.attention.description }}</span>
+          <span class="pr-row__signal-tip-desc">{{ attentionDescription }}</span>
         </div>
       </template>
     </PRismTooltip>

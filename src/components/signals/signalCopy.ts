@@ -16,6 +16,27 @@ export interface SignalCopy {
   readonly description: string;
 }
 
+/**
+ * Which branch of the `needs_attention` roll-up lit the dot, derived on the row
+ * from `my_review_state` / `review_decision`. `conversation` covers the thread,
+ * general-stream, and reviews-mention branches (they clear by reply / resolve /
+ * mark-seen); the two obligation reasons clear on PR open (ADR 0033).
+ */
+export type AttentionReason =
+  | "conversation"
+  | "review_request"
+  | "changes_requested";
+
+/**
+ * Attention-dot copy. `label` / `description` are the one-line headline the
+ * `/signals` guide renders; `byReason` gives the live row tooltip a description
+ * matched to the branch that actually lit the dot, so the row reads true while
+ * the guide stays a summary.
+ */
+export interface AttentionCopy extends SignalCopy {
+  readonly byReason: Readonly<Record<AttentionReason, string>>;
+}
+
 /** Keyed by `my_review_state`. The `none` entry covers "not a reviewer". */
 type MyReviewCopy = Readonly<Record<MyReviewState, SignalCopy>>;
 
@@ -47,7 +68,7 @@ type ModelKey =
 type ModelCopy = Readonly<Record<ModelKey, SignalCopy>>;
 
 export const SIGNAL_COPY: {
-  readonly attention: SignalCopy;
+  readonly attention: AttentionCopy;
   readonly myReview: MyReviewCopy;
   readonly threadBucket: ThreadBucketCopy;
   readonly count: CountCopy;
@@ -56,7 +77,14 @@ export const SIGNAL_COPY: {
   attention: {
     label: "Needs you",
     description:
-      "A conversation you're in moved, or you owe a review. Clears when you reply or mark it seen.",
+      "A conversation you're in moved, or you owe a review. A conversation clears when you reply or mark it seen; a review clears when you open the PR.",
+    byReason: {
+      conversation:
+        "A conversation you're in moved. Clears when you reply, resolve it, or mark it seen.",
+      review_request: "You've been asked to review. Clears when you open the PR.",
+      changes_requested:
+        "Changes were requested on your PR. Clears when you open it.",
+    },
   },
   myReview: {
     author: {
@@ -65,7 +93,8 @@ export const SIGNAL_COPY: {
     },
     requested: {
       label: "Review requested",
-      description: "You've been asked to review and haven't submitted yet.",
+      description:
+        "You've been asked to review. A re-request shows here even after a prior review.",
     },
     "changes-requested": {
       label: "You requested changes",
@@ -107,7 +136,8 @@ export const SIGNAL_COPY: {
   count: {
     badge: {
       label: "Dock badge",
-      description: "PRs with a lit conversation or an open review obligation.",
+      description:
+        "PRs with a conversation that needs you, or a review obligation you haven't opened yet.",
     },
     sidebar: {
       label: "Sidebar chip",
@@ -122,17 +152,17 @@ export const SIGNAL_COPY: {
     involvement: {
       label: "What counts as your conversation",
       description:
-        "A thread is yours once you've commented in it, you're mentioned in it, or it's on a PR you opened. The PR's general comment stream is one unit the same way.",
+        "A thread is yours once you've commented in it, you're mentioned in it, or it's on a PR you opened. The PR's general comment stream is one unit the same way, and a formal review that @-mentions you is another.",
     },
     lights: {
       label: "What lights it up",
       description:
-        "Someone else posts in a unit that's yours after you last engaged - a reply, a mention, or a comment on your PR.",
+        "Someone else posts in a unit that's yours after you last engaged - a reply, a mention, a comment on your PR, or a review that mentions you.",
     },
     clears: {
       label: "What clears it",
       description:
-        "Open it and mark it seen, or reply on GitHub. A reply clears it about a sync cycle later, once PRism sees it.",
+        "Reply or resolve it on GitHub, or mark it seen - expanding a thread, or dwelling on the Comments or Reviews tab, counts. A reply clears it about a sync cycle later, once PRism sees it. Opening the PR doesn't clear a conversation.",
     },
     resolved: {
       label: "Resolved threads",
@@ -142,7 +172,7 @@ export const SIGNAL_COPY: {
     obligations: {
       label: "Review obligations",
       description:
-        "Being asked to review, or changes requested on your own PR, lights the badge as a role you owe - it clears from GitHub state, not by marking seen.",
+        "Being asked to review, or changes requested on your own PR, lights the dot as a role you owe. It clears when you open the PR; the review-state glyph and the mergeable badge keep showing the obligation until you act on GitHub.",
     },
   },
 } as const;
