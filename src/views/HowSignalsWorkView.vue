@@ -138,14 +138,13 @@ function noop(): void {}
 
       <h3 class="signals-guide__sub-title">A real row</h3>
       <p class="signals-guide__section-lede">
-        This is the actual dashboard row, fed demo data. It's been asked of you
-        for review, a thread you're in moved, and the bold title flags content
-        you haven't opened.
+        This is the actual dashboard row, fed demo data. You've been asked to
+        review it and a thread you're in moved, so the attention dot is lit and
+        the glyph shows your review-requested relationship.
       </p>
       <div class="signals-guide__embed signals-guide__embed--row">
         <PullRequestRow
           :pull-request="DEMO_PR"
-          :unread="DEMO_PR.unread"
           :needs-attention="DEMO_PR.needs_attention"
           :accounts-by-id="DEMO_ACCOUNTS_BY_ID"
           :single-account-scope="true"
