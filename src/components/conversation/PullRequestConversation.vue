@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
 import { useConversationStore } from "@/stores/conversation";
 import { useDashboardStore } from "@/stores/dashboard";
+import { threadAnchorId, useThreadDeepLink } from "@/composables/useThreadDeepLink";
 
+import type { PullRequestThread } from "@/types/conversation";
 import type { ThreadsSummary } from "@/types/dashboard";
 import ThreadsBar from "@/components/dashboard/ThreadsBar.vue";
+import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismPopover from "@/components/ui/PRismPopover.vue";
 import PRismIconLegend from "@/components/ui/PRismIconLegend.vue";
 import ConversationStats from "./ConversationStats.vue";
@@ -32,6 +35,7 @@ interface TabSpec {
 
 const store = useConversationStore();
 const dashboard = useDashboardStore();
+const threadDeepLink = useThreadDeepLink();
 const { cache, loading: storeLoading, errors } = storeToRefs(store);
 const { pullRequests } = storeToRefs(dashboard);
 
@@ -48,6 +52,19 @@ const conversation = computed(() => cache.value.get(props.pullRequestId) ?? null
 const dashboardRow = computed(
   () => pullRequests.value.find((p) => p.id === props.pullRequestId) ?? null,
 );
+
+/**
+ * Relation owners the viewer holds for this PR. The mark-seen commands take a
+ * single `account_id`, so the store fans out across these (mirroring the
+ * server-side `auto_mark_units_seen` fan-out). Empty for a Tracked-view PR
+ * with no relation row, in which case the mark-seen affordances stay hidden -
+ * there's no "you" whose watermark to advance.
+ */
+const accountIds = computed<readonly number[]>(
+  () => dashboardRow.value?.account_ids ?? [],
+);
+
+const canMarkSeen = computed<boolean>(() => accountIds.value.length > 0);
 
 const isLoading = computed<boolean>(() =>
   storeLoading.value.has(props.pullRequestId),
@@ -153,9 +170,46 @@ const threadLegendSections = [
 async function loadConversation(): Promise<void> {
   try {
     await store.load(props.pullRequestId);
+    await scrollToPendingThread();
   } catch {
     // Error message lands in the store; UI surfaces it via the `error` computed.
   }
+}
+
+/**
+ * Best-effort deep-link scroll (ADR 0031, issue #437). A notification open
+ * path may have recorded a thread `node_id` to land on. After threads load,
+ * switch to the Threads tab, wait a paint for the cards to mount, then
+ * `scrollIntoView` the matching anchor and briefly highlight it. If the thread
+ * isn't present (pruned / closed / legacy row without a node_id), the lookup
+ * misses and the open degrades to just showing the PR - no error.
+ */
+async function scrollToPendingThread(): Promise<void> {
+  const target = threadDeepLink.takePendingThread();
+  if (target === null) return;
+  const present = (conversation.value?.threads ?? []).some(
+    (t) => t.node_id === target,
+  );
+  if (!present) return;
+  activeTab.value = "threads";
+  await nextTick();
+  const el = document.getElementById(threadAnchorId(target));
+  if (el === null) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("thread-card--deep-link");
+  window.setTimeout(() => el.classList.remove("thread-card--deep-link"), 2000);
+}
+
+async function onMarkThreadSeen(thread: PullRequestThread): Promise<void> {
+  await store.markThreadSeen(
+    props.pullRequestId,
+    accountIds.value,
+    thread.node_id,
+  );
+}
+
+async function onMarkGeneralStreamSeen(): Promise<void> {
+  await store.markGeneralStreamSeen(props.pullRequestId, accountIds.value);
 }
 
 function setTab(next: TabKey): void {
@@ -324,6 +378,8 @@ watch(
             <ThreadsList
               :threads="conversation.threads"
               :thread-comments="conversation.thread_comments"
+              :can-mark-seen="canMarkSeen"
+              @mark-seen="onMarkThreadSeen"
             />
           </template>
 
@@ -332,10 +388,21 @@ watch(
             :reviews="conversation.reviews"
           />
 
-          <IssueCommentsTab
-            v-else-if="activeTab === 'comments'"
-            :issue-comments="conversation.issue_comments"
-          />
+          <template v-else-if="activeTab === 'comments'">
+            <div
+              v-if="canMarkSeen && conversation.issue_comments.length > 0"
+              class="pr-conversation__col-head pr-conversation__col-head--end"
+            >
+              <PRismButton
+                variant="ghost"
+                size="sm"
+                @click="onMarkGeneralStreamSeen"
+              >
+                Mark all seen
+              </PRismButton>
+            </div>
+            <IssueCommentsTab :issue-comments="conversation.issue_comments" />
+          </template>
 
           <template v-else>
             <StatusTimelineTab v-if="dashboardRow !== null" :pull-request="dashboardRow" />
@@ -492,6 +559,10 @@ watch(
   margin-bottom: var(--s-3);
   gap: var(--s-3);
   flex-wrap: wrap;
+}
+
+.pr-conversation__col-head--end {
+  justify-content: flex-end;
 }
 
 .pr-conversation__col-title-block {

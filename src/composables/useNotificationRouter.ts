@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { onBeforeUnmount, onMounted } from "vue";
 import { useRouter } from "vue-router";
 
+import { useThreadDeepLink } from "@/composables/useThreadDeepLink";
 import { useDashboardStore } from "@/stores/dashboard";
 
 /**
@@ -32,10 +33,10 @@ const NOTIFICATION_OPEN_PR_EVENT = "notification://open-pr";
 interface NotificationOpenPrPayload {
   readonly account_id: number;
   readonly pull_request_id: number;
-  // ADR 0031: the toast threads the conversation unit it points at so a later
-  // slice can reconcile the exact thread / general stream on click. Routing +
-  // open already clears the unit via the conversation auto-mark-seen, so these
-  // are carried for that follow-up, not required by the current router.
+  // ADR 0031: the toast threads the conversation unit it points at. A
+  // `'thread'` unit's `unit_ref` (the review thread `node_id`) drives the
+  // deep-link scroll on the conversation surface; routing + open clears the
+  // unit's watermark via the conversation auto-mark-seen.
   readonly unit_kind?: "thread" | "general" | null;
   readonly unit_ref?: string | null;
   readonly deep_link_url?: string | null;
@@ -52,6 +53,7 @@ interface PrRouteMetadata {
 export function useNotificationRouter(): void {
   const router = useRouter();
   const dashboard = useDashboardStore();
+  const threadDeepLink = useThreadDeepLink();
   let unlisten: UnlistenFn | null = null;
 
   onMounted(async () => {
@@ -82,6 +84,13 @@ export function useNotificationRouter(): void {
   ): Promise<void> {
     const meta = await resolveMetadata(payload);
     if (meta === null) return;
+
+    // Record the thread deep-link target (ADR 0031) before routing so the
+    // conversation surface scrolls to the exact thread once its threads load.
+    // Only a `'thread'` unit carries a scrollable anchor.
+    threadDeepLink.setPendingThread(
+      payload.unit_kind === "thread" ? payload.unit_ref ?? null : null,
+    );
 
     // Route through the shared dashboard store action so the active detail
     // surface (drawer vs route, per the appearance setting) decides the

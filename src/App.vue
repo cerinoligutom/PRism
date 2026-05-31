@@ -17,6 +17,7 @@ import {
 import { useAppSettings } from "@/stores/settings";
 import { useConversationStore } from "@/stores/conversation";
 import { useDashboardStore } from "@/stores/dashboard";
+import { useNotificationsStore } from "@/stores/notifications";
 import { useWhatsNewStore } from "@/stores/whatsNew";
 
 useKeyboardShortcuts();
@@ -38,6 +39,13 @@ void conversation.bind();
 // Onboarding. Binding here keeps the listener alive for the app lifetime.
 const dashboard = useDashboardStore();
 void dashboard.bind();
+
+// Notifications inbox + sidebar chip live-refresh (issue #437). Bound at app
+// scope so the chip reconciles on every `dashboard://refresh` (sync cycle,
+// triage commit, per-unit mark-seen) regardless of which view is mounted -
+// the same reason the dashboard store binds here rather than per-view.
+const notifications = useNotificationsStore();
+void notifications.bind();
 
 // In-app "What's new" wiring (ADR 0025).
 //
@@ -152,6 +160,7 @@ async function maybeEvaluateGate(): Promise<void> {
 onBeforeUnmount(() => {
   conversation.unbind();
   dashboard.unbind();
+  notifications.unbind();
 });
 
 async function handleDismiss(): Promise<void> {

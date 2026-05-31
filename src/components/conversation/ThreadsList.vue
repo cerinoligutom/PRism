@@ -9,8 +9,10 @@ import type {
 } from "@/types/conversation";
 
 import { secondsSince } from "@/lib/format";
+import { threadAnchorId } from "@/composables/useThreadDeepLink";
 import PRismAvatar from "@/components/ui/PRismAvatar.vue";
 import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
+import PRismButton from "@/components/ui/PRismButton.vue";
 import PRismMarkdown from "@/components/ui/PRismMarkdown.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
@@ -23,11 +25,27 @@ interface Props {
    * The expand affordance filters this by `thread_id` and renders inline; no
    * extra round-trip. */
   threadComments?: readonly ThreadComment[];
+  /** Whether the viewer holds a relation for this PR (ADR 0031). Gates the
+   * per-thread "Mark seen" affordance - a unit can't be marked seen when
+   * there's no viewer whose watermark to advance. */
+  canMarkSeen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   threadComments: () => [],
+  canMarkSeen: false,
 });
+
+const emit = defineEmits<{
+  "mark-seen": [thread: PullRequestThread];
+}>();
+
+function onMarkSeen(event: Event, thread: PullRequestThread): void {
+  // Sits inside the row's expand-toggle container; stop the click bubbling so
+  // marking seen doesn't also expand / collapse the card.
+  event.stopPropagation();
+  emit("mark-seen", thread);
+}
 
 /**
  * Per-thread bucket matching ADR 0012's four-state palette. Drives the icon
@@ -229,6 +247,7 @@ async function openCommentOnGitHub(
     <div v-else class="threads-list__items">
       <article
         v-for="thread in orderedThreads"
+        :id="threadAnchorId(thread.node_id)"
         :key="threadKey(thread)"
         :class="[
           'thread-card',
@@ -446,6 +465,14 @@ async function openCommentOnGitHub(
             <template v-else>—</template>
           </div>
           <div class="thread-card__actions">
+            <PRismButton
+              v-if="canMarkSeen && thread.unread"
+              variant="ghost"
+              size="sm"
+              @click="onMarkSeen($event, thread)"
+            >
+              Mark seen
+            </PRismButton>
             <PRismTooltip :text="expandTooltip(thread)">
               <button
                 type="button"
@@ -581,6 +608,16 @@ async function openCommentOnGitHub(
 
 .thread-card--outdated {
   opacity: 0.65;
+}
+
+/* Deep-link landing highlight (ADR 0031, issue #437). Added for ~2s by the
+ * conversation surface after scrolling a notification's target thread into
+ * view, then removed. A ring + faint tint so the user's eye lands on the
+ * right card without a layout shift. */
+.thread-card--deep-link {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-bg);
+  transition: box-shadow 0.2s, background 0.2s;
 }
 
 /* Inline state badge layout. Shape + colour variants live in
