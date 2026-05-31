@@ -91,7 +91,7 @@ pub(super) fn rearm_dispatch(
         unit_kind: newest.unit_kind,
         unit_ref: newest.unit_ref,
         deep_link_url: newest.deep_link_url,
-        newest_activity_at: newest.newest_activity_at,
+        newest_activity_at: Some(newest.newest_activity_at),
     };
     Ok((Some(trigger), Some(newest.newest_activity_at)))
 }
@@ -227,6 +227,167 @@ fn gather_unit_crossings(
 
     out.sort_by_key(|c| std::cmp::Reverse(c.newest_activity_at));
     Ok(out)
+}
+
+/// Compute the per-PR role-obligation dispatch after the recompute has run
+/// (ADR 0031 amendment, issue #450). Separate dedup from the conversation
+/// `last_emitted_activity_at`: a PR may legitimately emit both a conversation
+/// trigger and a role trigger in the same cycle.
+///
+/// The current role *signature* uses the SAME host-gated logic as roll-up
+/// branches C/D: `'changes_requested'` when the viewer authored the PR and its
+/// `review_decision = 'CHANGES_REQUESTED'`, else `'review_request'` when the
+/// viewer is in `requested_reviewers`, else `None`. Author + requested are
+/// mutually exclusive in practice; if both somehow held, `'changes_requested'`
+/// wins (checked first).
+///
+/// Returns at most one [`NotificationTrigger`] and, when the marker must move,
+/// the value the caller writes into `last_emitted_role`:
+///
+/// - signature is `Some(sig)` AND `sig != last_emitted_role` -> emit one role
+///   trigger for that kind; the caller sets `last_emitted_role = sig`.
+/// - signature is `None` -> re-arm: the caller sets `last_emitted_role = NULL`.
+/// - signature is `Some(sig)` AND `sig == last_emitted_role` -> no trigger, no
+///   write (still in the same obligation episode).
+///
+/// The returned `Option<&'static str>` is the value to persist; `None` from
+/// this position is "no write needed" only in the unchanged-signature case. The
+/// caller distinguishes write-NULL (re-arm) from no-write via the
+/// [`RoleDispatch`] return.
+pub(super) fn role_dispatch(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: i64,
+    pr_id: i64,
+    viewer_login: &str,
+) -> Result<RoleDispatch, rusqlite::Error> {
+    // A role obligation needs a relation row to dedup against (and to mark
+    // unread per-row later). A missing row - the Team/Tracked-view path where
+    // this account has no discovered relation to the PR - is a clean no-op,
+    // mirroring the conversation re-arm's relation-row guard. The marker UPDATE
+    // would match zero rows anyway; short-circuiting also avoids toasting an
+    // obligation the viewer has no relation surface for.
+    let last_emitted_role: Option<Option<String>> = tx
+        .query_row(
+            "SELECT last_emitted_role FROM pull_request_viewer_relations
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    let Some(last_emitted_role) = last_emitted_role else {
+        return Ok(RoleDispatch::none());
+    };
+
+    let signature = current_role_signature(tx, pr_id, viewer_login)?;
+
+    match signature {
+        None => {
+            // Obligation cleared (or never held): re-arm. Writing NULL is
+            // idempotent, but only act when the marker isn't already NULL so a
+            // quiet PR doesn't churn the column every cycle.
+            if last_emitted_role.is_some() {
+                Ok(RoleDispatch {
+                    trigger: None,
+                    set_marker: Some(None),
+                })
+            } else {
+                Ok(RoleDispatch::none())
+            }
+        }
+        Some(kind) => {
+            let sig = role_kind_storage(kind);
+            if last_emitted_role.as_deref() == Some(sig) {
+                // Same obligation still held; already toasted.
+                return Ok(RoleDispatch::none());
+            }
+            let trigger = NotificationTrigger {
+                account_id,
+                pull_request_id: pr_id,
+                kind: NotificationKind::NeedsAttention,
+                unit_kind: kind,
+                unit_ref: None,
+                deep_link_url: pr_conversation_url(tx, pr_id)?,
+                newest_activity_at: None,
+            };
+            Ok(RoleDispatch {
+                trigger: Some(trigger),
+                set_marker: Some(Some(sig.to_string())),
+            })
+        }
+    }
+}
+
+/// Outcome of [`role_dispatch`]. `trigger` is the (optional) role toast to
+/// dispatch after commit; `set_marker` is `None` for "leave `last_emitted_role`
+/// untouched", `Some(None)` for "write NULL (re-arm)", and `Some(Some(sig))`
+/// for "write the new signature".
+pub(super) struct RoleDispatch {
+    pub(super) trigger: Option<NotificationTrigger>,
+    pub(super) set_marker: Option<Option<String>>,
+}
+
+impl RoleDispatch {
+    fn none() -> Self {
+        Self {
+            trigger: None,
+            set_marker: None,
+        }
+    }
+}
+
+/// Storage string for a role [`NotificationUnitKind`], matching the
+/// `last_emitted_role` column values and the `notifications.unit_kind` form.
+fn role_kind_storage(kind: NotificationUnitKind) -> &'static str {
+    match kind {
+        NotificationUnitKind::ChangesRequested => "changes_requested",
+        NotificationUnitKind::ReviewRequest => "review_request",
+        // The conversation kinds never reach here; keep the match total.
+        NotificationUnitKind::Thread | NotificationUnitKind::General => "review_request",
+    }
+}
+
+/// The viewer's current role obligation on the PR, host-gated exactly as
+/// roll-up branches C (requested reviewer) and D (CHANGES_REQUESTED on the
+/// viewer's authored PR). Returns the role kind, or `None` when neither holds.
+/// `'changes_requested'` wins when both somehow apply (checked first).
+fn current_role_signature(
+    tx: &rusqlite::Transaction<'_>,
+    pr_id: i64,
+    viewer_login: &str,
+) -> Result<Option<NotificationUnitKind>, rusqlite::Error> {
+    // (D) CHANGES_REQUESTED on the viewer's authored PR, host-gated. The caller
+    // already early-exits on a host mismatch (the scan returns before reaching
+    // here when the viewer host differs from the PR host), so a direct
+    // author_login match is host-correct.
+    let changes_requested: bool = tx.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM pull_requests pr
+              WHERE pr.id = ?1
+                AND pr.author_login = ?2
+                AND pr.review_decision = 'CHANGES_REQUESTED'
+         )",
+        params![pr_id, viewer_login],
+        |r| r.get::<_, i64>(0),
+    )? == 1;
+    if changes_requested {
+        return Ok(Some(NotificationUnitKind::ChangesRequested));
+    }
+
+    // (C) requested reviewer, host-gated by the same early-exit.
+    let review_requested: bool = tx.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM requested_reviewers rr
+              WHERE rr.pull_request_id = ?1
+                AND rr.login = ?2
+         )",
+        params![pr_id, viewer_login],
+        |r| r.get::<_, i64>(0),
+    )? == 1;
+    if review_requested {
+        return Ok(Some(NotificationUnitKind::ReviewRequest));
+    }
+
+    Ok(None)
 }
 
 /// The PR's conversation deep link for the general stream toast. Derived from

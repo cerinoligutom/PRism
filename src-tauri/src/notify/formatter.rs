@@ -9,10 +9,15 @@
 //!   the PR title.
 //! * **General stream** -> title "Needs your attention", body "<owner>/<repo>
 //!   #<number> - General discussion".
+//! * **Review request** (role obligation) -> title "Review requested", body
+//!   "You've been asked to review <owner>/<repo> #<number>".
+//! * **Changes requested** (role obligation) -> title "Changes requested",
+//!   body "Changes were requested on your <owner>/<repo> #<number>".
 //!
 //! `deep_link_url` is threaded from the trigger (the thread url, or the PR
-//! conversation url for the general stream) into both the snapshot and the
-//! click payload so the toast click reconciles the exact unit.
+//! conversation url for the general stream and the role kinds) into both the
+//! snapshot and the click payload so the toast click reconciles the exact
+//! unit / opens the PR.
 //!
 //! The formatter takes a `&Connection` so callers can run it outside the
 //! recompute transaction without re-locking the DB. A formatter failure
@@ -54,18 +59,35 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
         deep_link_url: trigger.deep_link_url.clone(),
     };
 
-    let unit_label = match trigger.unit_kind {
-        NotificationUnitKind::Thread => trigger
-            .unit_ref
-            .as_deref()
-            .and_then(|node_id| thread_location_label(conn, node_id))
-            .unwrap_or_else(|| title.clone()),
-        NotificationUnitKind::General => "General discussion".to_string(),
+    let (title_copy, body_copy) = match trigger.unit_kind {
+        NotificationUnitKind::Thread => {
+            let unit_label = trigger
+                .unit_ref
+                .as_deref()
+                .and_then(|node_id| thread_location_label(conn, node_id))
+                .unwrap_or_else(|| title.clone());
+            (
+                "Needs your attention".to_string(),
+                format!("{owner}/{repo} #{number} - {unit_label}"),
+            )
+        }
+        NotificationUnitKind::General => (
+            "Needs your attention".to_string(),
+            format!("{owner}/{repo} #{number} - General discussion"),
+        ),
+        NotificationUnitKind::ReviewRequest => (
+            "Review requested".to_string(),
+            format!("You've been asked to review {owner}/{repo} #{number}"),
+        ),
+        NotificationUnitKind::ChangesRequested => (
+            "Changes requested".to_string(),
+            format!("Changes were requested on your {owner}/{repo} #{number}"),
+        ),
     };
 
     Some(Notification {
-        title: "Needs your attention".to_string(),
-        body: format!("{owner}/{repo} #{number} - {unit_label}"),
+        title: title_copy,
+        body: body_copy,
         payload,
         snapshot: Some(snapshot),
     })
@@ -159,7 +181,7 @@ mod tests {
             unit_kind: NotificationUnitKind::Thread,
             unit_ref: Some(node_id.to_string()),
             deep_link_url: url.map(str::to_string),
-            newest_activity_at: 200,
+            newest_activity_at: Some(200),
         }
     }
 
@@ -171,7 +193,19 @@ mod tests {
             unit_kind: NotificationUnitKind::General,
             unit_ref: None,
             deep_link_url: url.map(str::to_string),
-            newest_activity_at: 200,
+            newest_activity_at: Some(200),
+        }
+    }
+
+    fn role_trigger(unit_kind: NotificationUnitKind, url: Option<&str>) -> NotificationTrigger {
+        NotificationTrigger {
+            account_id: 1,
+            pull_request_id: 100,
+            kind: NotificationKind::NeedsAttention,
+            unit_kind,
+            unit_ref: None,
+            deep_link_url: url.map(str::to_string),
+            newest_activity_at: None,
         }
     }
 
@@ -250,6 +284,41 @@ mod tests {
         assert_eq!(snap.unit_kind, Some(NotificationUnitKind::Thread));
         assert_eq!(snap.unit_ref.as_deref(), Some("RT_1"));
         assert_eq!(snap.deep_link_url.as_deref(), Some("https://x/t"));
+    }
+
+    #[test]
+    fn review_request_copy_is_review_requested() {
+        let conn = fresh_db();
+        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
+        let url = "https://github.com/owner/web/pull/42";
+        let n = format_trigger(
+            &conn,
+            &role_trigger(NotificationUnitKind::ReviewRequest, Some(url)),
+        )
+        .expect("fmt");
+        assert_eq!(n.title, "Review requested");
+        assert_eq!(n.body, "You've been asked to review owner/web #42");
+        assert_eq!(n.payload["unit_kind"], "review_request");
+        assert!(n.payload["unit_ref"].is_null());
+        assert_eq!(n.payload["deep_link_url"], url);
+        let snap = n.snapshot.expect("snapshot");
+        assert_eq!(snap.unit_kind, Some(NotificationUnitKind::ReviewRequest));
+        assert_eq!(snap.unit_ref, None);
+    }
+
+    #[test]
+    fn changes_requested_copy_is_changes_requested() {
+        let conn = fresh_db();
+        seed_pr(&conn, "owner", "web", 100, 42, "Add a thing");
+        let url = "https://github.com/owner/web/pull/42";
+        let n = format_trigger(
+            &conn,
+            &role_trigger(NotificationUnitKind::ChangesRequested, Some(url)),
+        )
+        .expect("fmt");
+        assert_eq!(n.title, "Changes requested");
+        assert_eq!(n.body, "Changes were requested on your owner/web #42");
+        assert_eq!(n.payload["unit_kind"], "changes_requested");
     }
 
     #[test]

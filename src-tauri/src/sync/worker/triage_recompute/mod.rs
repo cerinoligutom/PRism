@@ -10,8 +10,11 @@
 //! a harmless write so the mention-scan tests stay stable, per ADR 0031's
 //! "left vestigial" note). After the recompute, [`rearm::rearm_dispatch`]
 //! produces at most one per-unit [`NotificationTrigger`] when the PR crosses
-//! its per-PR `last_emitted_activity_at` watermark - the caller dispatches
-//! after commit.
+//! its per-PR `last_emitted_activity_at` watermark, and [`rearm::role_dispatch`]
+//! produces at most one role-obligation trigger when the viewer newly acquires
+//! a role obligation (review-requested / changes-requested) under a separate
+//! per-PR `last_emitted_role` dedup (ADR 0031 amendment, issue #450) - the
+//! caller dispatches both after commit.
 
 use rusqlite::params;
 
@@ -217,5 +220,22 @@ pub(super) fn scan_mentions_and_recompute_attention(
             params![account_id, pr_id, advance_to],
         )?;
     }
-    Ok(trigger.into_iter().collect())
+
+    // Role-obligation dispatch (ADR 0031 amendment, issue #450), a SEPARATE
+    // per-PR dedup keyed on `last_emitted_role`. The viewer newly acquiring a
+    // role obligation (became a requested reviewer, OR their authored PR
+    // flipped to CHANGES_REQUESTED) emits one trigger; the obligation clearing
+    // re-arms the marker. A PR may emit both a conversation trigger and a role
+    // trigger in the same cycle - both are collected.
+    let role = rearm::role_dispatch(tx, account_id, pr_id, &viewer_login)?;
+    if let Some(marker) = role.set_marker {
+        tx.execute(
+            "UPDATE pull_request_viewer_relations
+                SET last_emitted_role = ?3
+              WHERE account_id = ?1 AND pull_request_id = ?2",
+            params![account_id, pr_id, marker],
+        )?;
+    }
+
+    Ok(trigger.into_iter().chain(role.trigger).collect())
 }

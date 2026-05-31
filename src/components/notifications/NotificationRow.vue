@@ -41,14 +41,17 @@ function kindLabel(kind: string): string {
 }
 
 /**
- * One-line description of the conversation unit this row points at (ADR 0031).
- * A `'thread'` unit shows the deep-link target ("a review thread"); `'general'`
- * shows the PR's general discussion. Legacy / PR-level rows (`null`) return an
- * empty string so the unit line is skipped.
+ * One-line description of the conversation unit or role obligation this row
+ * points at (ADR 0031). A `'thread'` unit shows the deep-link target ("Review
+ * thread"); `'general'` shows the PR's general discussion; the role kinds show
+ * the obligation ("Review requested" / "Changes requested"). Legacy / PR-level
+ * rows (`null`) return an empty string so the unit line is skipped.
  */
 function unitLabel(notification: Notification): string {
   if (notification.unit_kind === "thread") return "Review thread";
   if (notification.unit_kind === "general") return "General discussion";
+  if (notification.unit_kind === "review_request") return "Review requested";
+  if (notification.unit_kind === "changes_requested") return "Changes requested";
   return "";
 }
 </script>

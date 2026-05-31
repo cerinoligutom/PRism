@@ -859,6 +859,111 @@ mod tests {
         );
     }
 
+    /// Insert a LIVE inbox row pointing at a role obligation
+    /// (`review_request` / `changes_requested`), `unit_ref` NULL.
+    fn insert_role_row(conn: &Connection, unit_kind: &str) -> i64 {
+        insert(
+            conn,
+            &NotificationInsert {
+                kind: "needs_attention".to_string(),
+                account_id: 1,
+                pull_request_id: Some(100),
+                owner: "owner".to_string(),
+                repo: "web".to_string(),
+                pr_number: 42,
+                pr_node_id: None,
+                pr_title: "Add a thing".to_string(),
+                title: "Review requested".to_string(),
+                body: Some("owner/web #42".to_string()),
+                unit_kind: Some(unit_kind.to_string()),
+                unit_ref: None,
+                deep_link_url: Some("https://x/pr".to_string()),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn review_request_row_unread_while_requested_then_reads_when_cleared() {
+        // A 'review_request' row is unread iff the viewer is STILL in
+        // requested_reviewers; dropping the request clears it (no read_at write).
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        conn.execute(
+            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
+                VALUES (100, 'alice', 'user')",
+            [],
+        )
+        .unwrap();
+        let id = insert_role_row(&conn, "review_request");
+
+        assert!(
+            find(&conn, id).unwrap().unwrap().unread,
+            "unread while requested"
+        );
+        assert_eq!(count_unread(&conn).unwrap(), 1);
+
+        // Review submitted: dropped from requested_reviewers.
+        conn.execute(
+            "DELETE FROM requested_reviewers WHERE pull_request_id = 100",
+            [],
+        )
+        .unwrap();
+        let row = find(&conn, id).unwrap().unwrap();
+        assert!(!row.unread, "obligation cleared => row reads as read");
+        assert_eq!(row.read_at, None, "no read_at write on a live role row");
+        assert_eq!(count_unread(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn changes_requested_row_unread_until_decision_flips() {
+        // A 'changes_requested' row is unread iff the PR STILL has
+        // review_decision = 'CHANGES_REQUESTED' and author = viewer.
+        let conn = fresh();
+        seed_live_fixture(&conn); // 'alice' authors PR 100
+        conn.execute(
+            "UPDATE pull_requests SET review_decision = 'CHANGES_REQUESTED' WHERE id = 100",
+            [],
+        )
+        .unwrap();
+        let id = insert_role_row(&conn, "changes_requested");
+
+        assert!(
+            find(&conn, id).unwrap().unwrap().unread,
+            "unread while CHANGES_REQUESTED stands"
+        );
+
+        // Decision flips: obligation clears.
+        conn.execute(
+            "UPDATE pull_requests SET review_decision = 'APPROVED' WHERE id = 100",
+            [],
+        )
+        .unwrap();
+        let row = find(&conn, id).unwrap().unwrap();
+        assert!(!row.unread, "decision flip => row reads as read");
+        assert_eq!(row.read_at, None, "no read_at write on a live role row");
+    }
+
+    #[test]
+    fn changes_requested_row_reads_for_non_author() {
+        // Defensive: a 'changes_requested' row whose PR is authored by someone
+        // else reads as read (branch D requires author = viewer).
+        let conn = fresh();
+        seed_live_fixture(&conn);
+        conn.execute(
+            "UPDATE pull_requests
+                SET author_login = 'bob', review_decision = 'CHANGES_REQUESTED'
+              WHERE id = 100",
+            [],
+        )
+        .unwrap();
+        let id = insert_role_row(&conn, "changes_requested");
+        assert!(
+            !find(&conn, id).unwrap().unwrap().unread,
+            "CHANGES_REQUESTED on someone else's PR is not my obligation"
+        );
+    }
+
     #[test]
     fn list_projects_per_row_unread_flag() {
         let conn = fresh();

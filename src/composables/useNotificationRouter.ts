@@ -33,11 +33,18 @@ const NOTIFICATION_OPEN_PR_EVENT = "notification://open-pr";
 interface NotificationOpenPrPayload {
   readonly account_id: number;
   readonly pull_request_id: number;
-  // ADR 0031: the toast threads the conversation unit it points at. A
-  // `'thread'` unit's `unit_ref` (the review thread `node_id`) drives the
-  // deep-link scroll on the conversation surface; routing + open clears the
-  // unit's watermark via the conversation auto-mark-seen.
-  readonly unit_kind?: "thread" | "general" | null;
+  // ADR 0031: the toast threads the conversation unit or role obligation it
+  // points at. A `'thread'` unit's `unit_ref` (the review thread `node_id`)
+  // drives the deep-link scroll on the conversation surface; routing + open
+  // clears the unit's watermark via the conversation auto-mark-seen. The role
+  // kinds (`'review_request'` | `'changes_requested'`) carry no anchor and
+  // just open the PR.
+  readonly unit_kind?:
+    | "thread"
+    | "general"
+    | "review_request"
+    | "changes_requested"
+    | null;
   readonly unit_ref?: string | null;
   readonly deep_link_url?: string | null;
 }
