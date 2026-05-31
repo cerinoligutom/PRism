@@ -22,6 +22,18 @@ export function dashboardRouteName(view: DashboardViewName): string {
 // and reloads.
 export const router = createRouter({
   history: createWebHistory(),
+  // Honour a route hash so the legend deep-links land on the matching section
+  // of the "How signals work" page (#436). `scroll-margin-top` on the targets
+  // keeps the heading clear of the scroll-container edge. Hash-less navigations
+  // return `false` to preserve the prior no-op behaviour - the views manage
+  // their own scroll containers, so forcing the window to the top would change
+  // existing routes.
+  scrollBehavior(to) {
+    if (to.hash) {
+      return { el: to.hash, behavior: "smooth" };
+    }
+    return false;
+  },
   routes: [
     {
       path: "/",
@@ -81,6 +93,15 @@ export const router = createRouter({
       name: "pr-detail",
       component: () => import("@/views/PullRequestDetailView.vue"),
       props: (route) => ({ pullRequestId: Number(route.params.id) }),
+    },
+    {
+      // Issue #436: the "How signals work" reference page. Fixture-driven and
+      // always reachable - it calls no auth- or sync-gated store, so it
+      // renders before any account is connected. The dashboard and
+      // conversation legends deep-link into its section anchors.
+      path: "/signals",
+      name: "signals",
+      component: () => import("@/views/HowSignalsWorkView.vue"),
     },
     {
       path: "/onboarding",
