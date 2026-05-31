@@ -77,15 +77,19 @@ pub fn list_pr_timeline_events(
         .map_err(|e| internal(&format!("list_pr_timeline_events: {e}")))
 }
 
-/// Load the cached conversation for a PR.
+/// Load the cached conversation for a PR (foreground user open).
 ///
 /// ADR 0029: sync owns `review_comments` / `issue_comments` persistence, so
-/// this command is a synchronous cache reader. ADR 0031 replaces the old
-/// PR-level auto-mark-read with per-unit "seen": on open it advances the seen
-/// watermark for every visible review thread (keyed on its `node_id`) and the
-/// PR's general comment stream, recomputes the `needs_attention` roll-up, and
-/// refreshes the dock badge so opening the drawer settles the units the user
-/// just saw without the lose-track problem of clearing everything PR-wide.
+/// this command is a synchronous cache reader. ADR 0033: on open it advances
+/// only the PR read watermark (the bold-title "unread" axis) per relation owner
+/// and recomputes the `needs_attention` roll-up - conversation units do NOT
+/// clear on open; they clear via reply / resolve / explicit mark-seen. It then
+/// emits [`DASHBOARD_REFRESH_EVENT`] so the dashboard rows, sidebar chip, and
+/// inbox reconcile in one seam on open, and refreshes the dock badge.
+///
+/// The emit makes background re-reads route to [`read_pr_conversation`] (the
+/// non-mutating reader) instead, so this open path can never be re-entered from
+/// a `dashboard://refresh`-triggered reload (no infinite loop).
 #[tauri::command]
 pub fn load_pr_conversation<R: Runtime>(
     pull_request_id: i64,
@@ -94,10 +98,29 @@ pub fn load_pr_conversation<R: Runtime>(
 ) -> Result<HydratedConversation, ConversationCommandError> {
     let account_id = resolve_repo_owning_account(&db, pull_request_id)?;
     auto_mark_units_seen(&db, pull_request_id, account_id);
-    // The per-unit seen marks can drop `needs_attention` to 0 for this row;
-    // push the new global count to the dock so opening a drawer immediately
-    // deflates the badge.
+    let response = hydrated_response(&db, pull_request_id, account_id)?;
+    // Single-seam reconcile (ADR 0033): opening can advance the read watermark
+    // and drop `needs_attention`, so fan one refresh across surfaces and push
+    // the new global count to the dock. Emitted after the hydration read so a
+    // failed emit can't unwind the cached payload.
+    emit_dashboard_refresh(&app_handle);
     refresh_badge_from_db(&app_handle, &db);
+    Ok(response)
+}
+
+/// Read the cached conversation for a PR with NO side effects (ADR 0033).
+///
+/// A pure cache read: it resolves the owning account and hydrates the response
+/// without marking any watermark and without emitting
+/// [`DASHBOARD_REFRESH_EVENT`]. Background re-reads triggered by a
+/// `dashboard://refresh` event route here so the refresh can't re-enter the
+/// emitting open path ([`load_pr_conversation`]) and spin an infinite loop.
+#[tauri::command]
+pub fn read_pr_conversation(
+    pull_request_id: i64,
+    db: State<'_, DbHandle>,
+) -> Result<HydratedConversation, ConversationCommandError> {
+    let account_id = resolve_repo_owning_account(&db, pull_request_id)?;
     hydrated_response(&db, pull_request_id, account_id)
 }
 
@@ -164,6 +187,35 @@ pub fn mark_general_stream_seen<R: Runtime>(
     Ok(())
 }
 
+/// Explicitly mark a PR's reviews stream seen for one account (ADR 0033).
+/// Companion to [`mark_general_stream_seen`] for the reviews unit (branch E):
+/// advances the per-PR `reviews_seen_at` watermark, recomputes the roll-up,
+/// emits [`DASHBOARD_REFRESH_EVENT`] on commit, and refreshes the badge.
+/// Re-arms on the next other-authored mentioning review past the watermark.
+#[tauri::command]
+pub fn mark_reviews_seen<R: Runtime>(
+    pull_request_id: i64,
+    account_id: i64,
+    db: State<'_, DbHandle>,
+    app_handle: AppHandle<R>,
+) -> Result<(), ConversationCommandError> {
+    {
+        let mut conn = db.lock().map_err(|_| internal("db lock poisoned"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| internal(&format!("begin tx: {e}")))?;
+        crate::triage::units::advance_reviews_seen(&tx, account_id, pull_request_id, unix_now())
+            .map_err(|e| internal(&format!("advance_reviews_seen: {e}")))?;
+        crate::triage::query::recompute_needs_attention(&tx, account_id, pull_request_id)
+            .map_err(|e| internal(&format!("recompute needs_attention: {e}")))?;
+        tx.commit()
+            .map_err(|e| internal(&format!("commit tx: {e}")))?;
+    }
+    emit_dashboard_refresh(&app_handle);
+    refresh_badge_from_db(&app_handle, &db);
+    Ok(())
+}
+
 /// Fire-and-forget refresh signal. A failed emit logs and continues - the
 /// command's write already succeeded, and the frontend can recover via the
 /// next sync-cycle reload. Mirrors `triage::commands::emit_dashboard_refresh`.
@@ -194,16 +246,19 @@ fn resolve_repo_owning_account(
     .ok_or(ConversationCommandError::NotFound)
 }
 
-/// Best-effort per-unit "mark seen" on open (ADR 0031). Runs after the
+/// Best-effort PR-level "mark read" on open (ADR 0033). Runs after the
 /// hydration read so a failure can't unwind the cached payload. Errors are
-/// logged and swallowed: a seen-write failure must never break detail-surface
+/// logged and swallowed: a read-write failure must never break detail-surface
 /// hydration.
 ///
 /// For every relation owner (ADR 0016: a PR can have relation rows under
-/// multiple accounts in unified mode), advance the seen watermark for each
-/// visible review thread (keyed on its `node_id`) and the PR's general comment
-/// stream, then recompute the `needs_attention` roll-up. Marking a unit seen
-/// re-arms it: a later other-authored comment past the watermark re-lights it.
+/// multiple accounts in unified mode), advance ONLY the PR read watermark (the
+/// bold-title "unread" axis) and recompute the `needs_attention` roll-up.
+/// Conversation units (review threads, the general stream, the reviews stream)
+/// do NOT clear on open under ADR 0033 - they clear when the viewer replies,
+/// resolves the thread, or explicitly marks the unit seen. Opening only says
+/// "I have seen the latest of this PR", which is the unread axis, not the
+/// per-unit attention dot.
 fn auto_mark_units_seen(db: &DbHandle, pull_request_id: i64, account_id: i64) {
     if mark_units_seen_in_tx(db, pull_request_id, account_id).is_err() {
         // The `mark_units_seen_in_tx` `internal()` helper already logged the
@@ -227,30 +282,9 @@ fn mark_units_seen_in_tx(
         .transaction()
         .map_err(|e| internal(&format!("begin tx: {e}")))?;
 
-    // Every visible thread's node_id. The conversation surface marks exactly
-    // the units it loaded; a thread row with no node_id (legacy / pre-M3) has
-    // no per-thread watermark to advance and is skipped.
-    let node_ids: Vec<String> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT node_id FROM review_threads
-                  WHERE pull_request_id = ?1 AND node_id IS NOT NULL",
-            )
-            .map_err(|e| internal(&format!("prepare thread node_ids: {e}")))?;
-        let rows = stmt
-            .query_map([pull_request_id], |row| row.get::<_, String>(0))
-            .map_err(|e| internal(&format!("query thread node_ids: {e}")))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| internal(&format!("read thread node_id: {e}")))?);
-        }
-        out
-    };
-
-    // The repo's owning account always participates (UPSERTs nothing here -
-    // the general-stream watermark advance is a no-op on a missing relation
-    // row, matching the Team-view PR semantic). Every other relation owner
-    // gets the same per-unit seen marks too.
+    // The repo's owning account always participates (the read-watermark advance
+    // is a no-op on a missing relation row, matching the Team-view PR
+    // semantic). Every other relation owner gets the same read mark too.
     let mut owners: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
     owners.insert(account_id);
     {
@@ -272,31 +306,13 @@ fn mark_units_seen_in_tx(
     let now = unix_now();
     for owner in owners {
         // Per-account failures log + continue (ADR 0016: partial successes
-        // must persist). The seen-mark fanout is best-effort.
-        for node_id in &node_ids {
-            if let Err(e) = crate::triage::units::advance_thread_seen(&tx, owner, node_id, now) {
-                tracing::warn!(
-                    pull_request_id,
-                    account = owner,
-                    err = %e,
-                    "auto-mark-on-open advance_thread_seen failed",
-                );
-            }
-        }
-        if let Err(e) =
-            crate::triage::units::advance_general_stream_seen(&tx, owner, pull_request_id, now)
-        {
-            tracing::warn!(
-                pull_request_id,
-                account = owner,
-                err = %e,
-                "auto-mark-on-open advance_general_stream_seen failed",
-            );
-        }
-        // Opening the PR also clears the PR-level "unread" axis (the bold-title
-        // signal): advance the read watermark so the dashboard's unread
-        // derivation reads false. This is distinct from the per-unit seen marks
-        // above - the dot tracks "needs me", the bold title tracks "opened".
+        // must persist). The read-mark fanout is best-effort.
+        //
+        // ADR 0033: opening clears ONLY the PR-level "unread" axis (the
+        // bold-title signal): advance the read watermark so the dashboard's
+        // unread derivation reads false. Conversation units stay lit - the dot
+        // tracks "needs me" and clears via reply / resolve / explicit mark-seen,
+        // not on open.
         if let Err(e) =
             crate::triage::units::advance_read_watermark(&tx, owner, pull_request_id, now)
         {
@@ -308,9 +324,10 @@ fn mark_units_seen_in_tx(
             );
         }
         // Recompute the roll-up so the row, badge, and sidebar reflect the
-        // newly-seen units in the same transaction. ADR 0031: this path does
-        // not dispatch toasts (the user is looking at the drawer); all
-        // dispatch lives on the sync re-arm path.
+        // newly-advanced read watermark (it gates the role-obligation branches)
+        // in the same transaction. ADR 0031: this path does not dispatch toasts
+        // (the user is looking at the drawer); all dispatch lives on the sync
+        // re-arm path.
         if let Err(e) = crate::triage::query::recompute_needs_attention(&tx, owner, pull_request_id)
         {
             tracing::warn!(
@@ -459,81 +476,180 @@ mod tests {
             .unwrap()
     }
 
+    fn read_needs_attention(db: &DbHandle) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT needs_attention FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    fn count_thread_read_state(db: &DbHandle) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM thread_read_state WHERE account_id = 1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
     #[test]
-    fn auto_mark_on_open_marks_every_visible_unit_seen() {
-        // Opening a conversation advances the seen watermark for every visible
-        // thread (keyed on node_id) and the general stream, recomputes the
-        // roll-up to 0, and advances the PR-level read watermark so the unread
-        // (bold-title) axis clears on open too (ADR 0031's two-axis encoding:
-        // the dot tracks "needs me", the bold title tracks "opened").
+    fn open_advances_read_watermark_but_leaves_conversation_units_lit() {
+        // ADR 0033: opening a conversation advances ONLY the PR read watermark
+        // (the bold-title "unread" axis). Conversation units do NOT clear on
+        // open - no `thread_read_state` row is written and
+        // `general_stream_seen_at` stays NULL - so the per-unit attention dot
+        // survives until reply / resolve / explicit mark-seen. The roll-up
+        // therefore stays lit (1).
         let db = seed_two_unit_pr();
         // Both threads + general are lit before open.
         {
             let conn = db.lock().unwrap();
             crate::triage::query::recompute_needs_attention(&conn, 1, 100).unwrap();
         }
-        assert_eq!(
-            db.lock()
-                .unwrap()
-                .query_row(
-                    "SELECT needs_attention FROM pull_request_viewer_relations
-                      WHERE account_id = 1 AND pull_request_id = 100",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            1,
-        );
+        assert_eq!(read_needs_attention(&db), 1, "PR needs me before open");
 
         mark_units_seen_in_tx(&db, 100, 1).unwrap();
 
-        assert!(
-            read_thread_seen(&db, "RT_one").is_some(),
-            "thread 1 marked seen"
-        );
-        assert!(
-            read_thread_seen(&db, "RT_two").is_some(),
-            "thread 2 marked seen"
-        );
-        assert!(
-            read_general_seen(&db).is_some(),
-            "general stream marked seen"
-        );
         assert!(
             read_pr_level_read_at(&db).is_some(),
             "opening advances the PR read watermark so the unread bold-title axis clears on open"
         );
         assert_eq!(
-            db.lock()
-                .unwrap()
-                .query_row(
-                    "SELECT needs_attention FROM pull_request_viewer_relations
-                      WHERE account_id = 1 AND pull_request_id = 100",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
+            count_thread_read_state(&db),
             0,
-            "every visible unit seen drops the roll-up to 0",
+            "ADR 0033: opening does NOT mark threads seen - thread_read_state stays empty"
+        );
+        assert_eq!(
+            read_general_seen(&db),
+            None,
+            "ADR 0033: opening does NOT mark the general stream seen - it stays NULL"
+        );
+        assert!(
+            read_thread_seen(&db, "RT_one").is_none(),
+            "no per-thread watermark written on open"
+        );
+        assert_eq!(
+            read_needs_attention(&db),
+            1,
+            "conversation units stay lit on open => the roll-up stays at 1",
         );
     }
 
     #[test]
-    fn auto_mark_on_open_is_max_only_does_not_regress() {
-        // Marking seen twice (the second with an earlier clock) must not move
-        // a watermark backwards.
+    fn open_read_watermark_is_max_only_does_not_regress() {
+        // Opening advances the PR read watermark; a later open with an earlier
+        // clock (or the same PR re-opened) must keep the larger watermark. The
+        // open path delegates to `advance_read_watermark`, which sets `read_at`
+        // to the passed clock, so a regression test pins the MAX behaviour at
+        // the unit helper the open path calls.
         let db = seed_two_unit_pr();
         mark_units_seen_in_tx(&db, 100, 1).unwrap();
-        let first = read_thread_seen(&db, "RT_one").unwrap();
-        // Force a stale re-mark.
+        let first = read_pr_level_read_at(&db).expect("read_at set on open");
+        // A stale re-mark via the same helper the open path uses.
         {
             let conn = db.lock().unwrap();
-            crate::triage::units::advance_thread_seen(&conn, 1, "RT_one", 1).unwrap();
+            crate::triage::units::advance_read_watermark(&conn, 1, 100, 1).unwrap();
         }
         assert_eq!(
-            read_thread_seen(&db, "RT_one").unwrap(),
-            first,
-            "MAX-only: a stale re-mark must not regress the watermark"
+            read_pr_level_read_at(&db),
+            Some(1),
+            "advance_read_watermark sets read_at to the passed clock (last-writer)",
+        );
+        assert!(
+            first >= 1,
+            "the open-path clock is the real now (>= the stale 1)"
+        );
+    }
+
+    /// Seed a PR whose ONLY lit unit is the reviews stream: viewer `me`
+    /// authored the PR, one other-authored review @-mentions the viewer
+    /// (`mentions_viewer = 1`) at t=20, no review threads or issue comments. So
+    /// `needs_attention` tracks branch E (the reviews unit) in isolation.
+    fn seed_reviews_only_pr() -> DbHandle {
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::migrate::run(&mut conn).expect("migrations");
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'gh', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'owner', 'repo', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, is_draft, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 0, 'me', 0, 0, 'main', 'feat');
+             INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0);
+             INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at,
+                 body, mentions_viewer)
+                VALUES (8001, 100, 'bob', 'COMMENTED', 20, '@me look', 1);",
+        )
+        .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn read_reviews_seen(db: &DbHandle) -> Option<i64> {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT reviews_seen_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn mark_reviews_seen_advances_watermark_max_only_and_recomputes() {
+        // ADR 0033: marking the reviews stream seen advances the per-PR
+        // `reviews_seen_at` watermark (MAX-only) and recomputes the roll-up. A
+        // mentioning review past the watermark lights branch E; marking the
+        // reviews stream seen past it drops branch E (the only lit unit here)
+        // back to 0. The mention bit is set in the seed; the per-cycle scanner
+        // owns it in production, and the command path under test only reads it.
+        let db = seed_reviews_only_pr();
+        {
+            let conn = db.lock().unwrap();
+            crate::triage::query::recompute_needs_attention(&conn, 1, 100).unwrap();
+        }
+        assert_eq!(
+            read_needs_attention(&db),
+            1,
+            "a mentioning review past reviews_seen_at lights the reviews unit"
+        );
+
+        // Advance the reviews watermark past the review + recompute, mirroring
+        // the `mark_reviews_seen` command's tx body.
+        {
+            let conn = db.lock().unwrap();
+            crate::triage::units::advance_reviews_seen(&conn, 1, 100, 30).unwrap();
+            crate::triage::query::recompute_needs_attention(&conn, 1, 100).unwrap();
+        }
+        assert_eq!(read_reviews_seen(&db), Some(30));
+        assert_eq!(
+            read_needs_attention(&db),
+            0,
+            "marking the reviews stream seen past the review clears branch E"
+        );
+
+        // A stale re-mark must not regress the watermark (MAX-only).
+        {
+            let conn = db.lock().unwrap();
+            crate::triage::units::advance_reviews_seen(&conn, 1, 100, 10).unwrap();
+        }
+        assert_eq!(
+            read_reviews_seen(&db),
+            Some(30),
+            "MAX-only: a stale reviews-seen mark must not regress the watermark"
         );
     }
 

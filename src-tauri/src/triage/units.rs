@@ -67,6 +67,31 @@ pub fn advance_general_stream_seen(
     Ok(())
 }
 
+/// Advance the per-PR reviews-stream seen watermark to at least `seen_at`
+/// (ADR 0033). Peer to [`advance_general_stream_seen`] for the reviews unit:
+/// the reviews unit (branch E) clears when this advances past the newest
+/// mentioning review. A mention-only unit, so there is no "my own comment"
+/// component - the watermark is `reviews_seen_at` alone.
+///
+/// MAX-only via `COALESCE(...)` so a NULL column (never marked) or a smaller
+/// stored value both yield `seen_at`, while a larger stored value is kept.
+/// No-op when the relation row is missing, matching
+/// [`advance_general_stream_seen`].
+pub fn advance_reviews_seen(
+    conn: &Connection,
+    account_id: i64,
+    pull_request_id: i64,
+    seen_at: i64,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE pull_request_viewer_relations
+            SET reviews_seen_at = MAX(COALESCE(reviews_seen_at, 0), ?3)
+          WHERE account_id = ?1 AND pull_request_id = ?2",
+        params![account_id, pull_request_id, seen_at],
+    )?;
+    Ok(())
+}
+
 /// Advance the PR-level read watermark so the dashboard's `unread` derivation
 /// (`read_at IS NULL OR pull_requests.updated_at > read_pr_updated_at`) clears
 /// when the viewer opens the PR. This is the "I have opened the latest of this
@@ -395,6 +420,52 @@ mod tests {
         assert_eq!(read(&conn), Some(250));
 
         advance_general_stream_seen(&conn, 1, 100, 90).unwrap();
+        assert_eq!(read(&conn), Some(250), "MAX-only: stale mark ignored");
+    }
+
+    #[test]
+    fn advance_reviews_seen_is_max_only_and_skips_missing_row() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, label, host, login, created_at)
+                VALUES (1, 'a', 'github.com', 'me', 0);
+             INSERT INTO repos (id, account_id, owner, name, visibility)
+                VALUES (10, 1, 'o', 'r', 'public');
+             INSERT INTO pull_requests
+                (id, repo_id, number, title, state, author_login,
+                 created_at, updated_at, base_ref, head_ref)
+                VALUES (100, 10, 1, 't', 'open', 'me', 0, 0, 'main', 'feat');",
+        )
+        .unwrap();
+
+        // No relation row yet: the UPDATE is a clean no-op.
+        advance_reviews_seen(&conn, 1, 100, 100).unwrap();
+
+        conn.execute(
+            "INSERT INTO pull_request_viewer_relations
+                (account_id, pull_request_id, relation_observed_at)
+                VALUES (1, 100, 0)",
+            [],
+        )
+        .unwrap();
+
+        let read = |conn: &Connection| -> Option<i64> {
+            conn.query_row(
+                "SELECT reviews_seen_at FROM pull_request_viewer_relations
+                  WHERE account_id = 1 AND pull_request_id = 100",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap()
+        };
+
+        advance_reviews_seen(&conn, 1, 100, 100).unwrap();
+        assert_eq!(read(&conn), Some(100));
+
+        advance_reviews_seen(&conn, 1, 100, 250).unwrap();
+        assert_eq!(read(&conn), Some(250));
+
+        advance_reviews_seen(&conn, 1, 100, 90).unwrap();
         assert_eq!(read(&conn), Some(250), "MAX-only: stale mark ignored");
     }
 

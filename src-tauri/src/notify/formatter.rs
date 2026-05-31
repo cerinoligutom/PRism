@@ -9,6 +9,8 @@
 //!   the PR title.
 //! * **General stream** -> title "Needs your attention", body "<owner>/<repo>
 //!   #<number> - General discussion".
+//! * **Review unit** -> title "Needs your attention", body "<owner>/<repo>
+//!   #<number> - mentioned you in a review".
 //! * **Review request** (role obligation) -> title "Review requested", body
 //!   "You've been asked to review <owner>/<repo> #<number>".
 //! * **Changes requested** (role obligation) -> title "Changes requested",
@@ -74,6 +76,10 @@ pub fn format_trigger(conn: &Connection, trigger: &NotificationTrigger) -> Optio
         NotificationUnitKind::General => (
             "Needs your attention".to_string(),
             format!("{owner}/{repo} #{number} - General discussion"),
+        ),
+        NotificationUnitKind::Review => (
+            "Needs your attention".to_string(),
+            format!("{owner}/{repo} #{number} - mentioned you in a review"),
         ),
         NotificationUnitKind::ReviewRequest => (
             "Review requested".to_string(),
