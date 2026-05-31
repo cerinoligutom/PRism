@@ -39,13 +39,6 @@ const needsAttentionChecked = computed<boolean>({
   },
 });
 
-const mentionChecked = computed<boolean>({
-  get: () => settingsStore.notifyOnMention,
-  set: (value) => {
-    void persistTriggerChange({ notify_on_mention: value });
-  },
-});
-
 const permissionDenied = computed(
   () => settingsStore.permissionState === "denied",
 );
@@ -109,10 +102,7 @@ async function handleMasterChange(next: boolean): Promise<void> {
 }
 
 async function persistTriggerChange(
-  patch: Partial<{
-    notify_on_needs_attention: boolean;
-    notify_on_mention: boolean;
-  }>,
+  patch: Partial<{ notify_on_needs_attention: boolean }>,
 ): Promise<void> {
   await persistAll(patch);
 }
@@ -121,7 +111,6 @@ async function persistAll(
   patch: Partial<{
     notifications_enabled: boolean;
     notify_on_needs_attention: boolean;
-    notify_on_mention: boolean;
     notification_retention_max: number;
   }>,
 ): Promise<void> {
@@ -132,8 +121,10 @@ async function persistAll(
         patch.notifications_enabled ?? current.notifications_enabled,
       notify_on_needs_attention:
         patch.notify_on_needs_attention ?? current.notify_on_needs_attention,
-      notify_on_mention:
-        patch.notify_on_mention ?? current.notify_on_mention,
+      // `notify_on_mention` is vestigial (the backend ignores it; ADR 0031)
+      // and no longer has a control - pass the stored value through unchanged
+      // so the write doesn't drop the field from the persisted struct.
+      notify_on_mention: current.notify_on_mention,
       // The auto-update + auto-archive fields belong to other settings
       // panels; pass them through unchanged so this trigger-toggle write
       // doesn't stomp on the user's other choices. Retention is owned by
@@ -255,8 +246,8 @@ onMounted(async () => {
       <div class="notifications-panel__section-head">
         <h3 class="notifications-panel__section-title">Desktop notifications</h3>
         <span class="notifications-panel__section-desc">
-          Get a notification when a pull request needs you. Pick which moments
-          warrant the interruption - the in-app sidebar dots stay on either way.
+          Get a notification when a pull request needs you - the in-app sidebar
+          dots stay on either way.
         </span>
       </div>
 
@@ -278,29 +269,15 @@ onMounted(async () => {
 
         <div class="set-row" :class="{ 'set-row--muted': !masterChecked }">
           <div>
-            <div class="set-row__name">A PR starts needing you</div>
+            <div class="set-row__name">Notify when a PR needs me</div>
             <div class="set-row__desc">
-              The moment a pull request first lands in your needs-attention list.
+              When a conversation you're in moves, or you're asked to review.
             </div>
           </div>
           <PRismSwitch
             v-model="needsAttentionChecked"
             :disabled="!masterChecked"
-            aria-label="Toast when a PR newly needs your attention"
-          />
-        </div>
-
-        <div class="set-row" :class="{ 'set-row--muted': !masterChecked }">
-          <div>
-            <div class="set-row__name">Someone @-mentions you</div>
-            <div class="set-row__desc">
-              Each new mention in a pull request you're following.
-            </div>
-          </div>
-          <PRismSwitch
-            v-model="mentionChecked"
-            :disabled="!masterChecked"
-            aria-label="Toast when you're mentioned"
+            aria-label="Notify when a PR needs me"
           />
         </div>
       </div>

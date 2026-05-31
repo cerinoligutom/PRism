@@ -20,10 +20,12 @@ import PRismAvatarStack from "@/components/ui/PRismAvatarStack.vue";
 import PRismCheckbox from "@/components/ui/PRismCheckbox.vue";
 import PRismRelativeTime from "@/components/ui/PRismRelativeTime.vue";
 import PRismTooltip from "@/components/ui/PRismTooltip.vue";
+import { SIGNAL_COPY } from "@/components/signals/signalCopy";
 import ReviewerStack from "./ReviewerStack.vue";
 import CiBadge from "./CiBadge.vue";
 import MergeableBadge from "./MergeableBadge.vue";
 import ThreadsBar from "./ThreadsBar.vue";
+import MyReviewStateIcon from "./icons/MyReviewStateIcon.vue";
 
 interface Props {
   pullRequest: DashboardPullRequest;
@@ -103,66 +105,23 @@ const emit = defineEmits<{
 
 const toastStore = useToastStore();
 
-type RowStripClass =
-  | "row-strip-needs"
-  | "row-strip-changes"
-  | "row-strip-approved"
-  | "row-strip-draft"
-  | "row-strip-stale"
-  | "row-strip-none";
-
 const STALE_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
 /**
  * Shared reactive unix-seconds ref - one ticker across every row, broadcast
- * at 60s. Reading from this inside computeds means the strip / stale label
- * flip on clock progression alone, with no surrounding store change needed.
+ * at 60s. Reading from this inside computeds means the stale label flips on
+ * clock progression alone, with no surrounding store change needed.
  */
 const nowSeconds = useNowSeconds();
 
 /**
- * Left strip colour. Mirrors the priority order in the artboard:
- *   draft > changes-requested > stale (no activity 7d+) > needs-review (you)
- *     > approved > none.
- *
- * Stale is detected from `updated_at` because M2 doesn't track per-account
- * read state yet; M4 will refine `needs-attention` and recompute the strip.
+ * Copy for the my-review-state glyph (label + one-line explanation), read from
+ * the shared `SIGNAL_COPY` map so the row tooltip and the signals guide (#436)
+ * can't drift. See ADR 0031 ("Left-edge encoding").
  */
-const stripClass = computed<RowStripClass>(() => {
-  const pr = props.pullRequest;
-  if (pr.is_draft) return "row-strip-draft";
-  if (pr.review_decision === "CHANGES_REQUESTED") return "row-strip-changes";
-
-  const updatedSeconds = nowSeconds.value - pr.updated_at;
-  if (updatedSeconds > STALE_THRESHOLD_SECONDS) return "row-strip-stale";
-
-  if (props.needsAttention) return "row-strip-needs";
-  const youPending = pr.reviewers.some(
-    (r) => r.is_you && r.state === "pending",
-  );
-  if (youPending) return "row-strip-needs";
-
-  if (pr.review_decision === "APPROVED") return "row-strip-approved";
-  return "row-strip-none";
-});
-
-const stripTooltip = computed<string>(() => {
-  switch (stripClass.value) {
-    case "row-strip-draft":
-      return "Draft";
-    case "row-strip-changes":
-      return "Changes requested";
-    case "row-strip-stale":
-      return "Stale (no activity 7d+)";
-    case "row-strip-needs":
-      return "Needs your review";
-    case "row-strip-approved":
-      return "Approved";
-    case "row-strip-none":
-    default:
-      return "";
-  }
-});
+const myReviewCopy = computed(
+  () => SIGNAL_COPY.myReview[props.pullRequest.my_review_state],
+);
 
 const branchLabel = computed<string>(() => props.pullRequest.head_ref);
 
@@ -396,13 +355,13 @@ function onSelectKey(event: KeyboardEvent): void {
     :class="[
       'pr-row',
       `pr-row--${density}`,
-      needsAttention && 'pr-row--attention',
       unread && 'pr-row--unread',
       focused && 'pr-row--focused',
       selectionActive && 'pr-row--selection-active',
       selected && 'pr-row--selected',
     ]"
     :data-row-pr-id="pullRequest.id"
+    :data-needs-attention="needsAttention ? 'true' : undefined"
     role="button"
     tabindex="0"
     @click="onClick"
@@ -421,99 +380,42 @@ function onSelectKey(event: KeyboardEvent): void {
       />
     </span>
 
-    <span
-      class="pr-row__dot"
-      :aria-label="unread ? 'Unread' : undefined"
-      :aria-hidden="unread ? undefined : 'true'"
-    ></span>
-
     <PRismTooltip
-      :text="stripTooltip"
-      :disabled="stripClass === 'row-strip-none'"
+      :disabled="!needsAttention"
       side="right"
       as-child
     >
-      <div
-        :class="['pr-row__state', stripClass]"
-        :aria-label="stripTooltip || undefined"
-        :aria-hidden="stripClass === 'row-strip-none' ? 'true' : undefined"
+      <span
+        class="pr-row__dot"
+        :aria-label="needsAttention ? SIGNAL_COPY.attention.label : undefined"
+        :aria-hidden="needsAttention ? undefined : 'true'"
+      ></span>
+      <template #content>
+        <div class="pr-row__signal-tip">
+          <span class="pr-row__signal-tip-label">{{ SIGNAL_COPY.attention.label }}</span>
+          <span class="pr-row__signal-tip-desc">{{ SIGNAL_COPY.attention.description }}</span>
+        </div>
+      </template>
+    </PRismTooltip>
+
+    <PRismTooltip
+      :disabled="pullRequest.my_review_state === 'none'"
+      side="right"
+      as-child
+    >
+      <span
+        :class="['pr-row__state', `my-review--${pullRequest.my_review_state}`]"
+        :aria-label="pullRequest.my_review_state === 'none' ? undefined : myReviewCopy.label"
+        :aria-hidden="pullRequest.my_review_state === 'none' ? 'true' : undefined"
       >
-        <svg
-          v-if="stripClass === 'row-strip-needs'"
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M1.5 8s2.5-5 6.5-5 6.5 5 6.5 5-2.5 5-6.5 5S1.5 8 1.5 8Z" />
-          <circle cx="8" cy="8" r="2" />
-        </svg>
-        <svg
-          v-else-if="stripClass === 'row-strip-changes'"
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="8" cy="8" r="6.25" />
-          <path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5" />
-        </svg>
-        <svg
-          v-else-if="stripClass === 'row-strip-approved'"
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="8" cy="8" r="6.25" />
-          <path d="M5.25 8.25l2 2 3.5-4" />
-        </svg>
-        <svg
-          v-else-if="stripClass === 'row-strip-draft'"
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8Z" />
-          <path d="M10 4l2 2" />
-        </svg>
-        <svg
-          v-else-if="stripClass === 'row-strip-stale'"
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="8" cy="8" r="6.25" />
-          <path d="M8 4.5V8l2.25 1.5" />
-        </svg>
-      </div>
+        <MyReviewStateIcon :state="pullRequest.my_review_state" />
+      </span>
+      <template #content>
+        <div class="pr-row__signal-tip">
+          <span class="pr-row__signal-tip-label">{{ myReviewCopy.label }}</span>
+          <span class="pr-row__signal-tip-desc">{{ myReviewCopy.description }}</span>
+        </div>
+      </template>
     </PRismTooltip>
 
     <div class="pr-row__num">#{{ pullRequest.number }}</div>
@@ -836,7 +738,7 @@ function onSelectKey(event: KeyboardEvent): void {
 <style scoped>
 .pr-row {
   position: relative;
-  /* Columns: [select] [dot] [state icon + edge] [#num] [title] [accounts] */
+  /* Columns: [select] [attention dot] [my-review icon] [#num] [title] [accounts] */
   /* [threads] [reviewers] [ci] [time] [unravel] [github] [kebab] */
   display: grid;
   grid-template-columns: 20px 10px 22px 54px 1fr 64px 144px 180px 80px 80px 24px 24px 28px;
@@ -869,14 +771,6 @@ function onSelectKey(event: KeyboardEvent): void {
   height: var(--row-h-roomy);
 }
 
-.pr-row--attention {
-  background: var(--attention-tint);
-}
-
-.pr-row--attention:hover {
-  background: var(--attention-tint-hover);
-}
-
 /* Keyboard-targeted row. The inset outline reads as a focus ring without
  * stealing space from the row's grid, so the highlight doesn't shift the
  * adjacent rows. The browser's `:focus-visible` ring stacks on top when
@@ -885,10 +779,6 @@ function onSelectKey(event: KeyboardEvent): void {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
   background: var(--bg-2);
-}
-
-.pr-row--focused.pr-row--attention {
-  background: var(--attention-tint-hover);
 }
 
 /* Bulk-select checkbox cell (#331). Hidden by default; reveals on row hover
@@ -917,8 +807,9 @@ function onSelectKey(event: KeyboardEvent): void {
   background: var(--accent-bg);
 }
 
-/* Leftmost unread dot. Sits in its own grid cell so read / unread rows align
- * identically; only its background switches between transparent and the
+/* Leftmost attention dot - the single attention affordance, bound to the
+ * `needs_attention` roll-up (ADR 0031). Sits in its own grid cell so rows
+ * align identically; only its background switches between transparent and the
  * accent token. Centred inside the 10px column. */
 .pr-row__dot {
   width: 7px;
@@ -928,13 +819,13 @@ function onSelectKey(event: KeyboardEvent): void {
   justify-self: center;
 }
 
-.pr-row--unread .pr-row__dot {
+.pr-row[data-needs-attention="true"] .pr-row__dot {
   background: var(--accent-strong);
 }
 
-/* `.pr-row__state` shape + colour variants live in
- * `assets/styles/pr-status.css` so the dashboard legend tooltip renders the
- * same swatch without re-declaring the palette. */
+/* `.pr-row__state` shape + `.my-review--*` colour variants live in
+ * `assets/styles/pr-status.css` so the dashboard legend renders the same
+ * swatch without re-declaring the palette. */
 
 .pr-row__num {
   font-family: var(--font-mono);
@@ -1391,5 +1282,28 @@ function onSelectKey(event: KeyboardEvent): void {
 
 .pr-row__lines-tooltip-label {
   color: var(--text-mute);
+}
+
+/* Two-line signal tooltip (attention dot + my-review-state glyph): a terse
+ * label over the one-sentence explanation pulled from `signalCopy.ts`. In the
+ * unscoped block because Reka's TooltipPortal teleports the content to
+ * <body>, where scoped data-v-* selectors don't follow. */
+.pr-row__signal-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 220px;
+}
+
+.pr-row__signal-tip-label {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.pr-row__signal-tip-desc {
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  line-height: 1.4;
 }
 </style>
