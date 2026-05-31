@@ -199,6 +199,12 @@ onBeforeUnmount(() => {
           :aria-label="`${notifications.unreadCount} unread notifications`"
         >{{ notifications.unreadCount > 99 ? "99+" : notifications.unreadCount }}</span>
       </RouterLink>
+      <RouterLink to="/signals" class="nav-item" active-class="active">
+        <span class="nav-icon">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5" /><line x1="8" y1="11.25" x2="8" y2="7.25" /><circle cx="8" cy="5" r="0.6" fill="currentColor" stroke="none" /></svg>
+        </span>
+        How signals work
+      </RouterLink>
       <RouterLink to="/settings" class="nav-item" :class="{ active: $route.name?.toString().startsWith('settings') }">
         <span class="nav-icon">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M13 8a5 5 0 01-.1 1l1.4 1.1-1 1.7-1.7-.5a5 5 0 01-1.7 1L9.5 14h-2L7 12.3a5 5 0 01-1.7-1l-1.7.5-1-1.7L3 9a5 5 0 01-.1-1 5 5 0 01.1-1L1.6 5.9l1-1.7 1.7.5a5 5 0 011.7-1L6.5 2h2l.5 1.7a5 5 0 011.7 1l1.7-.5 1 1.7L11.9 7c.1.3.1.7.1 1z" /></svg>

@@ -631,6 +631,9 @@ watch(
                 </span>
               </template>
             </PRismIconLegend>
+            <RouterLink class="legend-footer-link" :to="{ name: 'signals', hash: '#attention' }">
+              See how signals work &rarr;
+            </RouterLink>
           </template>
         </PRismPopover>
       </div>
