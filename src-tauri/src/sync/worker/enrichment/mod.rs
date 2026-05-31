@@ -110,21 +110,7 @@ pub fn write_pr_updates(
         )?;
 
         if let Some(rr) = d.review_requests.as_ref() {
-            tx.execute(
-                "DELETE FROM requested_reviewers WHERE pull_request_id = ?1",
-                params![pr_id],
-            )?;
-            for entry in &rr.nodes {
-                let Some((reviewer_type, login)) = reviewer_type_and_login(entry) else {
-                    continue;
-                };
-                tx.execute(
-                    "INSERT OR IGNORE INTO requested_reviewers
-                        (pull_request_id, login, reviewer_type)
-                        VALUES (?1, ?2, ?3)",
-                    params![pr_id, login, reviewer_type],
-                )?;
-            }
+            merge_requested_reviewers(&tx, pr_id, &rr.nodes)?;
         }
 
         write_review_threads(&tx, pr_id, &d.review_threads.nodes)?;
@@ -243,6 +229,73 @@ fn compute_ci_rollup(detail: &crate::github::graphql::PullRequestDetail) -> CiRo
         total: Some(rollup.contexts.total_count),
         passing: Some(passing),
     }
+}
+
+/// Rewrite the PR's `requested_reviewers` set to match the upstream nodes,
+/// preserving `requested_at` across the per-cycle wipe-rewrite (ADR 0033 /
+/// migration 0028). A login still requested keeps its original onset; a
+/// newly-added reviewer gets the current cycle clock. The roll-up's branch C
+/// gates on `requested_at > read_at`, so preserving the onset is what stops the
+/// review-owed dot re-lighting every cycle after the viewer opens the PR, while
+/// a genuinely-fresh request still re-arms it.
+///
+/// `requested_at` is read into a `(reviewer_type, login) -> requested_at` map
+/// before the delete because the wipe drops the prior rows; the UNIQUE key on
+/// `(pull_request_id, reviewer_type, login)` makes the pair the stable identity
+/// across cycles even when the row id churns.
+fn merge_requested_reviewers(
+    tx: &rusqlite::Transaction<'_>,
+    pr_id: i64,
+    nodes: &[crate::github::graphql::ReviewRequest],
+) -> Result<(), rusqlite::Error> {
+    use std::collections::HashMap;
+
+    let mut prior: HashMap<(String, String), Option<i64>> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT reviewer_type, login, requested_at
+               FROM requested_reviewers
+              WHERE pull_request_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![pr_id], |row| {
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (key, requested_at) = row?;
+            prior.insert(key, requested_at);
+        }
+    }
+
+    tx.execute(
+        "DELETE FROM requested_reviewers WHERE pull_request_id = ?1",
+        params![pr_id],
+    )?;
+
+    let cycle_now = super::unix_now();
+    for entry in nodes {
+        let Some((reviewer_type, login)) = reviewer_type_and_login(entry) else {
+            continue;
+        };
+        // A login still requested keeps its onset; a new one starts at the
+        // cycle clock. A prior row whose `requested_at` was somehow NULL
+        // (pre-0028 row the backfill missed) also adopts the cycle clock so
+        // branch C can light for it.
+        let requested_at = prior
+            .get(&(reviewer_type.to_string(), login.to_string()))
+            .copied()
+            .flatten()
+            .unwrap_or(cycle_now);
+        tx.execute(
+            "INSERT OR IGNORE INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (?1, ?2, ?3, ?4)",
+            params![pr_id, login, reviewer_type, requested_at],
+        )?;
+    }
+    Ok(())
 }
 
 /// Map a `ReviewRequest` node to the `(reviewer_type, login)` pair persisted

@@ -37,6 +37,7 @@ const MIGRATION_SOURCES: &[&str] = &[
     include_str!("../../migrations/0025_conversation_unit_read_state.sql"),
     include_str!("../../migrations/0026_role_obligation_dispatch.sql"),
     include_str!("../../migrations/0027_drop_dead_notification_columns.sql"),
+    include_str!("../../migrations/0028_reviews_unit_and_obligation_onset.sql"),
 ];
 
 /// Migration filenames in apply order, kept in lockstep with
@@ -73,6 +74,7 @@ const MIGRATION_FILENAMES: &[&str] = &[
     "0025_conversation_unit_read_state.sql",
     "0026_role_obligation_dispatch.sql",
     "0027_drop_dead_notification_columns.sql",
+    "0028_reviews_unit_and_obligation_onset.sql",
 ];
 
 /// Build the migration set. The underlying `Migrations` is cheap to construct

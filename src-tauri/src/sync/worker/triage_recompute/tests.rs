@@ -448,11 +448,14 @@ fn needs_attention_fires_when_viewer_is_requested_reviewer() {
     let (db, repo_id, pr_id) = seed_db_with_pr();
     seed_relation(&db, 1, pr_id);
 
+    // ADR 0033: branch C gates on `requested_at > read_at`. The seed relation
+    // row leaves read_at NULL (coalesces to 0), so a positive onset lights it.
     db.lock()
         .unwrap()
         .execute_batch(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'me', 'user');",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'me', 'user', 1000);",
         )
         .unwrap();
 
@@ -485,14 +488,19 @@ fn needs_attention_fires_on_changes_requested_for_pr_author() {
     let (db, repo_id, pr_id) = seed_db_with_pr();
     seed_relation(&db, 1, pr_id);
 
+    // ADR 0033: branch D requires a synced blocking review (state +
+    // positive submitted_at) past the open watermark, not just the PR-level
+    // decision. The seed relation row's read_at is NULL (coalesces to 0).
     db.lock()
         .unwrap()
-        .execute(
+        .execute_batch(
             "UPDATE pull_requests
                 SET author_login = 'me',
                     review_decision = 'CHANGES_REQUESTED'
-              WHERE id = ?1",
-            params![pr_id],
+              WHERE id = 100;
+             INSERT INTO reviews
+                (id, pull_request_id, reviewer_login, state, submitted_at)
+                VALUES (9001, 100, 'bob', 'CHANGES_REQUESTED', 1000);",
         )
         .unwrap();
 
@@ -529,12 +537,14 @@ fn needs_attention_clears_when_signal_disappears() {
     let (db, repo_id, pr_id) = seed_db_with_pr();
     seed_relation(&db, 1, pr_id);
 
-    // Cycle 1: fire on requested-reviewer signal.
+    // Cycle 1: fire on requested-reviewer signal (ADR 0033: requested_at >
+    // read_at; the seed relation row's read_at is NULL -> 0).
     db.lock()
         .unwrap()
         .execute_batch(
-            "INSERT INTO requested_reviewers (pull_request_id, login, reviewer_type)
-                VALUES (100, 'me', 'user');",
+            "INSERT INTO requested_reviewers
+                (pull_request_id, login, reviewer_type, requested_at)
+                VALUES (100, 'me', 'user', 1000);",
         )
         .unwrap();
     write_pr_updates(&db, 1, repo_id, pr_id, None, None).unwrap();

@@ -113,6 +113,7 @@ pub(super) fn scan_mentions_and_recompute_attention(
     // statement from overlapping the UPDATE.
     let mut matched_review_ids: Vec<i64> = Vec::new();
     let mut matched_issue_ids: Vec<i64> = Vec::new();
+    let mut matched_review_body_ids: Vec<i64> = Vec::new();
     {
         let mut review_stmt = tx.prepare(
             "SELECT c.id, c.body
@@ -150,6 +151,30 @@ pub(super) fn scan_mentions_and_recompute_attention(
             }
         }
     }
+    {
+        // ADR 0033: a formal review body can @-mention you; the reviews unit
+        // folds that into involvement the same way review / issue comments do.
+        // `reviews` keys on `reviewer_login` / `submitted_at` and has a nullable
+        // body, so the scan filters NULL bodies out.
+        let mut review_body_stmt = tx.prepare(
+            "SELECT r.id, r.body
+               FROM reviews r
+              WHERE r.pull_request_id = ?1
+                AND r.reviewer_login != ?2
+                AND COALESCE(r.submitted_at, 0) > ?3
+                AND r.body IS NOT NULL",
+        )?;
+        let matches = review_body_stmt
+            .query_map(params![pr_id, viewer_login, watermark], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+        for matched in matches {
+            let (id, body) = matched?;
+            if mentions_viewer(&body, &viewer_login) {
+                matched_review_body_ids.push(id);
+            }
+        }
+    }
 
     // Set the per-comment mention bit on each matched row. ADR 0031: a mention
     // is one reason a unit involves the viewer, so the roll-up reads this bit
@@ -163,6 +188,12 @@ pub(super) fn scan_mentions_and_recompute_attention(
     for id in &matched_issue_ids {
         tx.execute(
             "UPDATE issue_comments SET mentions_viewer = 1 WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    for id in &matched_review_body_ids {
+        tx.execute(
+            "UPDATE reviews SET mentions_viewer = 1 WHERE id = ?1",
             params![id],
         )?;
     }
