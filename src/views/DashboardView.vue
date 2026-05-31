@@ -111,15 +111,6 @@ const activeChipsList = computed<readonly ChipKey[]>(() =>
   Array.from(dashboard.activeChips as Set<ChipKey>),
 );
 
-// Issue #336: gate the "Mark all read" action on the view + chip filter
-// having at least one unread row. Reads `pullRequests` (the backend's
-// view + chip filtered list) instead of `filteredPullRequests` because the
-// in-memory search is client-side; the Rust command doesn't know about
-// search, so the button state should match what the backend would mark.
-const hasUnreadInView = computed<boolean>(() =>
-  dashboard.pullRequests.some((pr: DashboardPullRequest) => pr.unread),
-);
-
 // View labels are nicer than the kebab keys when surfaced in copy ("12 of
 // your authored PRs are hidden"). Falls back to the kebab key if a new view
 // lands without a label entry.
@@ -192,10 +183,6 @@ const rowLegendSections = [
       { id: "review-approved", label: SIGNAL_COPY.myReview.approved.label },
       { id: "review-commented", label: SIGNAL_COPY.myReview.commented.label },
     ],
-  },
-  {
-    title: "Unread",
-    rows: [{ id: "unread", label: "New activity since you last looked" }],
   },
   {
     title: "Threads",
@@ -285,23 +272,6 @@ function onClearAll(): void {
   dashboard.clearFilters();
 }
 
-function onMarkUnread(pr: DashboardPullRequest): void {
-  // ADR 0016: pass `null` so the Rust command fans the flip across every
-  // relation owner. In single-account-filter mode the relation set is the
-  // active account; in unified mode it's every in-scope account that has a
-  // relation row for the PR. Both surfaces converge on a single round-trip
-  // that matches the merged row's read semantics.
-  void dashboard.markPullRequestUnread(pr.id, null);
-}
-
-function onMarkAllRead(): void {
-  // Issue #336: the store's `markViewRead` carries the active view + chips +
-  // account scope to the Tauri command and reconciles via the post-write
-  // reload. No confirmation dialog - the per-row unread toggle is the
-  // reversal path.
-  void dashboard.markViewRead();
-}
-
 function onArchive(pr: DashboardPullRequest): void {
   // ADR 0018 + ADR 0016: the Tauri command takes one (account, PR) per call,
   // so the store fans out across the row's `account_ids`. In default views
@@ -335,10 +305,6 @@ function onCancelSelection(): void {
 
 function onArchiveSelected(): void {
   void dashboard.archiveSelected();
-}
-
-function onMarkSelectedRead(): void {
-  void dashboard.markSelectedRead();
 }
 
 /**
@@ -603,9 +569,6 @@ watch(
                 <span v-else-if="id === 'review-commented'" class="pr-row__state my-review--commented" aria-hidden="true">
                   <MyReviewStateIcon state="commented" />
                 </span>
-                <span v-else-if="id === 'unread'" class="dashboard-legend__unread-swatch" aria-hidden="true">
-                  <span class="dashboard-legend__unread-title">Aa</span>
-                </span>
                 <span v-else-if="id === 'unresolved-uninvolved'" class="threads-bar__badge threads-bar__badge--unresolved-uninvolved" aria-hidden="true">
                   <ThreadStateIcon state="unresolved" :size="12" />
                 </span>
@@ -667,21 +630,6 @@ watch(
           @update:direction="onSortDirectionUpdate"
         />
         <div class="dashboard__chips-spacer" />
-        <PRismTooltip
-          :text="hasUnreadInView
-            ? 'Clear unread and mention dots on every PR in this view.'
-            : 'No unread PRs to mark in this view.'"
-          :as-child="true"
-        >
-          <button
-            type="button"
-            class="btn btn-sm"
-            :disabled="!hasUnreadInView || isFetching"
-            @click="onMarkAllRead"
-          >
-            Mark all read
-          </button>
-        </PRismTooltip>
       </div>
     </header>
 
@@ -810,14 +758,6 @@ watch(
         </span>
         <div class="dashboard__bulk-actions">
           <PRismButton
-            variant="ghost"
-            size="sm"
-            :disabled="isFetching"
-            @click="onMarkSelectedRead"
-          >
-            Mark as read
-          </PRismButton>
-          <PRismButton
             variant="primary"
             size="sm"
             :disabled="isFetching"
@@ -861,7 +801,6 @@ watch(
             :key="`${pr.account_ids.join('-')}:${pr.id}`"
             :pull-request="pr"
             :density="dashboard.density"
-            :unread="pr.unread"
             :needs-attention="pr.needs_attention"
             :accounts-by-id="accountMarkersById"
             :single-account-scope="isSingleAccountScope"
@@ -870,7 +809,6 @@ watch(
             :selected="selectedRowIdsSet.has(pr.id)"
             :selection-active="hasSelection"
             @open="openPullRequest"
-            @mark-unread="onMarkUnread"
             @archive="onArchive"
             @unarchive="onUnarchive"
             @toggle-select="onToggleSelect"
@@ -1149,7 +1087,7 @@ watch(
 <!--
   Unscoped because Reka's `PopoverPortal` teleports legend content out of the
   scoped-CSS attribute boundary. The container / section / row scaffold now
-  comes from `PRismIconLegend`; only the dashboard-specific unread swatch
+  comes from `PRismIconLegend`; only the dashboard-specific attention swatch
   survives here. `.pr-row__state` shape + variant palettes come from
   `assets/styles/pr-status.css`; ThreadsBar bucket badges come from
   `ThreadsBar.vue`'s own unscoped block (loaded on every PR row).
@@ -1157,8 +1095,7 @@ watch(
 <style>
 /* Attention cue mirrors the dashboard row's 10px column + 7px centred accent
  * dot so the swatch looks like the real thing. */
-.dashboard-legend__attention-swatch,
-.dashboard-legend__unread-swatch {
+.dashboard-legend__attention-swatch {
   width: 22px;
   height: 22px;
   display: inline-flex;
@@ -1172,14 +1109,5 @@ watch(
   height: 7px;
   border-radius: 50%;
   background: var(--accent-strong);
-}
-
-/* Unread now reads as a bolder title (the dot is the attention affordance,
- * ADR 0031), so the swatch shows weighted glyphs rather than a dot. */
-.dashboard-legend__unread-title {
-  font-size: var(--fs-13);
-  font-weight: 600;
-  color: var(--text-strong);
-  line-height: 1;
 }
 </style>

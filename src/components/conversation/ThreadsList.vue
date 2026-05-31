@@ -128,11 +128,20 @@ function isExpanded(id: number): boolean {
   return expanded.value.has(id);
 }
 
-function toggleExpanded(id: number): void {
+function toggleExpanded(thread: PullRequestThread): void {
+  const id = thread.id;
   const next = new Set(expanded.value);
-  if (next.has(id)) next.delete(id);
+  const wasExpanded = next.has(id);
+  if (wasExpanded) next.delete(id);
   else next.add(id);
   expanded.value = next;
+  // ADR 0033 expand-to-seen: expanding an unread thread is a deliberate
+  // interaction, so mark it seen via the same event the manual button emits.
+  // Fires only on collapsed -> expanded, and no-ops once the thread is already
+  // seen. Collapsing never clears anything.
+  if (!wasExpanded && props.canMarkSeen && thread.unread) {
+    emit("mark-seen", thread);
+  }
 }
 
 function threadKey(t: PullRequestThread): string {
@@ -260,9 +269,9 @@ async function openCommentOnGitHub(
         role="button"
         tabindex="0"
         :aria-expanded="isExpanded(thread.id)"
-        @click="toggleExpanded(thread.id)"
-        @keydown.enter.prevent="toggleExpanded(thread.id)"
-        @keydown.space.prevent="toggleExpanded(thread.id)"
+        @click="toggleExpanded(thread)"
+        @keydown.enter.prevent="toggleExpanded(thread)"
+        @keydown.space.prevent="toggleExpanded(thread)"
       >
         <PRismTooltip :as-child="true">
           <span
@@ -479,7 +488,7 @@ async function openCommentOnGitHub(
                 class="thread-card__icon-btn"
                 :aria-expanded="isExpanded(thread.id)"
                 :aria-label="expandTooltip(thread)"
-                @click.stop="toggleExpanded(thread.id)"
+                @click.stop="toggleExpanded(thread)"
               >
                 <svg
                   width="14"

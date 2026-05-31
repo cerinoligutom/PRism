@@ -651,82 +651,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   /**
-   * Flip a PR back to unread. `accountId = null` (ADR 0016) tells the Rust
-   * command to fan the unread flip out across every relation owner so a
-   * merged dashboard row in unified mode flips uniformly. `accountId` set to
-   * a specific id keeps the existing single-account semantic (used when the
-   * caller explicitly wants to flip one account's read state without
-   * touching the others - e.g. a future "mark unread on this account only"
-   * affordance).
-   *
-   * The unified-row affordance defaults to `null`: a user reads "the PR",
-   * not "the PR through account X", and the merged row's unread dot should
-   * settle the same way the merge aggregated it.
-   */
-  async function markPullRequestUnread(
-    pullRequestId: number,
-    accountId: number | null,
-  ): Promise<void> {
-    // Optimistically flip the dot back on while the Rust write + recompute
-    // round-trips. The follow-up reload reconciles `needs_attention` and the
-    // canonical mention counter; the dot itself is settled by this flip.
-    markRowUnreadOptimistically(pullRequestId);
-    try {
-      await invoke("mark_pr_unread", { pullRequestId, accountId });
-    } finally {
-      // The backend recomputes `needs_attention` inside the same transaction,
-      // so a single reload puts both the dot and any tint back in step.
-      await load();
-    }
-  }
-
-  /**
-   * Mark every PR in the active view + chip filter as read (issue #336). The
-   * backend takes the same `(view, chips, account_id)` tuple the dashboard
-   * list query uses, so the user marks what they see.
-   *
-   * Optimistic flip: every visible row's `unread` flag is cleared in-memory
-   * before the round-trip lands. The post-write reload reconciles
-   * `needs_attention`; the next sync cycle can re-raise an unread state if a
-   * comment lands between the click and the reload, which is the same race the
-   * per-row flip already accepts.
-   *
-   * Returns the number of distinct PRs the backend touched - the caller can
-   * fold the value into a toast or status copy without reading it out of the
-   * store.
-   */
-  async function markViewRead(): Promise<number> {
-    const targetView = view.value;
-    const chips = Array.from(activeChips.value);
-    markVisibleRowsReadOptimistically();
-    try {
-      const marked = await invoke<number>("mark_view_read", {
-        view: targetView,
-        accountId: accountScope.value,
-        chips,
-      });
-      return marked;
-    } finally {
-      await load();
-    }
-  }
-
-  /**
-   * Optimistically flip the in-memory `unread` flag on every visible row. The
-   * reload that follows reads the canonical state; this keeps the dashboard
-   * from showing stale dots in the window between the invoke and the refresh.
-   */
-  function markVisibleRowsReadOptimistically(): void {
-    let touched = false;
-    const next = pullRequests.value.map((row) => {
-      if (!row.unread) return row;
-      touched = true;
-      return { ...row, unread: false };
-    });
-    if (touched) pullRequests.value = next;
-  }
-
-  /**
    * Archive a PR across the relations the viewer holds for it. The Tauri
    * command takes a single (account, PR) pair so the fan-out happens here:
    * one parallel invoke per relation owner mirrors the Rust mark-read multi
@@ -938,35 +862,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  /**
-   * Mark every currently-selected PR as read. Reads from `selectedRows` so
-   * the action works across view switches - a PR staged in Authored still
-   * marks-read after the user has flipped to Watching. Fans the write out
-   * per PR with `account_id: null` so the Rust command settles every
-   * relation owner in one transaction, matching the per-row "Mark unread"
-   * path in reverse.
-   *
-   * Optimistic flip: every selected row's `unread` flag clears locally before
-   * the round-trip lands so the dots disappear in the same paint as the click.
-   * The post-write reload reconciles `needs_attention` and any race-window
-   * state.
-   */
-  async function markSelectedRead(): Promise<void> {
-    if (selectedRows.value.size === 0) return;
-    const selectedIds = Array.from(selectedRows.value.keys());
-    for (const id of selectedIds) markRowReadOptimistically(id);
-    try {
-      await Promise.allSettled(
-        selectedIds.map((pullRequestId) =>
-          invoke("mark_pr_read", { pullRequestId, accountId: null }),
-        ),
-      );
-      clearSelection();
-    } finally {
-      await load();
-    }
-  }
-
   async function runArchiveFanOut(
     command: "mark_pr_archived" | "mark_pr_unarchived",
     pullRequestId: number,
@@ -1025,17 +920,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
     optimisticallyArchivedIds.value = next;
   }
 
-  function markRowUnreadOptimistically(pullRequestId: number): void {
-    let touched = false;
-    const next = pullRequests.value.map((row) => {
-      if (row.id !== pullRequestId) return row;
-      if (row.unread) return row;
-      touched = true;
-      return { ...row, unread: true };
-    });
-    if (touched) pullRequests.value = next;
-  }
-
   /**
    * Open a PR via the active detail surface from the appearance store.
    * - `'drawer'` sets `expandedPullRequestId` so the drawer host mounts it.
@@ -1046,11 +930,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
    *   persisted value sneaks through.
    */
   function openPullRequest(pr: DashboardPullRequest, router: Router): void {
-    // Both surfaces (drawer + route) drive `fetch_pr_conversation` on mount,
-    // which runs `auto_mark_read` on the Rust side. Optimistically flip the
-    // local row so the dot clears in the same paint as the surface opens;
-    // the eventual reload reconciles if the write fails.
-    markRowReadOptimistically(pr.id);
+    // ADR 0033: opening no longer touches any local read state. The drawer /
+    // route mounts drive `load_pr_conversation`, which advances the obligation
+    // open-watermark and emits `dashboard://refresh`; the shared listener
+    // reloads the row so the dot reconciles from canonical state.
     if (appearance.prDetailSurface === "route") {
       void router.push({
         name: "pr-detail",
@@ -1059,20 +942,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
       return;
     }
     expandedPullRequestId.value = pr.id;
-  }
-
-  function markRowReadOptimistically(pullRequestId: number): void {
-    // Replace the array reference so Vue's shallow ref reactivity fires.
-    // The next sync-cycle reload re-reads the canonical state from SQL; this
-    // optimistic flip keeps the dot from lingering between open and reload.
-    let touched = false;
-    const next = pullRequests.value.map((row) => {
-      if (row.id !== pullRequestId) return row;
-      if (!row.unread) return row;
-      touched = true;
-      return { ...row, unread: false };
-    });
-    if (touched) pullRequests.value = next;
   }
 
   function closeExpanded(): void {
@@ -1192,8 +1061,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
     clearChips,
     setSearchQuery,
     clearFilters,
-    markPullRequestUnread,
-    markViewRead,
     archive,
     unarchive,
     archiveError,
@@ -1207,7 +1074,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
     deselectMany,
     clearSelection,
     archiveSelected,
-    markSelectedRead,
     openPullRequest,
     openPrFromExternal,
     closeExpanded,

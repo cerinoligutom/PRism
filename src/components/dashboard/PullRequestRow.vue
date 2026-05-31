@@ -31,8 +31,6 @@ interface Props {
   pullRequest: DashboardPullRequest;
   /** Row vertical density. Default `comfortable`. */
   density?: RowDensity;
-  /** M4 slot — unread dot on the title. Safe to leave undefined in M2. */
-  unread?: boolean;
   /** M4 slot — accent tint highlighting rows needing the viewer. */
   needsAttention?: boolean;
   /**
@@ -76,7 +74,6 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   density: "comfortable",
-  unread: false,
   needsAttention: false,
   accountsById: () => new Map<number, AccountMarker>(),
   singleAccountScope: false,
@@ -88,9 +85,6 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   open: [pullRequest: DashboardPullRequest];
-  /** M4 row action — viewer asked to flip this PR back to unread. The parent
-   * invokes `mark_pr_unread` and reloads; the dot returns on the next paint. */
-  "mark-unread": [pullRequest: DashboardPullRequest];
   /** ADR 0018 row action — viewer archived the PR. The parent fans the
    * write out across the relation owners in `pullRequest.account_ids`. */
   archive: [pullRequest: DashboardPullRequest];
@@ -285,10 +279,6 @@ function openOnUnravel(event: MouseEvent): void {
   void openUrl(unravelUrl.value);
 }
 
-function onMarkUnread(): void {
-  emit("mark-unread", props.pullRequest);
-}
-
 /**
  * Copy the PR's GitHub URL via the standard Web Clipboard API. The Tauri
  * WebView supports `navigator.clipboard.writeText` out of the box for a
@@ -355,7 +345,6 @@ function onSelectKey(event: KeyboardEvent): void {
     :class="[
       'pr-row',
       `pr-row--${density}`,
-      unread && 'pr-row--unread',
       focused && 'pr-row--focused',
       selectionActive && 'pr-row--selection-active',
       selected && 'pr-row--selected',
@@ -635,27 +624,6 @@ function onSelectKey(event: KeyboardEvent): void {
           :side-offset="4"
           @click.stop
         >
-          <DropdownMenuItem
-            class="pr-row__menu-item"
-            :disabled="unread"
-            @select="onMarkUnread"
-          >
-            <svg
-              class="pr-row__menu-item-icon"
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="8" cy="8" r="3.25" />
-            </svg>
-            <span class="pr-row__menu-item-label">Mark unread</span>
-          </DropdownMenuItem>
           <DropdownMenuItem
             class="pr-row__menu-item"
             @select="onCopyLink"
@@ -938,12 +906,6 @@ function onSelectKey(event: KeyboardEvent): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Unread rows lean on the title weight as the primary signal; the left-edge
- * dot is the secondary confirmation. */
-.pr-row--unread .pr-row__title {
-  font-weight: 600;
 }
 
 .pr-row__meta-row {
