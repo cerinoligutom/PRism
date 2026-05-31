@@ -130,10 +130,9 @@ export interface DashboardPullRequest {
   readonly account_ids: readonly number[];
   /** Triage signals - see ADR 0015 and `docs/contracts/triage-ux.md`.
    * In the unified path `unread` and `needs_attention` are merged via MAX
-   * across relation owners; `mentioned_count_unread` is summed. */
+   * across relation owners. */
   readonly unread: boolean;
   readonly needs_attention: boolean;
-  readonly mentioned_count_unread: number;
 }
 
 export interface DashboardGroupBucket {
@@ -686,11 +685,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * backend takes the same `(view, chips, account_id)` tuple the dashboard
    * list query uses, so the user marks what they see.
    *
-   * Optimistic flip: every visible row's `unread` + `mentioned_count_unread`
-   * are cleared in-memory before the round-trip lands. The post-write reload
-   * reconciles `needs_attention` and the canonical counters; the next sync
-   * cycle can re-raise an unread state if a comment lands between the click
-   * and the reload, which is the same race the per-row flip already accepts.
+   * Optimistic flip: every visible row's `unread` flag is cleared in-memory
+   * before the round-trip lands. The post-write reload reconciles
+   * `needs_attention`; the next sync cycle can re-raise an unread state if a
+   * comment lands between the click and the reload, which is the same race the
+   * per-row flip already accepts.
    *
    * Returns the number of distinct PRs the backend touched - the caller can
    * fold the value into a toast or status copy without reading it out of the
@@ -713,17 +712,16 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   /**
-   * Optimistically flip the in-memory `unread` / `mentioned_count_unread`
-   * fields on every visible row. The reload that follows reads the canonical
-   * state; this just keeps the dashboard from showing stale dots in the
-   * window between the invoke and the refresh.
+   * Optimistically flip the in-memory `unread` flag on every visible row. The
+   * reload that follows reads the canonical state; this keeps the dashboard
+   * from showing stale dots in the window between the invoke and the refresh.
    */
   function markVisibleRowsReadOptimistically(): void {
     let touched = false;
     const next = pullRequests.value.map((row) => {
-      if (!row.unread && row.mentioned_count_unread === 0) return row;
+      if (!row.unread) return row;
       touched = true;
-      return { ...row, unread: false, mentioned_count_unread: 0 };
+      return { ...row, unread: false };
     });
     if (touched) pullRequests.value = next;
   }
@@ -948,10 +946,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
    * relation owner in one transaction, matching the per-row "Mark unread"
    * path in reverse.
    *
-   * Optimistic flip: every selected row's `unread` /
-   * `mentioned_count_unread` clears locally before the round-trip lands so
-   * the dots disappear in the same paint as the click. The post-write
-   * reload reconciles `needs_attention` and any race-window state.
+   * Optimistic flip: every selected row's `unread` flag clears locally before
+   * the round-trip lands so the dots disappear in the same paint as the click.
+   * The post-write reload reconciles `needs_attention` and any race-window
+   * state.
    */
   async function markSelectedRead(): Promise<void> {
     if (selectedRows.value.size === 0) return;
@@ -1070,9 +1068,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     let touched = false;
     const next = pullRequests.value.map((row) => {
       if (row.id !== pullRequestId) return row;
-      if (!row.unread && row.mentioned_count_unread === 0) return row;
+      if (!row.unread) return row;
       touched = true;
-      return { ...row, unread: false, mentioned_count_unread: 0 };
+      return { ...row, unread: false };
     });
     if (touched) pullRequests.value = next;
   }

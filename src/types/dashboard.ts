@@ -179,8 +179,4 @@ export interface DashboardPullRequest {
    * merges via MAX across relation owners. See ADR 0015
    * ("Composite formula"). */
   readonly needs_attention: boolean;
-  /** Mentions of the viewer login seen since the last read. Summed across
-   * relation owners in unified mode. Reset to zero by `mark_pr_read`.
-   * See ADR 0015 ("Mention detection"). */
-  readonly mentioned_count_unread: number;
 }

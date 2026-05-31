@@ -100,7 +100,6 @@ async function commitArchiveDays(): Promise<void> {
     await settings.update({
       notifications_enabled: settings.settings.notifications_enabled,
       notify_on_needs_attention: settings.settings.notify_on_needs_attention,
-      notify_on_mention: settings.settings.notify_on_mention,
       auto_update_enabled: settings.settings.auto_update_enabled,
       auto_update_interval_seconds:
         settings.settings.auto_update_interval_seconds,

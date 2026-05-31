@@ -73,7 +73,6 @@ export const DEMO_PR = {
   account_ids: [1],
   unread: true,
   needs_attention: true,
-  mentioned_count_unread: 1,
 } as const satisfies DashboardPullRequest;
 
 /**

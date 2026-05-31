@@ -31,21 +31,35 @@ fn seed_relation(db: &DbHandle, account_id: i64, pr_id: i64) {
         .execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, relation_observed_at, mentioned_count_unread,
+                 is_involved, relation_observed_at,
                  mention_scan_watermark_at, needs_attention)
-                VALUES (?1, ?2, 0, 0, 0, 0, 0, 0, 0)",
+                VALUES (?1, ?2, 0, 0, 0, 0, 0, 0)",
             params![account_id, pr_id],
         )
         .unwrap();
 }
 
-fn read_mention_count(db: &DbHandle, account_id: i64, pr_id: i64) -> i64 {
+/// Count comments on the PR the mention scan has flagged with the
+/// `mentions_viewer` bit. ADR 0032 dropped the per-relation
+/// `mentioned_count_unread` counter; the bit is the live mention signal the
+/// roll-up reads, and the scan sets it on exactly the matched comments, so this
+/// per-cycle count tracks the same scan-correctness the old counter did. The
+/// `account_id` argument is retained for call-site symmetry with the other
+/// readers; the bit is per-comment, and each test runs the scan for a single
+/// account so there is no cross-account contamination.
+fn read_mention_count(db: &DbHandle, _account_id: i64, pr_id: i64) -> i64 {
     db.lock()
         .unwrap()
         .query_row(
-            "SELECT mentioned_count_unread FROM pull_request_viewer_relations
-              WHERE account_id = ?1 AND pull_request_id = ?2",
-            params![account_id, pr_id],
+            "SELECT
+                 (SELECT COUNT(*)
+                    FROM review_comments c
+                    JOIN review_threads t ON t.id = c.review_thread_id
+                   WHERE t.pull_request_id = ?1 AND c.mentions_viewer = 1)
+               + (SELECT COUNT(*)
+                    FROM issue_comments ic
+                   WHERE ic.pull_request_id = ?1 AND ic.mentions_viewer = 1)",
+            params![pr_id],
             |r| r.get::<_, i64>(0),
         )
         .unwrap()
@@ -140,7 +154,7 @@ fn mention_scan_ignores_viewers_own_comments() {
     assert_eq!(
         read_mention_count(&db, 1, pr_id),
         0,
-        "viewer's own comments must never increment the counter"
+        "viewer's own comments must never get the mention bit"
     );
 }
 

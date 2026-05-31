@@ -81,17 +81,15 @@ pub async fn update_app_settings(
         "UPDATE app_settings
             SET notifications_enabled = ?1,
                 notify_on_needs_attention = ?2,
-                notify_on_mention = ?3,
-                auto_update_enabled = ?4,
-                auto_update_interval_seconds = ?5,
-                auto_archive_days = ?6,
-                notification_retention_max = ?7,
+                auto_update_enabled = ?3,
+                auto_update_interval_seconds = ?4,
+                auto_archive_days = ?5,
+                notification_retention_max = ?6,
                 updated_at = strftime('%s', 'now')
           WHERE id = 1",
         rusqlite::params![
             prefs.notifications_enabled as i64,
             prefs.notify_on_needs_attention as i64,
-            prefs.notify_on_mention as i64,
             prefs.auto_update_enabled as i64,
             prefs.auto_update_interval_seconds,
             auto_archive_days,
@@ -244,17 +242,15 @@ mod tests {
             "UPDATE app_settings
                 SET notifications_enabled = ?1,
                     notify_on_needs_attention = ?2,
-                    notify_on_mention = ?3,
-                    auto_update_enabled = ?4,
-                    auto_update_interval_seconds = ?5,
-                    auto_archive_days = ?6,
-                    notification_retention_max = ?7,
+                    auto_update_enabled = ?3,
+                    auto_update_interval_seconds = ?4,
+                    auto_archive_days = ?5,
+                    notification_retention_max = ?6,
                     updated_at = strftime('%s', 'now')
               WHERE id = 1",
             rusqlite::params![
                 prefs.notifications_enabled as i64,
                 prefs.notify_on_needs_attention as i64,
-                prefs.notify_on_mention as i64,
                 prefs.auto_update_enabled as i64,
                 prefs.auto_update_interval_seconds,
                 auto_archive_days,
@@ -292,7 +288,6 @@ mod tests {
         let settings = invoke_get(&db).expect("get app_settings");
         assert!(settings.notifications_enabled, "master defaults ON");
         assert!(settings.notify_on_needs_attention);
-        assert!(settings.notify_on_mention);
         assert_eq!(
             settings.notification_permission_state,
             NotificationPermissionState::Unprompted
@@ -321,7 +316,6 @@ mod tests {
         let payload = AppSettings {
             notifications_enabled: true,
             notify_on_needs_attention: false,
-            notify_on_mention: true,
             // Permission state on the payload is ignored by the writer; we
             // pass an arbitrary value to confirm it doesn't leak back.
             notification_permission_state: NotificationPermissionState::Granted,
@@ -339,7 +333,6 @@ mod tests {
         let after = invoke_update(&db, payload).expect("update app_settings");
         assert!(after.notifications_enabled);
         assert!(!after.notify_on_needs_attention);
-        assert!(after.notify_on_mention);
         assert_eq!(
             after.notification_permission_state,
             NotificationPermissionState::Unprompted,
@@ -427,17 +420,17 @@ mod tests {
     }
 
     #[test]
-    fn update_clears_both_trigger_toggles() {
-        // Settings panel "mute everything via toggles" path. Master can stay
-        // ON while both per-trigger flags are OFF; the recompute emitter
-        // checks the per-trigger flags before invoking the sink (#192).
+    fn update_clears_needs_attention_trigger_toggle() {
+        // Settings panel "mute toasts but keep the app open" path. Master can
+        // stay ON while the per-trigger flag is OFF; the recompute emitter
+        // checks `notify_on_needs_attention` before invoking the sink (#192,
+        // ADR 0031 collapsed the two per-trigger toggles onto this one).
         let db = fresh_db();
         let after = invoke_update(
             &db,
             AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: false,
-                notify_on_mention: false,
                 notification_permission_state: NotificationPermissionState::Unprompted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -452,7 +445,6 @@ mod tests {
         .expect("update");
         assert!(after.notifications_enabled);
         assert!(!after.notify_on_needs_attention);
-        assert!(!after.notify_on_mention);
     }
 
     /// Drive the last-seen-version write path without going through `State<...>`.
@@ -531,7 +523,6 @@ mod tests {
         AppSettings {
             notifications_enabled: true,
             notify_on_needs_attention: true,
-            notify_on_mention: true,
             notification_permission_state: NotificationPermissionState::Unprompted,
             last_seen_version: None,
             auto_update_enabled: false,
@@ -552,7 +543,6 @@ mod tests {
         AppSettings {
             notifications_enabled: true,
             notify_on_needs_attention: true,
-            notify_on_mention: true,
             notification_permission_state: NotificationPermissionState::Unprompted,
             last_seen_version: None,
             auto_update_enabled: false,

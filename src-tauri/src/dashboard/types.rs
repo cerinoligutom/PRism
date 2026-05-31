@@ -154,11 +154,6 @@ pub struct DashboardPullRequest {
     /// any in-scope account needs the viewer. See ADR 0015
     /// ("Composite formula") for the four input conditions.
     pub needs_attention: bool,
-    /// Running count of `@<viewer-login>` mentions the sync cycle has seen
-    /// since the last read. Reset to zero by `mark_pr_read`. Summed across
-    /// in-scope accounts in the unified path. See ADR 0015 ("Mention
-    /// detection").
-    pub mentioned_count_unread: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

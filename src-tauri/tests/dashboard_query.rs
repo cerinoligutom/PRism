@@ -1341,32 +1341,8 @@ fn needs_attention_defaults_to_false() {
     assert!(!pr.needs_attention);
 }
 
-/// `mentioned_count_unread` projects the relation column verbatim.
-#[test]
-fn mentioned_count_unread_projects_relation_column() {
-    let conn = fresh_db();
-    seed_fixture(&conn);
-    conn.execute(
-        "UPDATE pull_request_viewer_relations
-            SET mentioned_count_unread = 4
-          WHERE account_id = 1 AND pull_request_id = 100",
-        [],
-    )
-    .unwrap();
-    let rows = list_pull_requests(
-        &conn,
-        DashboardView::Authored,
-        DashboardSort::Updated,
-        Some(1),
-    )
-    .unwrap();
-    let pr = rows.iter().find(|r| r.id == 100).unwrap();
-    assert_eq!(pr.mentioned_count_unread, 4);
-}
-
 /// Tracked view without an account filter short-circuits the relation join.
-/// Every row defaults to `unread = true`, `needs_attention = false`,
-/// `mentioned_count_unread = 0`.
+/// Every row defaults to `unread = true`, `needs_attention = false`.
 #[test]
 fn tracked_view_union_defaults_triage_fields() {
     let conn = fresh_db();
@@ -1381,7 +1357,6 @@ fn tracked_view_union_defaults_triage_fields() {
             "PR {} should default to no attention",
             pr.id
         );
-        assert_eq!(pr.mentioned_count_unread, 0);
     }
 }
 
@@ -1403,7 +1378,6 @@ fn tracked_view_account_scoped_defaults_when_no_relation_row() {
     let pr_300 = rows.iter().find(|r| r.id == 300).unwrap();
     assert!(pr_300.unread, "missing relation row reads as unread");
     assert!(!pr_300.needs_attention);
-    assert_eq!(pr_300.mentioned_count_unread, 0);
 }
 
 /// Tracked view scoped to an account reads the triage state from the matching
@@ -1422,8 +1396,7 @@ fn tracked_view_account_scoped_reads_relation_row_when_present() {
         .unwrap();
     conn.execute(
         "UPDATE pull_request_viewer_relations
-            SET needs_attention = 1,
-                mentioned_count_unread = 3
+            SET needs_attention = 1
           WHERE account_id = 1 AND pull_request_id = 100",
         [],
     )
@@ -1440,7 +1413,6 @@ fn tracked_view_account_scoped_reads_relation_row_when_present() {
         .find(|r| r.id == 100)
         .expect("PR 100 surfaces in account-scoped Tracked view");
     assert!(pr.needs_attention);
-    assert_eq!(pr.mentioned_count_unread, 3);
 }
 
 // ===== cross-host (login collision) is_you tests (issue #169) =====
@@ -1547,8 +1519,8 @@ fn is_you_still_flips_same_host_when_viewer_login_matches() {
 //
 // Two accounts (Alice + Bob) share a PR via different relation types. The
 // unified path GROUPs by `pr.id`, merges triage signals (`unread = MAX`,
-// `needs_attention = MAX`, `mentioned_count_unread = SUM`), and surfaces a
-// single row whose `account_ids` carries every relation owner.
+// `needs_attention = MAX`), and surfaces a single row whose `account_ids`
+// carries every relation owner.
 
 /// Build a two-account fixture: alice authored PR 100, bob review-requested
 /// on the same PR. Both accounts live on github.com (same host) so the
@@ -1664,30 +1636,6 @@ fn union_merges_needs_attention_via_max_across_relation_owners() {
 }
 
 #[test]
-fn union_merges_mentioned_count_unread_via_sum_across_relation_owners() {
-    // Alice's relation has 2 unread mentions; bob's has 3. SUM = 5.
-    let conn = fresh_db();
-    seed_two_account_shared_pr_fixture(&conn);
-    conn.execute_batch(
-        "UPDATE pull_request_viewer_relations
-            SET mentioned_count_unread = 2
-          WHERE account_id = 1 AND pull_request_id = 100;
-         UPDATE pull_request_viewer_relations
-            SET mentioned_count_unread = 3
-          WHERE account_id = 2 AND pull_request_id = 100;",
-    )
-    .unwrap();
-
-    let rows =
-        list_pull_requests(&conn, DashboardView::Authored, DashboardSort::Updated, None).unwrap();
-    let pr = rows.iter().find(|r| r.id == 100).unwrap();
-    assert_eq!(
-        pr.mentioned_count_unread, 5,
-        "SUM aggregates mentions across every in-scope relation owner"
-    );
-}
-
-#[test]
 fn union_failure_isolation_drops_one_accounts_relations_other_account_still_surfaces_pr() {
     // ADR 0016 ("Failure isolation"). PR 100 originally has relations under
     // accounts 1 and 2. Simulate account 1 failing mid-sync (its relation
@@ -1789,11 +1737,8 @@ fn union_tracked_view_merges_relations_when_present() {
     seed_fixture(&conn);
     conn.execute_batch(
         "UPDATE pull_request_viewer_relations
-            SET needs_attention = 1, mentioned_count_unread = 2
-          WHERE account_id = 1 AND pull_request_id = 400;
-         UPDATE pull_request_viewer_relations
-            SET mentioned_count_unread = 4
-          WHERE account_id = 2 AND pull_request_id = 400;",
+            SET needs_attention = 1
+          WHERE account_id = 1 AND pull_request_id = 400;",
     )
     .unwrap();
 
@@ -1802,10 +1747,6 @@ fn union_tracked_view_merges_relations_when_present() {
     let pr_400 = rows.iter().find(|r| r.id == 400).unwrap();
     assert_eq!(pr_400.account_ids, vec![1, 2]);
     assert!(pr_400.needs_attention);
-    assert_eq!(
-        pr_400.mentioned_count_unread, 6,
-        "SUM merges mentions across both relation owners"
-    );
 }
 
 #[test]
@@ -1931,8 +1872,7 @@ fn tracked_view_archived_relation_collapses_to_default_triage_under_single_accou
         "UPDATE repos SET is_tracked = 1 WHERE id = 10;
          UPDATE pull_request_viewer_relations
             SET archived_at = strftime('%s', 'now'),
-                needs_attention = 1,
-                mentioned_count_unread = 3
+                needs_attention = 1
           WHERE account_id = 1 AND pull_request_id = 100;",
     )
     .unwrap();
@@ -1952,7 +1892,6 @@ fn tracked_view_archived_relation_collapses_to_default_triage_under_single_accou
         !pr_100.needs_attention,
         "archived relation must not leak its triage state"
     );
-    assert_eq!(pr_100.mentioned_count_unread, 0);
 }
 
 /// Unified scope: partial-archive (one account archived, the other not)

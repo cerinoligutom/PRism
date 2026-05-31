@@ -23,10 +23,9 @@ use crate::triage::types::{ChipKey, FilterChipCounts, SidebarAttentionCounts};
 
 /// Persist the read-state flip for one `(account_id, pull_request_id)` pair.
 /// UPSERTs the relation row, sets `read_at` + `mention_scan_watermark_at` to
-/// now, snapshots `pull_requests.updated_at` into `read_pr_updated_at`, and
-/// resets `mentioned_count_unread` to zero. Callers wrap the call in their
-/// own transaction so the recompute that follows ([`recompute_needs_attention`])
-/// runs in the same atomic block.
+/// now, and snapshots `pull_requests.updated_at` into `read_pr_updated_at`.
+/// Callers wrap the call in their own transaction so the recompute that follows
+/// ([`recompute_needs_attention`]) runs in the same atomic block.
 ///
 /// Shared by `triage::commands::mark_pr_read` and the auto-mark hook in
 /// `conversation::commands::fetch_pr_conversation`.
@@ -51,15 +50,13 @@ pub fn mark_read(
     conn.execute(
         "INSERT INTO pull_request_viewer_relations
             (account_id, pull_request_id, relation_observed_at,
-             read_at, read_pr_updated_at, mentioned_count_unread,
-             mention_scan_watermark_at)
+             read_at, read_pr_updated_at, mention_scan_watermark_at)
             VALUES (?1, ?2, strftime('%s','now'),
-                    strftime('%s','now'), ?3, 0,
+                    strftime('%s','now'), ?3,
                     strftime('%s','now'))
          ON CONFLICT(account_id, pull_request_id) DO UPDATE SET
             read_at                    = strftime('%s','now'),
             read_pr_updated_at         = excluded.read_pr_updated_at,
-            mentioned_count_unread     = 0,
             mention_scan_watermark_at  = strftime('%s','now')",
         params![account_id, pull_request_id, pr_updated_at],
     )?;
@@ -67,9 +64,8 @@ pub fn mark_read(
 }
 
 /// Clear the read watermark for one `(account_id, pull_request_id)` pair.
-/// Leaves `mentioned_count_unread` and `mention_scan_watermark_at` untouched;
-/// the next sync's scanner is the only thing that increments the counter.
-/// No-op when the relation row doesn't exist.
+/// Leaves `mention_scan_watermark_at` untouched; the next sync's scanner owns
+/// it. No-op when the relation row doesn't exist.
 pub fn mark_unread(
     conn: &Connection,
     account_id: i64,
@@ -289,11 +285,10 @@ pub fn archive_retention_sweep(conn: &Connection) -> Result<usize, rusqlite::Err
 ///   'CHANGES_REQUESTED'`.
 ///
 /// Mentions fold into involvement via the persisted per-comment
-/// `mentions_viewer` bit (set by the scanner); the standalone
-/// `mentioned_count_unread` counter is no longer read here. Resolved threads
-/// need no special branch: a reply newer than the watermark satisfies (A)'s
-/// generic predicate, so "resolved + new reply nags; resolved + quiet stays
-/// quiet" falls out for free.
+/// `mentions_viewer` bit (set by the scanner). Resolved threads need no special
+/// branch: a reply newer than the watermark satisfies (A)'s generic predicate,
+/// so "resolved + new reply nags; resolved + quiet stays quiet" falls out for
+/// free.
 ///
 /// Host isolation (issue #169, ADR 0016 / 0031): GitHub logins are unique per
 /// host, not globally. Every branch joins the PR's owning host
@@ -535,7 +530,6 @@ pub fn mark_view_read(
                 read_pr_updated_at         = (SELECT pr.updated_at
                                                 FROM pull_requests pr
                                                WHERE pr.id = rel.pull_request_id),
-                mentioned_count_unread     = 0,
                 mention_scan_watermark_at  = strftime('%s','now')
           WHERE rel.pull_request_id IN (
               SELECT DISTINCT pr.id {in_clause}
@@ -1225,24 +1219,6 @@ mod tests {
         assert_eq!(read_needs_attention(&conn), 1);
     }
 
-    #[test]
-    fn mention_counter_alone_no_longer_fires() {
-        // The roll-up reads `mentions_viewer`, not `mentioned_count_unread`. A
-        // bumped legacy counter with no qualifying comment must not light the
-        // row (the counter is vestigial for the roll-up).
-        let conn = fresh_db();
-        seed_account_repo_pr(&conn, "alice", "bob");
-        conn.execute(
-            "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 5
-              WHERE account_id = 1 AND pull_request_id = 100",
-            [],
-        )
-        .unwrap();
-        recompute_needs_attention(&conn, 1, 100).unwrap();
-        assert_eq!(read_needs_attention(&conn), 0);
-    }
-
     // ===== resolved-thread nags (ADR 0031) =====
 
     #[test]
@@ -1543,14 +1519,14 @@ mod tests {
 
     #[test]
     fn recompute_clears_column_when_signal_gone() {
-        // The legacy `mentioned_count_unread` counter no longer feeds the
-        // roll-up (it reads `mentions_viewer`), so a row whose only state is a
-        // bumped counter recomputes back to 0.
+        // The roll-up is re-derived from conversation state (ADR 0031), so a
+        // stale `needs_attention = 1` on a row with no qualifying signal
+        // recomputes back to 0.
         let conn = fresh_db();
         seed_account_repo_pr(&conn, "alice", "bob");
         conn.execute(
             "UPDATE pull_request_viewer_relations
-                SET needs_attention = 1, mentioned_count_unread = 5
+                SET needs_attention = 1
               WHERE account_id = 1 AND pull_request_id = 100",
             [],
         )
@@ -1559,7 +1535,7 @@ mod tests {
         assert_eq!(
             read_needs_attention(&conn),
             0,
-            "the legacy counter must not hold the roll-up at 1 under ADR 0031"
+            "a stale flag must not survive a recompute with no qualifying signal"
         );
     }
 
@@ -2122,34 +2098,19 @@ mod tests {
         let archived_at = read_archived_at(&conn, 1, 100);
         assert!(archived_at.is_some(), "archived_at set on the new row");
         // Schema defaults on the freshly-inserted row.
-        let (
-            is_authored,
-            is_review_requested,
-            is_involved,
-            mentioned_count_unread,
-            needs_attention,
-        ): (i64, i64, i64, i64, i64) = conn
-            .query_row(
+        let (is_authored, is_review_requested, is_involved, needs_attention): (i64, i64, i64, i64) =
+            conn.query_row(
                 "SELECT is_authored, is_review_requested, is_involved,
-                    mentioned_count_unread, needs_attention
+                    needs_attention
                FROM pull_request_viewer_relations
               WHERE account_id = 1 AND pull_request_id = 100",
                 [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(is_authored, 0);
         assert_eq!(is_review_requested, 0);
         assert_eq!(is_involved, 0);
-        assert_eq!(mentioned_count_unread, 0);
         assert_eq!(needs_attention, 0);
     }
 
@@ -2162,42 +2123,30 @@ mod tests {
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, relation_observed_at, read_at, mentioned_count_unread,
-                 needs_attention)
-                VALUES (1, 100, 1, 0, 0, 12345, 99999, 3, 1)",
+                 is_involved, relation_observed_at, read_at, needs_attention)
+                VALUES (1, 100, 1, 0, 0, 12345, 99999, 1)",
             [],
         )
         .unwrap();
 
         mark_archived(&conn, 1, 100).unwrap();
 
-        let (is_authored, read_at, mentioned_count_unread, needs_attention, archived_at): (
+        let (is_authored, read_at, needs_attention, archived_at): (
             i64,
             Option<i64>,
-            i64,
             i64,
             Option<i64>,
         ) = conn
             .query_row(
-                "SELECT is_authored, read_at, mentioned_count_unread,
-                    needs_attention, archived_at
+                "SELECT is_authored, read_at, needs_attention, archived_at
                FROM pull_request_viewer_relations
               WHERE account_id = 1 AND pull_request_id = 100",
                 [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(is_authored, 1, "is_authored preserved");
         assert_eq!(read_at, Some(99999), "read_at preserved");
-        assert_eq!(mentioned_count_unread, 3, "mention counter preserved");
         assert_eq!(needs_attention, 1, "needs_attention preserved");
         assert!(archived_at.is_some(), "archived_at set");
     }
@@ -2286,29 +2235,23 @@ mod tests {
         conn.execute(
             "INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, relation_observed_at,
-                 read_at, mentioned_count_unread, needs_attention)
-                VALUES (1, 100, 1, 0, 999, 3, 1)",
+                 read_at, needs_attention)
+                VALUES (1, 100, 1, 0, 999, 1)",
             [],
         )
         .unwrap();
         mark_prs_archived(&conn, 1, &[100]).unwrap();
-        let (is_authored, read_at, mentioned_count_unread, needs_attention): (
-            i64,
-            Option<i64>,
-            i64,
-            i64,
-        ) = conn
+        let (is_authored, read_at, needs_attention): (i64, Option<i64>, i64) = conn
             .query_row(
-                "SELECT is_authored, read_at, mentioned_count_unread, needs_attention
+                "SELECT is_authored, read_at, needs_attention
                    FROM pull_request_viewer_relations
                   WHERE account_id = 1 AND pull_request_id = 100",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(is_authored, 1);
         assert_eq!(read_at, Some(999));
-        assert_eq!(mentioned_count_unread, 3);
         assert_eq!(needs_attention, 1);
         assert!(read_archived_at(&conn, 1, 100).is_some());
     }
@@ -2824,19 +2767,13 @@ mod tests {
 
         // Per-row read fields match the per-row `mark_read` shape.
         for pr_id in ids {
-            let (read_at, read_pr_updated_at, mentioned, watermark): (
-                Option<i64>,
-                Option<i64>,
-                i64,
-                Option<i64>,
-            ) = conn
-                .query_row(
-                    "SELECT read_at, read_pr_updated_at,
-                            mentioned_count_unread, mention_scan_watermark_at
+            let (read_at, read_pr_updated_at, watermark): (Option<i64>, Option<i64>, Option<i64>) =
+                conn.query_row(
+                    "SELECT read_at, read_pr_updated_at, mention_scan_watermark_at
                        FROM pull_request_viewer_relations
                       WHERE account_id = 1 AND pull_request_id = ?1",
                     params![pr_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .unwrap();
             assert!(read_at.is_some(), "read_at set for pr {pr_id}");
@@ -2845,7 +2782,6 @@ mod tests {
                 Some(1_000_000),
                 "read_pr_updated_at snapshots pr.updated_at for pr {pr_id}"
             );
-            assert_eq!(mentioned, 0, "mention counter cleared for pr {pr_id}");
             assert!(
                 watermark.is_some(),
                 "mention scan watermark advanced for pr {pr_id}"
@@ -2868,14 +2804,14 @@ mod tests {
     }
 
     #[test]
-    fn mark_view_read_clears_attention_when_only_signal_was_mention() {
+    fn mark_view_read_clears_attention_when_no_signal_remains() {
         let conn = fresh_db();
         let ids = seed_n_watching_prs(&conn, 1);
         let pr_id = ids[0];
-        // Seed a mention counter + needs_attention precomputed off the counter.
+        // Seed a stale needs_attention with no qualifying conversation signal.
         conn.execute(
             "UPDATE pull_request_viewer_relations
-                SET mentioned_count_unread = 3, needs_attention = 1
+                SET needs_attention = 1
               WHERE account_id = 1 AND pull_request_id = ?1",
             params![pr_id],
         )
@@ -2883,19 +2819,18 @@ mod tests {
 
         mark_view_read(&conn, DashboardView::Watching, Some(1), &[]).unwrap();
 
-        let (mentioned, needs_attention): (i64, i64) = conn
+        let needs_attention: i64 = conn
             .query_row(
-                "SELECT mentioned_count_unread, needs_attention
+                "SELECT needs_attention
                    FROM pull_request_viewer_relations
                   WHERE account_id = 1 AND pull_request_id = ?1",
                 params![pr_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(mentioned, 0);
         assert_eq!(
             needs_attention, 0,
-            "read flip drops the only attention signal"
+            "the bulk recompute drops a stale flag with no qualifying signal"
         );
     }
 
@@ -2904,10 +2839,9 @@ mod tests {
         let conn = fresh_db();
         // A review thread with a fresh other-authored reply past my engagement
         // watermark keeps the roll-up's (A) branch firing after the read flip:
-        // mark_view_read zeroes the legacy mention counter but the bulk
-        // recompute re-derives attention from the conversation watermarks, and
-        // the thread still needs me (ADR 0031). alice authored a comment at
-        // t=1; bob replied at t=2 (newer than her watermark).
+        // the bulk recompute re-derives attention from the conversation
+        // watermarks, and the thread still needs me (ADR 0031). alice authored a
+        // comment at t=1; bob replied at t=2 (newer than her watermark).
         conn.execute_batch(
             "INSERT INTO accounts (id, label, host, login, created_at)
                 VALUES (1, 'a', 'github.com', 'alice', 0);
@@ -2926,9 +2860,8 @@ mod tests {
                 (6002, 5001, 'bob',   'reply', 2);
              INSERT INTO pull_request_viewer_relations
                 (account_id, pull_request_id, is_authored, is_review_requested,
-                 is_involved, relation_observed_at, mentioned_count_unread,
-                 needs_attention)
-                VALUES (1, 100, 1, 0, 0, 0, 4, 1);",
+                 is_involved, relation_observed_at, needs_attention)
+                VALUES (1, 100, 1, 0, 0, 0, 1);",
         )
         .unwrap();
 

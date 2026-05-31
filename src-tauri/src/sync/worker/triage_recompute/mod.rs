@@ -5,10 +5,8 @@
 //! Runs inside the same DB transaction as `enrichment::write_pr_updates` so the
 //! recompute sees the freshest threads, comments, requested reviewers, and
 //! review decision. The scan sets the per-comment `mentions_viewer` bit the
-//! roll-up folds into involvement (and still bumps the legacy
-//! `mentioned_count_unread` counter, now vestigial - nothing reads it; left as
-//! a harmless write so the mention-scan tests stay stable, per ADR 0031's
-//! "left vestigial" note). After the recompute, [`rearm::rearm_dispatch`]
+//! roll-up folds into involvement (the standalone `mentioned_count_unread`
+//! counter was dropped in ADR 0032). After the recompute, [`rearm::rearm_dispatch`]
 //! produces at most one per-unit [`NotificationTrigger`] when the PR crosses
 //! its per-PR `last_emitted_activity_at` watermark, and [`rearm::role_dispatch`]
 //! produces at most one role-obligation trigger when the viewer newly acquires
@@ -30,11 +28,10 @@ mod tests;
 
 use mentions::mentions_viewer;
 
-/// Count new `@<viewer-login>` mentions across the PR's comment bodies since
-/// the per-(account, PR) watermark, set `mentions_viewer = 1` on each matched
-/// comment, bump the legacy unread counter by that count, advance the watermark
-/// to now, recompute the `needs_attention` roll-up, then run the
-/// edge-with-re-arm dispatch (ADR 0031). See ADR 0031.
+/// Scan new `@<viewer-login>` mentions across the PR's comment bodies since the
+/// per-(account, PR) watermark, set `mentions_viewer = 1` on each matched
+/// comment, advance the watermark to now, recompute the `needs_attention`
+/// roll-up, then run the edge-with-re-arm dispatch (ADR 0031). See ADR 0031.
 ///
 /// Watermark advance runs unconditionally so a cycle with zero new comments
 /// still moves the cursor forward and the next scan starts from now.
@@ -109,14 +106,11 @@ pub(super) fn scan_mentions_and_recompute_attention(
     // SQL function. Bodies are bounded by the per-PR comment volume on the
     // GitHub side; for v1 sizes a memory pass is cheap.
     //
-    // A match does two things: it bumps the legacy `mentioned_count_unread`
-    // counter (still read by the existing dispatch trigger; the next slice,
-    // #433, retires it) and sets the persisted per-comment `mentions_viewer`
-    // bit that the ADR-0031 roll-up folds into involvement. The bit is set,
-    // never cleared (idempotent); re-running over an already-flagged comment is
-    // a no-op write. Collecting the matched ids first keeps the borrow of the
-    // prepared statement from overlapping the UPDATE.
-    let mut new_mentions: i64 = 0;
+    // A match sets the persisted per-comment `mentions_viewer` bit that the
+    // ADR-0031 roll-up folds into involvement. The bit is set, never cleared
+    // (idempotent); re-running over an already-flagged comment is a no-op write.
+    // Collecting the matched ids first keeps the borrow of the prepared
+    // statement from overlapping the UPDATE.
     let mut matched_review_ids: Vec<i64> = Vec::new();
     let mut matched_issue_ids: Vec<i64> = Vec::new();
     {
@@ -134,7 +128,6 @@ pub(super) fn scan_mentions_and_recompute_attention(
         for matched in matches {
             let (id, body) = matched?;
             if mentions_viewer(&body, &viewer_login) {
-                new_mentions += 1;
                 matched_review_ids.push(id);
             }
         }
@@ -153,7 +146,6 @@ pub(super) fn scan_mentions_and_recompute_attention(
         for matched in matches {
             let (id, body) = matched?;
             if mentions_viewer(&body, &viewer_login) {
-                new_mentions += 1;
                 matched_issue_ids.push(id);
             }
         }
@@ -175,15 +167,14 @@ pub(super) fn scan_mentions_and_recompute_attention(
         )?;
     }
 
-    // Bump counter and advance watermark. Watermark moves forward on every
-    // cycle (idempotency cursor) so re-runs without new comments stay flat.
+    // Advance the watermark. It moves forward on every cycle (idempotency
+    // cursor) so re-runs without new comments stay flat.
     let now = unix_now();
     tx.execute(
         "UPDATE pull_request_viewer_relations
-            SET mentioned_count_unread = mentioned_count_unread + ?1,
-                mention_scan_watermark_at = ?2
-          WHERE account_id = ?3 AND pull_request_id = ?4",
-        params![new_mentions, now, account_id, pr_id],
+            SET mention_scan_watermark_at = ?1
+          WHERE account_id = ?2 AND pull_request_id = ?3",
+        params![now, account_id, pr_id],
     )?;
 
     // Composite recompute via the shared host-aware, row-correlated builder

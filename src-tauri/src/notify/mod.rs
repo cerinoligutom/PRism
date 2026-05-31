@@ -88,14 +88,12 @@ mod tests {
             "UPDATE app_settings
                 SET notifications_enabled = ?1,
                     notify_on_needs_attention = ?2,
-                    notify_on_mention = ?3,
-                    notification_permission_state = ?4,
+                    notification_permission_state = ?3,
                     updated_at = strftime('%s', 'now')
               WHERE id = 1",
             rusqlite::params![
                 settings.notifications_enabled as i64,
                 settings.notify_on_needs_attention as i64,
-                settings.notify_on_mention as i64,
                 perm,
             ],
         )
@@ -183,7 +181,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: false,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -222,7 +219,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -258,7 +254,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -293,7 +288,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Denied,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -332,7 +326,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Granted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -367,7 +360,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: true,
                 notify_on_needs_attention: false,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Granted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -407,7 +399,6 @@ mod tests {
             &AppSettings {
                 notifications_enabled: false,
                 notify_on_needs_attention: true,
-                notify_on_mention: true,
                 notification_permission_state: NotificationPermissionState::Unprompted,
                 last_seen_version: None,
                 auto_update_enabled: false,
@@ -462,7 +453,6 @@ mod tests {
         AppSettings {
             notifications_enabled: master,
             notify_on_needs_attention: needs_attention,
-            notify_on_mention: true,
             notification_permission_state: perm,
             last_seen_version: None,
             auto_update_enabled: false,

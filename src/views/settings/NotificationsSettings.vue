@@ -121,10 +121,6 @@ async function persistAll(
         patch.notifications_enabled ?? current.notifications_enabled,
       notify_on_needs_attention:
         patch.notify_on_needs_attention ?? current.notify_on_needs_attention,
-      // `notify_on_mention` is vestigial (the backend ignores it; ADR 0031)
-      // and no longer has a control - pass the stored value through unchanged
-      // so the write doesn't drop the field from the persisted struct.
-      notify_on_mention: current.notify_on_mention,
       // The auto-update + auto-archive fields belong to other settings
       // panels; pass them through unchanged so this trigger-toggle write
       // doesn't stomp on the user's other choices. Retention is owned by
